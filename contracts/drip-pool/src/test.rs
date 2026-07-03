@@ -281,6 +281,45 @@ fn negative_deposit_rejected() {
     );
 }
 
+/// #260: A deposit exceeding the per-user MAX_DEPOSIT cap is rejected.
+#[test]
+fn deposit_over_max_limit_rejected() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    assert_eq!(
+        client.try_deposit(&alice, &(MAX_DEPOSIT + 1)),
+        Err(Ok(Error::DepositLimitExceeded))
+    );
+}
+
+/// #260: Cumulative deposits crossing the cap are rejected even when each
+/// individual deposit is within bounds.
+#[test]
+fn cumulative_deposit_over_max_limit_rejected() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    client.deposit(&alice, &MAX_DEPOSIT);
+    assert_eq!(
+        client.try_deposit(&alice, &1),
+        Err(Ok(Error::DepositLimitExceeded))
+    );
+}
+
+/// #260: A deposit exactly at the cap is accepted.
+#[test]
+fn deposit_at_max_limit_accepted() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    client.deposit(&alice, &MAX_DEPOSIT);
+    assert_eq!(client.savings(&alice).deposited, MAX_DEPOSIT);
+}
+
 // ── #255: event emission ───────────────────────────────────────────────────
 
 /// Deposit emits a `pool / deposit` event with (who, amount, total_deposited).

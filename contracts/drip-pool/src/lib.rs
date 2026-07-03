@@ -24,6 +24,9 @@ use soroban_sdk::{
 
 // ── Lockup duration (ledgers, ~7 days at 5 s/ledger) ──────────────────────
 const LOCKUP_LEDGERS: u32 = 120_960;
+// ── Maximum cumulative deposit per user (#260) ────────────────────────────
+// Caps how much a single address can deposit across all deposits.
+const MAX_DEPOSIT: i128 = 1_000_000_000_000; // 100,000 units at 7 decimals
 // ── Multi-sig threshold: 2-of-N ───────────────────────────────────────────
 const SIG_THRESHOLD: u32 = 2;
 
@@ -56,6 +59,7 @@ pub enum Error {
     ThresholdNotMet    = 9,   // not enough signatures
     AlreadySigned      = 10,  // signer already approved this proposal
     ProposalNotFound   = 11,
+    DepositLimitExceeded = 12, // #260: deposit would exceed MAX_DEPOSIT per user
 }
 
 // ── Structs ────────────────────────────────────────────────────────────────
@@ -334,6 +338,11 @@ impl DripPool {
                 locked_until: env.ledger().sequence() + LOCKUP_LEDGERS,
                 lockup_multiplier: 100,
             });
+
+        // #260: Enforce the per-user maximum deposit cap.
+        if p.deposited + amount > MAX_DEPOSIT {
+            return Err(Error::DepositLimitExceeded);
+        }
 
         p.deposited += amount;
         p.claimable += amount;

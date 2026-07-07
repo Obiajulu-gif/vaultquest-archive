@@ -5,7 +5,7 @@ import { useAccount } from "wagmi";
 import { useConnectModal } from "@rainbow-me/rainbowkit";
 import {
   ArrowDownRight, ArrowUpRight, Gift, RefreshCw, Wallet,
-  ChevronLeft, ChevronRight, Filter, Clock, History
+  ChevronLeft, ChevronRight, Filter, Clock, History, AlertCircle
 } from "lucide-react";
 import { DEMO_TRANSACTIONS } from "@/lib/demo-portfolio";
 import { ActivityExport } from "@vaultquest/stellar-wallet-connect/src/vault/components/ActivityExport";

@@ -65,6 +65,9 @@ jobs:
 
           (
             cd contracts
+            cargo generate-lockfile
+            cargo update -p ed25519-dalek@3.0.0 --precise 2.2.0
+            cp Cargo.lock ../ci-diagnostics/Cargo.lock
             cargo clippy --workspace --all-targets --all-features -- -D warnings
           ) > ci-diagnostics/clippy.log 2>&1
           echo "exit=$?" >> ci-diagnostics/clippy.log

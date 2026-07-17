@@ -1,0 +1,70 @@
+name: Branch CI Diagnostics
+
+on:
+  push:
+    branches:
+      - agent/test-event-wallet-saved-pool-regressions
+    paths:
+      - ".github/workflows/branch-diagnostics.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v6
+        with:
+          ref: agent/test-event-wallet-saved-pool-regressions
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Capture diagnostics
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .ci-diagnostics
+          pnpm install --frozen-lockfile > .ci-diagnostics/root-install.log 2>&1
+          echo "exit=$?" >> .ci-diagnostics/root-install.log
+          (
+            cd backend
+            pnpm install --frozen-lockfile
+          ) > .ci-diagnostics/backend-install.log 2>&1
+          echo "exit=$?" >> .ci-diagnostics/backend-install.log
+          (
+            cd contracts
+            cargo clippy --workspace --all-targets --all-features -- -D warnings
+          ) > .ci-diagnostics/clippy.log 2>&1
+          echo "exit=$?" >> .ci-diagnostics/clippy.log
+          (
+            cd stellar-wallet-connect
+            npm ci
+          ) > .ci-diagnostics/wallet-install.log 2>&1
+          echo "exit=$?" >> .ci-diagnostics/wallet-install.log
+
+      - name: Commit diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .ci-diagnostics
+          git commit -m "chore: capture CI diagnostics"
+          git push origin HEAD:agent/test-event-wallet-saved-pool-regressions

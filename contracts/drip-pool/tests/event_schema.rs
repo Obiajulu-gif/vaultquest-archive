@@ -125,11 +125,8 @@ fn emitted_topics_and_payload_shapes_match_the_documented_snapshot() {
     assert_eq!(joined, alice);
 
     client.deposit(&alice, &500);
-    let deposited = <(Address, i128, i128)>::try_from_val(
-        &env,
-        &event_data(&env, "deposit"),
-    )
-    .unwrap();
+    let deposited =
+        <(Address, i128, i128)>::try_from_val(&env, &event_data(&env, "deposit")).unwrap();
     assert_eq!(deposited, (alice.clone(), 500, 500));
 
     client.claim_reward(&alice);
@@ -138,8 +135,7 @@ fn emitted_topics_and_payload_shapes_match_the_documented_snapshot() {
 
     env.ledger().set_sequence(env.ledger().sequence() + 120_961);
     client.withdraw(&alice);
-    let withdrawn =
-        <(Address, i128)>::try_from_val(&env, &event_data(&env, "withdrawn")).unwrap();
+    let withdrawn = <(Address, i128)>::try_from_val(&env, &event_data(&env, "withdrawn")).unwrap();
     assert_eq!(withdrawn, (alice, 500));
 
     client.draw_winner(&admin, &100);
@@ -163,13 +159,16 @@ fn documented_non_emitting_admin_and_error_paths_remain_explicit() {
     let second_admin = Address::generate(&env);
     client.add_admin(&admin, &second_admin);
     client.remove_admin(&admin, &second_admin);
-    let proposal_id = client.propose(
-        &admin,
-        &ProposalAction::AddAdmin(Address::generate(&env)),
+    let proposal_id = client.propose(&admin, &ProposalAction::AddAdmin(Address::generate(&env)));
+    assert_eq!(
+        client.try_approve(&admin, &proposal_id),
+        Err(Ok(Error::AlreadySigned))
     );
-    assert_eq!(client.try_approve(&admin, &proposal_id), Err(Ok(Error::AlreadySigned)));
     assert_eq!(env.events().all().len(), event_count);
 
-    assert_eq!(client.try_deposit(&admin, &0), Err(Ok(Error::InvalidAmount)));
+    assert_eq!(
+        client.try_deposit(&admin, &0),
+        Err(Ok(Error::InvalidAmount))
+    );
     assert_eq!(env.events().all().len(), event_count);
 }

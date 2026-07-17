@@ -1,4 +1,4 @@
-name: Branch Dependency Locks
+name: Branch Contract Lock
 
 on:
   push:
@@ -20,47 +20,25 @@ jobs:
         with:
           ref: agent/test-event-wallet-saved-pool-regressions
 
-      - name: Configure bot identity
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 20
-
-      - name: Refresh and commit wallet package lock
-        shell: bash
-        run: |
-          set -euo pipefail
-          (
-            cd stellar-wallet-connect
-            npm install --package-lock-only --ignore-scripts
-          )
-          git add stellar-wallet-connect/package-lock.json
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: refresh wallet package lock"
-            git push origin HEAD:agent/test-event-wallet-saved-pool-regressions
-          fi
-
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Generate and commit contract lock diagnostics
+      - name: Generate compatible contract lockfile
+        working-directory: contracts
         shell: bash
         run: |
-          set +e
-          (
-            cd contracts
-            cargo generate-lockfile
-            cargo update -p ed25519-dalek@3.0.0 --precise 2.2.0 > cargo-pin.log 2>&1
-            echo "exit=$?" >> cargo-pin.log
-          )
-          git add contracts/Cargo.lock contracts/cargo-pin.log
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: lock contract dependencies"
-            git push origin HEAD:agent/test-event-wallet-saved-pool-regressions
-          fi
-          exit 0
+          set -euo pipefail
+          cargo generate-lockfile
+          cargo update -p ed25519-dalek@3.0.0 --precise 2.2.0
+          cargo tree -i ed25519-dalek@3.0.0 && exit 1 || true
+          cargo tree -i ed25519-dalek@2.2.0
+
+      - name: Commit lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add contracts/Cargo.lock
+          git commit -m "chore: lock compatible Soroban test dependencies"
+          git push origin HEAD:agent/test-event-wallet-saved-pool-regressions

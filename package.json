@@ -12,11 +12,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check:terms": "node ./scripts/check-product-terms.js",
-    "docs:validate": "node ./scripts/validate-docs.js"
+    "docs:validate": "node ./scripts/validate-docs.js",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "test:e2e:headed": "playwright test --headed",
-    "check:terms": "node ./scripts/check-product-terms.js"
+    "test:e2e:headed": "playwright test --headed"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.12",

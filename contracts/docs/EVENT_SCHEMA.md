@@ -1,84 +1,83 @@
 # VaultQuest Soroban event schema
 
-This document is the canonical event contract for pool lifecycle and user
-actions. Contract, backend, and frontend changes that add or rename fields must
-update this file in the same PR.
+This document is the canonical snapshot for events currently emitted by the
+`contracts/drip-pool` contract. Contract, backend indexer, and frontend changes
+that rename a topic, reorder a payload value, or change a value type must update
+this document and the contract schema tests in the same pull request.
 
-## Envelope
+## Current envelope (`contract-v1`)
 
-Every event uses these topic positions:
+The deployed contract currently emits two topic values:
 
-| Topic | Value |
+| Topic | Meaning |
 |---|---|
-| `0` | `"vaultquest"` |
-| `1` | schema version, currently `"v1"` |
-| `2` | event name |
-| `3` | pool id when available, otherwise admin/config scope |
+| `0` | domain (`pool`) |
+| `1` | action (`created`, `joined`, `deposit`, `claimed`, `withdrawn`, `payout`) |
 
-The payload is a Soroban map. Field names below are snake_case in indexer JSON.
-Amounts are contract base units encoded as strings.
+The payload is a Soroban value or tuple. Tuple positions are part of the public
+contract because the backend decoder and analytics consumers depend on them.
+The normalized event names below are the names consumers should use after
+combining the two topics.
 
-Indexers should identify an event by `ledger:tx_hash:event_index`. If an event
-is reprocessed, upsert by that identity. For action reconciliation, also keep
-`tx_hash` and the optional frontend `idempotency_key` from the backend action
-ledger when available.
+## Required emitted events
 
-## Required events
+| Normalized event | Soroban topics | Payload positions | Consumer impact |
+|---|---|---|---|
+| `pool_created` | `pool`, `created` | `admin` | pool bootstrap and admin ownership |
+| `pool_joined` | `pool`, `joined` | `wallet` | participant refresh |
+| `drip_deposited` | `pool`, `deposit` | `wallet`, `amount`, `total_deposited` | balance, TVL, and confirmation refresh |
+| `reward_claimed` | `pool`, `claimed` | `wallet`, `amount` | reward history refresh |
+| `withdrawn` | `pool`, `withdrawn` | `wallet`, `amount` | position and balance refresh |
+| `payout_selected` | `pool`, `payout` | `winner`, `amount` | winner and prize refresh |
 
-| Event | Required for | Payload fields |
-|---|---|---|
-| `pool_created` | backend indexing, frontend pool list refresh | `pool_id`, `creator`, `asset`, `target_amount`, `opens_at`, `locks_at`, `draws_at`, `admin`, `idempotency_key?` |
-| `pool_joined` | backend indexing, frontend position refresh | `pool_id`, `wallet`, `amount`, `shares`, `participant_count`, `idempotency_key?` |
-| `drip_deposited` | backend indexing, frontend balance/TVL refresh | `pool_id`, `wallet`, `amount`, `shares_delta`, `total_deposited`, `tvl`, `idempotency_key?` |
-| `reward_claimed` | backend indexing, frontend reward history refresh | `pool_id`, `wallet`, `amount`, `asset`, `cycle`, `idempotency_key?` |
-| `withdrawn` | backend indexing, frontend position refresh | `pool_id`, `wallet`, `amount`, `shares_burned`, `remaining_shares`, `idempotency_key?` |
-| `payout_selected` | backend indexing, frontend winner/reward refresh | `pool_id`, `winner`, `amount`, `asset`, `cycle`, `randomness_ref?` |
-| `paused` | backend operations, frontend disabled states | `scope`, `admin`, `reason`, `paused_at` |
-| `recovered` | backend operations, frontend disabled states | `scope`, `admin`, `recovered_at` |
-| `config_changed` | backend indexing, frontend config refresh | `scope`, `admin`, `key`, `old_value?`, `new_value`, `effective_at` |
+Amounts are signed Soroban `i128` base-unit values. Wallet/admin/winner values
+are Soroban `Address` values.
 
-## Normalized indexer examples
+## Machine-readable snapshot
 
+The Rust contract tests parse the JSON between the markers below. Keep it valid
+JSON and update it only alongside intentional schema changes.
+
+<!-- EVENT_SCHEMA_SNAPSHOT_START -->
 ```json
 {
-  "event_id": "12345:tx_abcd:2",
-  "tx_hash": "tx_abcd",
-  "contract_id": "CD...",
-  "name": "pool_joined",
-  "version": "v1",
-  "pool_id": "pool_2026_05_week_4",
-  "payload": {
-    "wallet": "G...",
-    "amount": "10000000",
-    "shares": "10000000",
-    "participant_count": 18,
-    "idempotency_key": "8d4f4bd3-..."
+  "schema": "contract-v1",
+  "topics": ["domain", "action"],
+  "events": [
+    { "name": "pool_created", "topics": ["pool", "created"], "payload": ["admin"] },
+    { "name": "pool_joined", "topics": ["pool", "joined"], "payload": ["wallet"] },
+    { "name": "drip_deposited", "topics": ["pool", "deposit"], "payload": ["wallet", "amount", "total_deposited"] },
+    { "name": "reward_claimed", "topics": ["pool", "claimed"], "payload": ["wallet", "amount"] },
+    { "name": "withdrawn", "topics": ["pool", "withdrawn"], "payload": ["wallet", "amount"] },
+    { "name": "payout_selected", "topics": ["pool", "payout"], "payload": ["winner", "amount"] }
+  ],
+  "non_emitting_admin_actions": ["add_admin", "remove_admin", "propose", "approve"],
+  "errors": {
+    "emitted": false,
+    "reason": "Soroban transaction errors revert state and events; consumers use the transaction result/error code."
   }
 }
 ```
+<!-- EVENT_SCHEMA_SNAPSHOT_END -->
 
-```json
-{
-  "event_id": "12346:tx_efgh:0",
-  "tx_hash": "tx_efgh",
-  "contract_id": "CD...",
-  "name": "config_changed",
-  "version": "v1",
-  "pool_id": null,
-  "payload": {
-    "scope": "global",
-    "admin": "G...",
-    "key": "fee_bps",
-    "old_value": "25",
-    "new_value": "30",
-    "effective_at": 1780012800
-  }
-}
-```
+## Admin actions and errors
+
+Successful admin mutations do not emit persistent events in `contract-v1`.
+The schema test makes that limitation explicit so adding an admin event becomes
+an intentional, reviewed schema change rather than an accidental indexer break.
+Failed calls also emit no persistent event because Soroban rolls the transaction
+back; consumers must inspect the transaction result and contract error code.
+
+## Backend indexer compatibility
+
+`backend/src/services/stellarIndexer.ts` is the consumer boundary. Its decoder
+must preserve both contract topics and normalize them to the names in this
+snapshot before downstream analytics rely on an event type. Any decoder change
+must add or update backend indexer tests using these exact topic/action pairs.
 
 ## Versioning
 
-Additive optional fields may ship under the same version. Required field
-changes, renamed events, changed topic order, or changed units require a new
-schema topic such as `"v2"`. Indexers must continue accepting all supported
-versions until a migration note removes the old version from this document.
+Additive optional metadata may remain under `contract-v1` only when tuple
+positions and existing types do not change. Renamed topics, reordered tuple
+values, changed units, or newly persistent admin/error events require a new
+schema identifier and a migration note here.

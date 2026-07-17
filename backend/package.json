@@ -12,6 +12,7 @@
     "start": "node dist/server.js",
     "db:backup": "tsx src/scripts/backup.ts",
     "lint": "eslint \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "pretest": "prisma generate",
     "test": "vitest run",
     "test:watch": "vitest",
     "prisma:generate": "prisma generate",

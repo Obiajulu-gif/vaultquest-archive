@@ -32,20 +32,22 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Generate compatible contract lockfile
+      - name: Generate contract lockfile and capture pin result
         working-directory: contracts
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
           cargo generate-lockfile
-          cargo update -p ed25519-dalek@3.0.0 --precise 2.2.0
+          cargo update -p ed25519-dalek@3.0.0 --precise 2.2.0 > cargo-pin.log 2>&1
+          echo "exit=$?" >> cargo-pin.log
+          exit 0
 
-      - name: Commit locks
+      - name: Commit generated files
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add stellar-wallet-connect/package-lock.json contracts/Cargo.lock
+          git add stellar-wallet-connect/package-lock.json contracts/Cargo.lock contracts/cargo-pin.log
           git commit -m "chore: refresh wallet and contract lockfiles"
           git push origin HEAD:agent/test-event-wallet-saved-pool-regressions

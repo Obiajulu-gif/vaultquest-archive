@@ -42,28 +42,28 @@ jobs:
         shell: bash
         run: |
           set +e
-          mkdir -p .ci-diagnostics
-          pnpm install --frozen-lockfile > .ci-diagnostics/root-install.log 2>&1
-          echo "exit=$?" >> .ci-diagnostics/root-install.log
+          mkdir -p ci-diagnostics
+          pnpm install --frozen-lockfile > ci-diagnostics/root-install.log 2>&1
+          echo "exit=$?" >> ci-diagnostics/root-install.log
           (
             cd backend
             pnpm install --frozen-lockfile
-          ) > .ci-diagnostics/backend-install.log 2>&1
-          echo "exit=$?" >> .ci-diagnostics/backend-install.log
+          ) > ci-diagnostics/backend-install.log 2>&1
+          echo "exit=$?" >> ci-diagnostics/backend-install.log
           (
             cd contracts
             cargo clippy --workspace --all-targets --all-features -- -D warnings
-          ) > .ci-diagnostics/clippy.log 2>&1
-          echo "exit=$?" >> .ci-diagnostics/clippy.log
+          ) > ci-diagnostics/clippy.log 2>&1
+          echo "exit=$?" >> ci-diagnostics/clippy.log
           (
             cd stellar-wallet-connect
             npm ci
-          ) > .ci-diagnostics/wallet-install.log 2>&1
-          echo "exit=$?" >> .ci-diagnostics/wallet-install.log
+          ) > ci-diagnostics/wallet-install.log 2>&1
+          echo "exit=$?" >> ci-diagnostics/wallet-install.log
 
       - name: Upload diagnostics
         uses: actions/upload-artifact@v4
         with:
           name: branch-ci-diagnostics
-          path: .ci-diagnostics
+          path: ci-diagnostics
           if-no-files-found: error

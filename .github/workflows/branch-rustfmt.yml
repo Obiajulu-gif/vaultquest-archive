@@ -1,0 +1,42 @@
+name: Branch Rustfmt
+
+on:
+  push:
+    branches:
+      - agent/test-event-wallet-saved-pool-regressions
+    paths:
+      - "contracts/**/*.rs"
+      - ".github/workflows/branch-rustfmt.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v6
+        with:
+          ref: agent/test-event-wallet-saved-pool-regressions
+
+      - name: Set up rustfmt
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Format and commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path contracts/Cargo.toml --all
+          if git diff --quiet; then
+            echo "Rust files are already formatted."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add contracts
+          git commit -m "style: format contract schema tests"
+          git push origin HEAD:agent/test-event-wallet-saved-pool-regressions

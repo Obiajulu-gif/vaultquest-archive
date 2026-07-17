@@ -1,0 +1,51 @@
+name: Branch Dependency Locks
+
+on:
+  push:
+    branches:
+      - agent/test-event-wallet-saved-pool-regressions
+    paths:
+      - ".github/workflows/branch-dependency-locks.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v6
+        with:
+          ref: agent/test-event-wallet-saved-pool-regressions
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+
+      - name: Refresh wallet package lock
+        working-directory: stellar-wallet-connect
+        run: npm install --package-lock-only --ignore-scripts
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate compatible contract lockfile
+        working-directory: contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo generate-lockfile
+          cargo update -p ed25519-dalek@3.0.0 --precise 2.2.0
+
+      - name: Commit locks
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add stellar-wallet-connect/package-lock.json contracts/Cargo.lock
+          git commit -m "chore: refresh wallet and contract lockfiles"
+          git push origin HEAD:agent/test-event-wallet-saved-pool-regressions

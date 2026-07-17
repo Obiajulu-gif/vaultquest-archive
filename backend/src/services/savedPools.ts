@@ -1,85 +1,130 @@
-import type { PrismaClient } from "@prisma/client";
+import type { PrismaClient, SavedPool } from "@prisma/client";
 
 /**
- * Persists user-saved vault/pool references for quick access and watchlists.
+ * Saved-pool cache keys must always include the wallet scope. Keeping this
+ * helper exported makes the authorization assumption explicit and testable.
  */
-
-export interface SavedPoolInput {
-  walletAddress: string;
-  poolId: string;
+export function savedPoolsCacheKey(walletAddress: string): string {
+  return `saved-pools:${walletAddress.trim()}`;
 }
 
-export interface SavedPoolRecord {
-  walletAddress: string;
+export interface SavedPoolPayload {
   poolId: string;
-  createdAt: Date;
+  poolName: string;
+  status: string;
+  tvl: string;
+  asset: string;
+  participantCount: number;
+  expectedYield: string;
+  prize: string | null;
+  opensAt: Date | null;
+  locksAt: Date | null;
+  drawsAt: Date | null;
 }
+
+export interface SavePoolInput {
+  walletAddress: string;
+  pool: SavedPoolPayload;
+}
+
+type CacheEntry = {
+  rows: SavedPool[];
+};
 
 /**
- * Manages saved pool records linked to user wallets.
+ * Persists wallet-scoped saved pools and keeps a small LRU read cache.
+ * Mutations invalidate only the affected wallet entry so one user's refresh
+ * can never evict or overwrite another user's saved-pool view.
  */
 export class SavedPoolsService {
-  /**
-   * @param prisma - Prisma client for database access
-   */
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly cache = new Map<string, CacheEntry>();
 
-  /**
-   * Saves a pool reference for a wallet if not already saved.
-   *
-   * @param input - Wallet and pool identifiers
-   * @returns The saved record and whether it was newly created
-   */
-  async savePool(input: SavedPoolInput): Promise<{ record: SavedPoolRecord; created: boolean }> {
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly maxCacheEntries = 100,
+  ) {}
+
+  async savePool(input: SavePoolInput): Promise<{ record: SavedPool; created: boolean }> {
+    const walletAddress = input.walletAddress.trim();
     const existing = await this.prisma.savedPool.findUnique({
       where: {
         walletAddress_poolId: {
-          walletAddress: input.walletAddress,
-          poolId: input.poolId,
+          walletAddress,
+          poolId: input.pool.poolId,
         },
       },
     });
 
-    if (existing) {
-      return { record: existing as unknown as SavedPoolRecord, created: false };
-    }
-
-    const created = await this.prisma.savedPool.create({
-      data: {
-        walletAddress: input.walletAddress,
-        poolId: input.poolId,
+    const record = await this.prisma.savedPool.upsert({
+      where: {
+        walletAddress_poolId: {
+          walletAddress,
+          poolId: input.pool.poolId,
+        },
+      },
+      create: {
+        walletAddress,
+        ...input.pool,
+      },
+      update: {
+        poolName: input.pool.poolName,
+        status: input.pool.status,
+        tvl: input.pool.tvl,
+        asset: input.pool.asset,
+        participantCount: input.pool.participantCount,
+        expectedYield: input.pool.expectedYield,
+        prize: input.pool.prize,
+        opensAt: input.pool.opensAt,
+        locksAt: input.pool.locksAt,
+        drawsAt: input.pool.drawsAt,
       },
     });
 
-    return { record: created as unknown as SavedPoolRecord, created: true };
+    this.invalidateWallet(walletAddress);
+    return { record, created: existing === null };
   }
 
-  /**
-   * Removes a saved pool reference for a wallet.
-   *
-   * @param walletAddress - Wallet identifier
-   * @param poolId - Pool identifier
-   * @returns Number of records removed
-   */
   async unsavePool(walletAddress: string, poolId: string): Promise<number> {
+    const normalizedWallet = walletAddress.trim();
     const result = await this.prisma.savedPool.deleteMany({
-      where: { walletAddress, poolId },
+      where: { walletAddress: normalizedWallet, poolId },
     });
+    this.invalidateWallet(normalizedWallet);
     return result.count;
   }
 
-  /**
-   * Lists all saved pools for a wallet.
-   *
-   * @param walletAddress - Wallet identifier
-   * @returns Saved pool records
-   */
-  async listSavedPools(walletAddress: string): Promise<SavedPoolRecord[]> {
+  async listSavedPools(walletAddress: string): Promise<SavedPool[]> {
+    const normalizedWallet = walletAddress.trim();
+    const key = savedPoolsCacheKey(normalizedWallet);
+    const cached = this.cache.get(key);
+
+    if (cached) {
+      // Refresh LRU order without sharing a mutable array with callers.
+      this.cache.delete(key);
+      this.cache.set(key, cached);
+      return [...cached.rows];
+    }
+
     const rows = await this.prisma.savedPool.findMany({
-      where: { walletAddress },
+      where: { walletAddress: normalizedWallet },
       orderBy: { createdAt: "desc" },
     });
+    this.cacheRows(key, rows);
+    return [...rows];
+  }
 
-    return rows as unknown as SavedPoolRecord[];
+  private invalidateWallet(walletAddress: string): void {
+    this.cache.delete(savedPoolsCacheKey(walletAddress));
+  }
+
+  private cacheRows(key: string, rows: SavedPool[]): void {
+    this.cache.delete(key);
+    this.cache.set(key, { rows: [...rows] });
+
+    while (this.cache.size > Math.max(0, this.maxCacheEntries)) {
+      const oldestKey = this.cache.keys().next().value as string | undefined;
+      if (oldestKey === undefined) break;
+      this.cache.delete(oldestKey);
+    }
   }
 }

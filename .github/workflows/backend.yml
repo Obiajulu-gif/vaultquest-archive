@@ -95,10 +95,10 @@ jobs:
       - name: Install dependencies
         run: |
           set -euo pipefail
-          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
-            npm ci
-          elif [ -f pnpm-lock.yaml ]; then
+          if [ -f pnpm-lock.yaml ]; then
             pnpm install --frozen-lockfile
+          elif [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+            npm ci
           elif [ -f yarn.lock ]; then
             corepack enable
             yarn install --frozen-lockfile
@@ -218,4 +218,4 @@ jobs:
 
     steps:
       - name: Skip cleanly
-        run: echo "No backend/ server/ or api/ directory is committed in this repository yet under contracts/ or soroban/."
+        run: echo "No backend/ server/ or api/ directory is committed in this repository yet."

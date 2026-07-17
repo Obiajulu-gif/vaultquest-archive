@@ -50,6 +50,8 @@ jobs:
           (
             cd backend
             pnpm install --frozen-lockfile
+            pnpm exec prisma generate
+            pnpm exec eslint "src/**/*.ts" "tests/**/*.ts"
             pnpm exec vitest run tests/saved-pools-authorization-cache.spec.ts
           ) > ci-diagnostics/backend-targeted.log 2>&1
           echo "exit=$?" >> ci-diagnostics/backend-targeted.log

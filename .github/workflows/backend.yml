@@ -85,13 +85,19 @@ jobs:
         with:
           node-version: 22
 
+      - name: Install pnpm
+        if: ${{ hashFiles(format('{0}/pnpm-lock.yaml', needs.detect.outputs.backend_dir)) != '' }}
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
       - name: Install dependencies
         run: |
           set -euo pipefail
           if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
             npm ci
           elif [ -f pnpm-lock.yaml ]; then
-            corepack enable
             pnpm install --frozen-lockfile
           elif [ -f yarn.lock ]; then
             corepack enable
@@ -212,4 +218,4 @@ jobs:
 
     steps:
       - name: Skip cleanly
-        run: echo "No backend/ server/ or api/ directory is committed in this repository yet."
+        run: echo "No backend/ server/ or api/ directory is committed in this repository yet under contracts/ or soroban/."

@@ -2,7 +2,7 @@ use drip_pool::{DripPool, DripPoolClient, Error, ProposalAction};
 use serde_json::Value as JsonValue;
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger as _},
-    vec, Address, Env, IntoVal, Symbol, TryFromVal, Val,
+    Address, Env, IntoVal, Symbol, TryFromVal, Val,
 };
 
 fn setup() -> (Env, DripPoolClient<'static>, Address) {
@@ -34,7 +34,7 @@ fn snapshot() -> JsonValue {
 }
 
 fn event_data(env: &Env, action: &str) -> Val {
-    let expected_topics = vec![
+    let expected_topics = soroban_sdk::vec![
         env,
         Symbol::new(env, "pool").into_val(env),
         Symbol::new(env, action).into_val(env),

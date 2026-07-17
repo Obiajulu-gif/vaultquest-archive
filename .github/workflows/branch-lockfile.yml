@@ -1,0 +1,53 @@
+name: Branch Lockfile Refresh
+
+on:
+  push:
+    branches:
+      - agent/test-event-wallet-saved-pool-regressions
+    paths:
+      - "package.json"
+      - "backend/package.json"
+      - ".github/workflows/branch-lockfile.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v6
+        with:
+          ref: agent/test-event-wallet-saved-pool-regressions
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - name: Refresh and commit lockfiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --lockfile-only --no-frozen-lockfile
+          (
+            cd backend
+            pnpm install --lockfile-only --no-frozen-lockfile
+          )
+          if git diff --quiet; then
+            echo "Lockfiles are already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pnpm-lock.yaml backend/pnpm-lock.yaml
+          git commit -m "chore: refresh pnpm lockfiles"
+          git push origin HEAD:agent/test-event-wallet-saved-pool-regressions

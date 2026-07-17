@@ -15,6 +15,7 @@ import { errorHandler } from "./middleware/errorHandler.js";
 import { rateLimiter } from "./middleware/rateLimiter.js";
 import { requireApiKey } from "./middleware/api-key-auth.js";
 import { createLogger } from "./logger.js";
+import { ok } from "./responses.js";
 import type { Logger } from "pino";
 import type { CacheService } from "./services/cacheService.js";
 
@@ -44,7 +45,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.register(prometheusPlugin);
 
   // Structured Logging for incoming requests and performance duration
-  app.addHook("onRequest", async (req, reply) => {
+  app.addHook("onRequest", async (req) => {
     (req.raw as any).tempStartTime = performance.now();
     req.log.info(
       {
@@ -91,7 +92,6 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 
   app.register(actionsRoutes(svc, apiKeyGuard));
   app.register(healthRoutes(svc));
-  app.register(actionsRoutes(svc));
   app.register(savedPoolsRoutes(savedPoolsSvc));
   app.register(internalRoutes(svc, deps.internalSecret));
   app.register(metricsRoutes(metricsSvc, apiKeyGuard));

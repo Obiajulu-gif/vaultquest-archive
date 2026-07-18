@@ -1,0 +1,40 @@
+name: One-shot rustfmt issue 362
+
+on:
+  push:
+    branches:
+      - agent/issue-362-event-schema-regressions
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out issue branch
+        uses: actions/checkout@v6
+        with:
+          ref: agent/issue-362-event-schema-regressions
+          fetch-depth: 0
+
+      - name: Set up Rust formatter
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Format, remove this one-shot workflow, and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path contracts/Cargo.toml --all
+          rm .github/workflows/one-shot-rustfmt-issue-362.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "style: apply cargo fmt to event schema tests"
+          git push origin HEAD:agent/issue-362-event-schema-regressions

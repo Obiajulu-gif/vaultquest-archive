@@ -1,0 +1,12 @@
+pool.created|pool,created|Address(admin)
+pool.joined|pool,joined|Address(wallet)
+pool.deposit|pool,deposit|(Address(wallet),i128(amount),i128(total_deposited))
+pool.claimed|pool,claimed|(Address(wallet),i128(amount))
+pool.withdrawn|pool,withdrawn|(Address(wallet),i128(amount))
+pool.payout|pool,payout|(Address(winner),i128(prize))
+admin.add_admin|none|none
+admin.remove_admin|none|none
+admin.propose|none|none
+admin.approve|none|none
+error.invalid_amount|none|none
+error.unauthorized|none|none

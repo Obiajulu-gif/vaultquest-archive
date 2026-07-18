@@ -1,7 +1,5 @@
 use drip_pool::{DripPool, DripPoolClient, Error, ProposalAction};
-use soroban_sdk::{
-    symbol_short, vec, Address, Env, IntoVal, Symbol, TryFromVal, Val,
-};
+use soroban_sdk::{symbol_short, vec, Address, Env, IntoVal, Symbol, TryFromVal, Val};
 
 const SNAPSHOT: &str = include_str!("../../docs/EVENT_SCHEMA_V1.snapshot");
 const DOCUMENTATION: &str = include_str!("../../docs/EVENT_SCHEMA.md");
@@ -113,8 +111,7 @@ fn claim_schema_matches_snapshot_and_payload_positions() {
     client.claim(&wallet);
 
     let data = event_data(&env, symbol_short!("pool"), symbol_short!("claimed"));
-    let (emitted_wallet, amount) =
-        <(Address, i128)>::try_from_val(&env, &data).unwrap();
+    let (emitted_wallet, amount) = <(Address, i128)>::try_from_val(&env, &data).unwrap();
     assert_eq!(emitted_wallet, wallet);
     assert_eq!(amount, 75);
 }
@@ -137,8 +134,7 @@ fn withdraw_schema_matches_snapshot_and_payload_positions() {
     client.withdraw(&wallet);
 
     let data = event_data(&env, symbol_short!("pool"), symbol_short!("withdrawn"));
-    let (emitted_wallet, amount) =
-        <(Address, i128)>::try_from_val(&env, &data).unwrap();
+    let (emitted_wallet, amount) = <(Address, i128)>::try_from_val(&env, &data).unwrap();
     assert_eq!(emitted_wallet, wallet);
     assert_eq!(amount, 200);
 }

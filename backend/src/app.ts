@@ -17,7 +17,6 @@ import { requireApiKey } from "./middleware/api-key-auth.js";
 import { createLogger } from "./logger.js";
 import type { Logger } from "pino";
 import type { CacheService } from "./services/cacheService.js";
-import { ok } from "./responses.js";
 
 export type AppDeps = {
   prisma: PrismaClient;
@@ -84,11 +83,6 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   // Guard is a no-op when apiKey is undefined (local dev without configuration).
   const apiKeyGuard = requireApiKey(deps.apiKey);
 
-  app.get("/health", async () => ok({ ok: true }));
-  app.get("/health/indexer", async () => {
-    const health = await svc.getIndexerHealth();
-    return ok(health);
-  });
 
   app.register(actionsRoutes(svc, apiKeyGuard));
   app.register(healthRoutes(svc));

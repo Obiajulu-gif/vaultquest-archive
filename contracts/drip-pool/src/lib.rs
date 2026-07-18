@@ -184,7 +184,7 @@ impl DripPool {
 
         let mut updated: Vec<Address> = Vec::new(&env);
         for a in admins.iter() {
-            if a != &target {
+            if a != target {
                 updated.push_back(a);
             }
         }

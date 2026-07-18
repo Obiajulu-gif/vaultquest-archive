@@ -11,7 +11,7 @@ This map tracks important product and platform areas that should stay covered as
 | Area | Current coverage | Status | Missing coverage to add |
 | --- | --- | --- | --- |
 | App route rendering | `e2e/route-smoke.spec.ts` covers core public/app routes | Partial | Add smoke coverage for `/app/vaults/archive`, account subflows, and error routes |
-| Vault list and filtering | Manual UI logic in `app/app/vaults/page.jsx` and `components/app/VaultComparisonTable.jsx` | Missing | Component tests for filters, sorting, empty states, and participant insights |
+| Vault list and filtering | `components/app/VaultFilters.test.jsx`, `components/app/VaultComparisonTable.test.jsx`, and `lib/vault-filters.test.js` cover filter changes, reset, APR/participant sorting, table columns, and empty results | Partial | Add participant insight interactions and route-level browser coverage |
 | Vault detail flow | `app/app/vaults/[id]/page.jsx` renders mocked vault detail data | Missing | Component/route tests for found, not-found, participant insights, and deposit CTA states |
 | Wallet connection UI | `e2e/helpers/wallet-mock.ts` and route smoke disconnected state | Partial | Header status tests for connected, disconnected, balance loading, extension disconnect, and network mismatch |
 | Dashboard widgets | `components/hooks/useYieldCounter.test.js`; dashboard route smoke | Partial | Tests for onboarding checklist, empty position state, recent winners, and prize countdown |

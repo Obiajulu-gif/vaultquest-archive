@@ -101,4 +101,5 @@ version instead. Every intentional schema change must include:
 1. updated contract emission code;
 2. updated regression fixtures and payload decoding tests;
 3. this document and the machine-readable snapshot;
-4. a migration note for backend/indexer and frontend consumers.
+4. a migration note for backend/indexer and frontend consumers;
+5. `cargo fmt --manifest-path contracts/Cargo.toml --all` and the contract tests.

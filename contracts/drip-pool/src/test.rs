@@ -36,7 +36,10 @@ fn create_initialises_pool() {
 fn create_twice_fails() {
     let (_env, client, admin) = setup();
     client.create(&admin);
-    assert_eq!(client.try_create(&admin), Err(Ok(Error::AlreadyInitialized)));
+    assert_eq!(
+        client.try_create(&admin),
+        Err(Ok(Error::AlreadyInitialized))
+    );
 }
 
 #[test]
@@ -150,7 +153,10 @@ fn single_sig_does_not_execute_release() {
     client.deposit(&admin, &500);
 
     let recipient = Address::generate(&env);
-    let pid = client.propose(&admin, &ProposalAction::ReleaseEscrow(recipient.clone(), 500));
+    let pid = client.propose(
+        &admin,
+        &ProposalAction::ReleaseEscrow(recipient.clone(), 500),
+    );
     // Admin already signed via propose — second approve must be rejected.
     assert_eq!(
         client.try_approve(&admin, &pid),
@@ -260,10 +266,7 @@ fn flash_loan_blocked_by_lockup() {
     client.join(&attacker);
     client.deposit(&attacker, &1_000_000_000);
     // Attempt immediate withdrawal (flash-loan style) — must fail.
-    assert_eq!(
-        client.try_withdraw(&attacker),
-        Err(Ok(Error::LockupActive))
-    );
+    assert_eq!(client.try_withdraw(&attacker), Err(Ok(Error::LockupActive)));
     // Pool still holds the funds.
     assert_eq!(client.pool().total_deposited, 1_000_000_000);
 }
@@ -294,11 +297,12 @@ fn deposit_emits_event() {
 
     let events = env.events().all();
     let deposit_event = events.iter().find(|(_, topics, _)| {
-        *topics == vec![
-            &env,
-            symbol_short!("pool").into_val(&env),
-            symbol_short!("deposit").into_val(&env),
-        ]
+        *topics
+            == vec![
+                &env,
+                symbol_short!("pool").into_val(&env),
+                symbol_short!("deposit").into_val(&env),
+            ]
     });
     assert!(deposit_event.is_some(), "deposit event not found");
 }
@@ -316,11 +320,12 @@ fn withdraw_emits_event() {
 
     let events = env.events().all();
     let withdrawn_event = events.iter().find(|(_, topics, _)| {
-        *topics == vec![
-            &env,
-            symbol_short!("pool").into_val(&env),
-            symbol_short!("withdrawn").into_val(&env),
-        ]
+        *topics
+            == vec![
+                &env,
+                symbol_short!("pool").into_val(&env),
+                symbol_short!("withdrawn").into_val(&env),
+            ]
     });
     assert!(withdrawn_event.is_some(), "withdrawn event not found");
 }
@@ -339,11 +344,12 @@ fn draw_winner_emits_payout_event() {
 
     let events = env.events().all();
     let payout_event = events.iter().find(|(_, topics, _)| {
-        *topics == vec![
-            &env,
-            symbol_short!("pool").into_val(&env),
-            symbol_short!("payout").into_val(&env),
-        ]
+        *topics
+            == vec![
+                &env,
+                symbol_short!("pool").into_val(&env),
+                symbol_short!("payout").into_val(&env),
+            ]
     });
     assert!(payout_event.is_some(), "payout event not found");
 }

@@ -16,8 +16,8 @@ import {
   EXPECTED_NETWORK,
   normalizeStellarNetwork,
   type NetworkType,
-} from "../lib/wallets.js";
-import { getFrontendEnv } from "./env.js";
+} from "../lib/wallets";
+import { getFrontendEnv } from "./env";
 
 export type HorizonNodeKind = "public" | "private";
 

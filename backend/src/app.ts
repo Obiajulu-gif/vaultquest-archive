@@ -44,7 +44,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.register(prometheusPlugin);
 
   // Structured Logging for incoming requests and performance duration
-  app.addHook("onRequest", async (req, reply) => {
+  app.addHook("onRequest", async (req, _reply) => {
     (req.raw as any).tempStartTime = performance.now();
     req.log.info(
       {
@@ -83,15 +83,9 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   // Guard is a no-op when apiKey is undefined (local dev without configuration).
   const apiKeyGuard = requireApiKey(deps.apiKey);
 
-  app.get("/health", async () => ok({ ok: true }));
-  app.get("/health/indexer", async () => {
-    const health = await svc.getIndexerHealth();
-    return ok(health);
-  });
 
   app.register(actionsRoutes(svc, apiKeyGuard));
   app.register(healthRoutes(svc));
-  app.register(actionsRoutes(svc));
   app.register(savedPoolsRoutes(savedPoolsSvc));
   app.register(internalRoutes(svc, deps.internalSecret));
   app.register(metricsRoutes(metricsSvc, apiKeyGuard));

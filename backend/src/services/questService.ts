@@ -4,6 +4,8 @@
  * Computes quest metrics from action history and derives progress state.
  */
 
+import type { PrismaClient } from "@prisma/client";
+
 /**
  * Aggregated quest evaluation metrics for a wallet.
  */
@@ -43,7 +45,18 @@ export interface QuestServiceDeps {
 }
 
 export class QuestService {
-  constructor(private deps: QuestServiceDeps) {}
+  constructor(private deps: QuestServiceDeps | PrismaClient) {}
+
+  private async getActions(walletAddress: string): Promise<any[]> {
+    if ("getActions" in this.deps) {
+      return this.deps.getActions(walletAddress);
+    }
+
+    return this.deps.actionLedger.findMany({
+      where: { walletAddress },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }]
+    }) as Promise<any[]>;
+  }
 
   /**
    * Computes aggregate metrics for a wallet across deposit, withdrawal, and claim actions.
@@ -52,7 +65,7 @@ export class QuestService {
    * @returns Quest metrics summary
    */
   async computeMetrics(walletAddress: string): Promise<QuestMetrics> {
-    const actions = await this.deps.getActions(walletAddress);
+    const actions = await this.getActions(walletAddress);
     const confirmed = actions.filter((a) => (a.status ?? "") === "confirmed");
 
     const totalDeposits = confirmed
@@ -119,7 +132,7 @@ export class QuestService {
    * @param limit - Maximum number of wallets to consider
    * @returns Count of wallets evaluated
    */
-  async evaluateRecent(since: Date, limit = 500): Promise<{ wallets: number }> {
+  async evaluateRecent(_since: Date, _limit = 500): Promise<{ wallets: number }> {
     // Placeholder: enumerate wallets from recent actions and evaluate
     return { wallets: 0 };
   }

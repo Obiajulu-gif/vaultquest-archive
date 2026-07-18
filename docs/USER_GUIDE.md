@@ -219,5 +219,5 @@ If your wallet does not connect:
 ### Need more help?
 
 - Open an issue on the [GitHub repository](https://github.com/Obiajulu-gif/vaultquest/issues)
-- Check the [FAQ section](/app/vaults) in the app for common questions
+- Check the [FAQ section](../app/app/vaults/page.jsx) in the app for common questions
 - Review the [ARCHITECTURE.md](./ARCHITECTURE.md) for technical details

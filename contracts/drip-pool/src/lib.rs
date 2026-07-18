@@ -34,10 +34,10 @@ const SIG_THRESHOLD: u32 = 2;
 #[contracttype]
 pub enum DataKey {
     Admin,
-    Admins,          // Vec<Address> — approved signers
+    Admins, // Vec<Address> — approved signers
     Pool,
     Participant(Address),
-    Proposal(u32),   // pending admin proposal
+    Proposal(u32), // pending admin proposal
 }
 
 // ── Errors ─────────────────────────────────────────────────────────────────
@@ -46,16 +46,16 @@ pub enum DataKey {
 #[repr(u32)]
 pub enum Error {
     AlreadyInitialized = 1,
-    NotInitialized     = 2,
-    AlreadyJoined      = 3,
-    NotJoined          = 4,
-    InvalidAmount      = 5,
-    Locked             = 6,   // reentrancy
-    LockupActive       = 7,   // withdrawal before lockup ends
-    Unauthorized       = 8,   // not an approved signer
-    ThresholdNotMet    = 9,   // not enough signatures
-    AlreadySigned      = 10,  // signer already approved this proposal
-    ProposalNotFound   = 11,
+    NotInitialized = 2,
+    AlreadyJoined = 3,
+    NotJoined = 4,
+    InvalidAmount = 5,
+    Locked = 6,          // reentrancy
+    LockupActive = 7,    // withdrawal before lockup ends
+    Unauthorized = 8,    // not an approved signer
+    ThresholdNotMet = 9, // not enough signatures
+    AlreadySigned = 10,  // signer already approved this proposal
+    ProposalNotFound = 11,
 }
 
 // ── Structs ────────────────────────────────────────────────────────────────
@@ -68,8 +68,8 @@ pub struct Pool {
     pub total_drips: u64,
     pub total_deposited: i128,
     pub created_at: u64,
-    pub locked: bool,         // reentrancy guard (was DataKey::Locked)
-    pub proposal_nonce: u32,  // monotonic counter (was DataKey::ProposalNonce)
+    pub locked: bool,        // reentrancy guard (was DataKey::Locked)
+    pub proposal_nonce: u32, // monotonic counter (was DataKey::ProposalNonce)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -78,7 +78,7 @@ pub struct Participant {
     pub joined_at: u64,
     pub deposited: i128,
     pub claimable: i128,
-    pub locked_until: u32, // ledger sequence
+    pub locked_until: u32,      // ledger sequence
     pub lockup_multiplier: u32, // yield boost in basis points (100 = 1x)
 }
 
@@ -148,10 +148,8 @@ impl DripPool {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Admins, &admins);
         env.storage().instance().set(&DataKey::Pool, &pool);
-        env.events().publish(
-            (symbol_short!("pool"), symbol_short!("created")),
-            admin,
-        );
+        env.events()
+            .publish((symbol_short!("pool"), symbol_short!("created")), admin);
         Ok(())
     }
 
@@ -186,7 +184,7 @@ impl DripPool {
 
         let mut updated: Vec<Address> = Vec::new(&env);
         for a in admins.iter() {
-            if a != &target {
+            if a != target {
                 updated.push_back(a);
             }
         }
@@ -323,17 +321,13 @@ impl DripPool {
         }
 
         let key = DataKey::Participant(who.clone());
-        let mut p: Participant = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(Participant {
-                joined_at: env.ledger().timestamp(),
-                deposited: 0,
-                claimable: 0,
-                locked_until: env.ledger().sequence() + LOCKUP_LEDGERS,
-                lockup_multiplier: 100,
-            });
+        let mut p: Participant = env.storage().persistent().get(&key).unwrap_or(Participant {
+            joined_at: env.ledger().timestamp(),
+            deposited: 0,
+            claimable: 0,
+            locked_until: env.ledger().sequence() + LOCKUP_LEDGERS,
+            lockup_multiplier: 100,
+        });
 
         p.deposited += amount;
         p.claimable += amount;

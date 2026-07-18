@@ -1,11 +1,11 @@
-import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
+import type { FastifyPluginAsync } from "fastify";
 import { getPrometheusMetrics } from "../services/prometheusMetrics.js";
 
 /**
  * Fastify plugin that automatically records HTTP metrics for Prometheus
  */
 const prometheusPlugin: FastifyPluginAsync = async (app) => {
-  const metrics = getPrometheusMetrics(app.log);
+  const metrics = getPrometheusMetrics(app.log as any);
 
   // Record request start time and route
   app.addHook("onRequest", async (req) => {
@@ -20,7 +20,7 @@ const prometheusPlugin: FastifyPluginAsync = async (app) => {
     const duration = (performance.now() - startTime) / 1000; // Convert to seconds
 
     let method = req.method;
-    let statusCode = reply.statusCode;
+    const statusCode = reply.statusCode;
 
     // Normalize method and route for better metrics
     method = method.toUpperCase();

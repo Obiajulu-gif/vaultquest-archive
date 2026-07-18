@@ -1,55 +1,60 @@
 {
-  "name": "vaultquest",
-  "version": "0.1.0",
-  "private": true,
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "build:backend": "pnpm --filter backend run build",
-    "db:setup": "pnpm --filter backend run db:setup",
-    "start": "next start",
-    "lint": "next lint",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "check:terms": "node ./scripts/check-product-terms.js",
-    "docs:validate": "node ./scripts/validate-docs.js"
-    "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui",
-    "test:e2e:headed": "playwright test --headed",
-    "check:terms": "node ./scripts/check-product-terms.js"
-  },
-  "dependencies": {
-    "@radix-ui/react-accordion": "^1.2.12",
-    "@rainbow-me/rainbowkit": "^2.2.1",
-    "@tanstack/react-query": "^5.62.8",
-    "@vaultquest/stellar-wallet-connect": "workspace:*",
-    "canvas-confetti": "^1.9.4",
-    "framer-motion": "^11.15.0",
-    "lucide-react": "^0.460.0",
-    "next": "^14.2.21",
-    "next-i18next": "^15.4.1",
-    "next-themes": "^0.4.4",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-i18next": "^15.4.1",
-    "react-window": "^2.2.7",
-    "recharts": "^3.8.1",
-    "viem": "^2.21.54",
-    "wagmi": "^2.14.6"
-  },
-  "devDependencies": {
-    "@playwright/test": "^1.60.0",
-    "@testing-library/jest-dom": "^6.6.3",
-    "@testing-library/react": "^14.3.1",
-    "@testing-library/user-event": "^14.5.2",
-    "autoprefixer": "^10.4.20",
-    "axe-playwright": "^2.2.2",
-    "eslint": "^8.57.1",
-    "eslint-config-next": "^14.2.21",
-    "jsdom": "^25.0.1",
-    "postcss": "^8.4.49",
-    "tailwindcss": "^3.4.17",
-    "vitest": "^2.1.8"
-  },
-  "packageManager": "pnpm@10.28.2+sha512.41872f037ad22f7348e3b1debbaf7e867cfd448f2726d9cf74c08f19507c31d2c8e7a11525b983febc2df640b5438dee6023ebb1f84ed43cc2d654d2bc326264"
+    "name":  "vaultquest",
+    "version":  "0.1.0",
+    "private":  true,
+    "scripts":  {
+                    "dev":  "next dev",
+                    "build":  "next build",
+                    "build:backend":  "pnpm --filter backend run build",
+                    "db:setup":  "pnpm --filter backend run db:setup",
+                    "start":  "next start",
+                    "lint":  "next lint",
+                    "test":  "vitest run",
+                    "test:watch":  "vitest",
+                    "check:terms":  "node ./scripts/check-product-terms.js",
+                    "docs:validate":  "node ./scripts/validate-docs.js",
+                    "test:e2e":  "playwright test",
+                    "test:e2e:ui":  "playwright test --ui",
+                    "test:e2e:headed":  "playwright test --headed"
+                },
+    "dependencies":  {
+                         "@radix-ui/react-accordion":  "^1.2.12",
+                         "@rainbow-me/rainbowkit":  "^2.2.1",
+                         "@tanstack/react-query":  "^5.62.8",
+                         "@vaultquest/stellar-wallet-connect":  "workspace:*",
+                         "canvas-confetti":  "^1.9.4",
+                         "framer-motion":  "^11.15.0",
+                         "lucide-react":  "^0.460.0",
+                         "next":  "^14.2.21",
+                         "next-i18next":  "^15.4.1",
+                         "next-themes":  "^0.4.4",
+                         "react":  "^18.3.1",
+                         "react-dom":  "^18.3.1",
+                         "react-hot-toast":  "^2.6.0",
+                         "react-i18next":  "^15.4.1",
+                         "react-window":  "^2.2.7",
+                         "recharts":  "^3.8.1",
+                         "viem":  "^2.21.54",
+                         "wagmi":  "^2.14.6"
+                     },
+    "devDependencies":  {
+                            "@playwright/test":  "^1.60.0",
+                            "@testing-library/jest-dom":  "^6.6.3",
+                            "@testing-library/react":  "^14.3.1",
+                            "@testing-library/user-event":  "^14.5.2",
+                            "autoprefixer":  "^10.4.20",
+                            "axe-playwright":  "^2.2.2",
+                            "eslint":  "^8.57.1",
+                            "eslint-config-next":  "^14.2.21",
+                            "jsdom":  "^25.0.1",
+                            "postcss":  "^8.4.49",
+                            "tailwindcss":  "^3.4.17",
+                            "vitest":  "^2.1.8"
+                        },
+    "packageManager":  "pnpm@10.28.2",
+    "pnpm":  {
+                 "overrides":  {
+                                   "protobufjs":  "^7.6.5"
+                               }
+             }
 }

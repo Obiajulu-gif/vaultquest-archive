@@ -226,7 +226,7 @@ export class StellarIndexer {
 export class SorobanRpcEventSource implements HorizonEventSource {
   constructor(private options: SorobanRpcEventSourceOptions) {}
 
-  async fetchEvents(opts: { cursor: string | null; limit: number }): Promise<RawHorizonEvent[]> {
+  async fetchEvents(_opts: { cursor: string | null; limit: number }): Promise<RawHorizonEvent[]> {
     // TODO: replace with real Soroban RPC call via @stellar/stellar-sdk
     // e.g. await server.getEvents({ startLedger, filters, limit })
     return [];

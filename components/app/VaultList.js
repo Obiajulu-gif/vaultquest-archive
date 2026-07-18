@@ -87,6 +87,10 @@ export default function VaultList({ vaults = [], suggestions = null, onSuggestio
               aria-label={`View ${vault.name} details`}
               className="vq-btn-ghost mt-6 w-full group-hover:bg-vault-accent group-hover:text-white group-hover:border-vault-accent transition-all"
             >
+              View Vault
+              <ArrowUpRight size={16} className="ml-1 inline" />
+            </button>
+
             <div className="mt-4 rounded-xl border border-vault-border bg-vault-surface/30 p-3">
               <p className="text-[10px] font-bold uppercase tracking-wider text-vault-muted">
                 Participants

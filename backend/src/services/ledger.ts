@@ -213,7 +213,7 @@ export class LedgerService {
     };
 
     const rows = await this.prisma.actionLedger.findMany({
-      where,
+      where: where as Prisma.ActionLedgerWhereInput,
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: limit + 1,
       ...(cursor != null && { cursor: { id: cursor }, skip: 1 })

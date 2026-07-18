@@ -1,0 +1,25 @@
+{
+  "namespace": "vaultquest",
+  "version": "v1",
+  "topics": ["namespace", "version", "event_name", "scope"],
+  "events": {
+    "pool_created": ["pool_id", "creator", "asset", "target_amount", "opens_at", "locks_at", "draws_at", "admin"],
+    "pool_joined": ["pool_id", "wallet", "amount", "shares", "participant_count"],
+    "drip_deposited": ["pool_id", "wallet", "amount", "shares_delta", "total_deposited", "tvl"],
+    "reward_claimed": ["pool_id", "wallet", "amount", "asset", "cycle"],
+    "withdrawn": ["pool_id", "wallet", "amount", "shares_burned", "remaining_shares"],
+    "payout_selected": ["pool_id", "winner", "amount", "asset", "cycle"],
+    "paused": ["scope", "admin", "reason", "paused_at"],
+    "recovered": ["scope", "admin", "recovered_at"],
+    "config_changed": ["scope", "admin", "key", "new_value", "effective_at"]
+  },
+  "optionalFields": {
+    "pool_created": ["idempotency_key"],
+    "pool_joined": ["idempotency_key"],
+    "drip_deposited": ["idempotency_key"],
+    "reward_claimed": ["idempotency_key"],
+    "withdrawn": ["idempotency_key"],
+    "payout_selected": ["randomness_ref"],
+    "config_changed": ["old_value"]
+  }
+}

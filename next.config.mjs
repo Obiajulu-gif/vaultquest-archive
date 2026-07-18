@@ -1,11 +1,22 @@
 import path from "path";
+import { createRequire } from "module";
 
 /** @type {import('next').NextConfig} */
-const { i18n } = require('./next-i18next.config.js');
+const require = createRequire(import.meta.url);
+const { i18n } = require("./next-i18next.config.js");
+const nextI18n = {
+  defaultLocale: i18n.defaultLocale,
+  locales: i18n.locales,
+};
 
 const nextConfig = {
   reactStrictMode: true,
   transpilePackages: ["@vaultquest/stellar-wallet-connect"],
+  i18n: nextI18n,
+  images: {
+    formats: ["image/avif", "image/webp"],
+    remotePatterns: [],
+  },
   webpack(config) {
     config.resolve.alias = {
       ...config.resolve.alias,
@@ -14,10 +25,6 @@ const nextConfig = {
       ),
     };
     return config;
-  i18n,
-  images: {
-    formats: ['image/avif', 'image/webp'],
-    remotePatterns: [],
   },
 };
 

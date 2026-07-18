@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { X, Loader2, CheckCircle2, AlertTriangle, ArrowLeft } from "lucide-react";
 import GasPrioritySelector from "@/components/app/GasPrioritySelector";
-import { toast } from "react-hot-toast";
 
 function formatToken(value, token) {
   return `${Number(value || 0).toFixed(token === "XLM" ? 6 : 4)} ${token}`;
@@ -69,20 +68,6 @@ export default function DepositModal({ isOpen, onClose }) {
     setStep("loading");
     setTimeout(() => {
       setStep("success");
-      toast.success(
-        <div className="flex flex-col gap-1">
-          <span>Deposit of {amount} USDC confirmed!</span>
-          <a 
-            href={`https://etherscan.io/tx/0x7d3a95bfce31a20df949e29ae8f9`} 
-            target="_blank" 
-            rel="noreferrer" 
-            className="text-xs underline text-emerald-500 hover:text-emerald-400"
-          >
-            View transaction
-          </a>
-        </div>,
-        { duration: 5000 }
-      );
     }, 1800);
   };
 

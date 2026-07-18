@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useConnectModal } from "@rainbow-me/rainbowkit";
 import { useAccount } from "wagmi";
 import { PiggyBank, RotateCcw, Trophy, TrendingUp, Wallet } from "lucide-react";
@@ -148,9 +148,6 @@ function EmptyAccount() {
 
 export default function AccountPage() {
   const { isConnected: wagmiConnected } = useAccount();
-  const isMockConnected =
-    typeof window !== "undefined" &&
-    new URLSearchParams(window.location.search).get("mockConnected") === "true";
   const { openConnectModal } = useConnectModal();
   const [isMockConnected, setIsMockConnected] = useState(false);
   const [wasDisconnected, setWasDisconnected] = useState(false);

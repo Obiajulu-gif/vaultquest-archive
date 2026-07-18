@@ -110,7 +110,7 @@ export class EscrowService {
    * Returns immediately (idempotent) if the vault already has a terminal state.
    */
   async settleVault(input: SettleVaultInput): Promise<SettleVaultOutcome> {
-    const { prisma, horizon, signer, assembler, networkPassphrase } = this.deps;
+    const { prisma, horizon, signer, assembler } = this.deps;
 
     // ── Idempotency check ─────────────────────────────────────────────────
     const existing = await prisma.vaultSettlement.findUnique({

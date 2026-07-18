@@ -1,6 +1,6 @@
 // Stellar wallet configuration and types
 
-import { getFrontendEnv } from "../core/env.js";
+import { getFrontendEnv } from "../core/env";
 
 export type WalletType = "xbull" | "albedo" | "freighter" | "rabet" | "ledger";
 

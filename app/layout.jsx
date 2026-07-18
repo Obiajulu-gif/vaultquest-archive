@@ -1,6 +1,5 @@
 import "@/styles/globals.css";
 import Providers from "@/components/providers/Providers";
-import { Toaster } from "react-hot-toast";
 
 export const metadata = {
   title: "VaultQuest — No-loss prize savings",
@@ -19,7 +18,6 @@ export default function RootLayout({ children }) {
       </head>
       <body>
         <Providers>{children}</Providers>
-        <Toaster position="bottom-right" />
       </body>
     </html>
   );

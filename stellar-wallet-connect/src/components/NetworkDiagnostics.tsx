@@ -8,10 +8,10 @@ import {
   Settings,
   AlertCircle
 } from "lucide-react";
-import { connectedPublicKey, connectedNetwork, isNetworkMismatch } from "../core/store.js";
-import { EXPECTED_NETWORK, STELLAR_NETWORKS, type NetworkType } from "../lib/wallets.js";
-import { getFrontendEnv } from "../core/env.js";
-import { resolveHorizonUrl } from "../core/horizonConfig.js";
+import { connectedPublicKey, connectedNetwork, isNetworkMismatch } from "../core/store";
+import { EXPECTED_NETWORK, STELLAR_NETWORKS, type NetworkType } from "../lib/wallets";
+import { getFrontendEnv } from "../core/env";
+import { resolveHorizonUrl } from "../core/horizonConfig";
 
 export const NetworkDiagnostics: FC = () => {
   const publicKey = useStore(connectedPublicKey);
@@ -48,11 +48,11 @@ export const NetworkDiagnostics: FC = () => {
 
 #### Configuration Info:
 - **Drip Pool Contract ID**: ${env.NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID || "Not Set"}
-- **Trustless Work Escrow Contract ID**: ${env.NEXT_PUBLIC_TRUSTLESS_WORK_ESCROW_CONTRACT_ID || "Not Set"}
+- **Escrow Contract ID**: ${env.NEXT_PUBLIC_TRUSTLESS_WORK_ESCROW_CONTRACT_ID || "Not Set"}
 - **Soroban RPC URL**: ${env.NEXT_PUBLIC_SOROBAN_RPC_URL || "Not Set"}
 - **Horizon URL**: ${activeHorizonUrl || env.NEXT_PUBLIC_HORIZON_URL || "Not Set"}
-- **Trustless Work API Base URL**: ${env.TRUSTLESS_WORK_API_BASE_URL || "Not Set"}
-- **Trustless Work API Key**: ${env.TRUSTLESS_WORK_API_KEY ? "[HIDDEN / PRESENT]" : "[NOT SET]"}
+- **Escrow Service API Base URL**: ${env.TRUSTLESS_WORK_API_BASE_URL || "Not Set"}
+- **Escrow Service API Key**: ${env.TRUSTLESS_WORK_API_KEY ? "[HIDDEN / PRESENT]" : "[NOT SET]"}
 - **Environment Status**: ${envError ? `Degraded (${envError})` : "Healthy"}
 `;
 
@@ -205,14 +205,14 @@ export const NetworkDiagnostics: FC = () => {
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-gray-400">Trustless Work API Base URL:</dt>
+                  <dt className="text-gray-400">Escrow Service API Base URL:</dt>
                   <dd className="font-mono text-gray-200 break-all bg-black/30 p-1 rounded mt-0.5 select-all">
                     {env.TRUSTLESS_WORK_API_BASE_URL || "Not Set"}
                   </dd>
                 </div>
                 {env.NEXT_PUBLIC_TRUSTLESS_WORK_ESCROW_CONTRACT_ID && (
                   <div className="sm:col-span-2">
-                    <dt className="text-gray-400">Trustless Work Escrow Contract ID:</dt>
+                    <dt className="text-gray-400">Escrow Contract ID:</dt>
                     <dd className="font-mono text-gray-200 break-all bg-black/30 p-1 rounded mt-0.5 select-all text-xs">
                       {env.NEXT_PUBLIC_TRUSTLESS_WORK_ESCROW_CONTRACT_ID}
                     </dd>

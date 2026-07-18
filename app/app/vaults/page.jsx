@@ -97,7 +97,7 @@ export default function VaultsPage() {
 
       return true;
     });
-  }, [filters]);
+  }, [filters, reviewedVaults]);
 
   const clearFilters = () => setFilters(INITIAL_FILTERS);
 
@@ -134,14 +134,7 @@ export default function VaultsPage() {
             <h1 className="text-3xl font-bold text-vault-text">Vaults</h1>
             <p className="mt-3 max-w-2xl text-vault-muted">
               Manage your pool positions and drip deposits. Review live fee tiers
-              before you submit a transaction. Learn more about our{" "}
-              <Link
-                href="/app/vaults/strategies"
-                className="text-vault-accent underline hover:text-vault-accent/80 font-medium"
-              >
-                Vault Strategies
-              </Link>
-              .
+              before you submit a transaction.
             </p>
           </div>
           <Link href="/app/vaults/archive" className="vq-btn-ghost self-start">

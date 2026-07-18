@@ -6,7 +6,7 @@ import { getPrometheusMetrics } from "../services/prometheusMetrics.js";
  * Exposes metrics in the OpenMetrics text format
  */
 export const prometheusRoutes: FastifyPluginAsync = async (app) => {
-  const metrics = getPrometheusMetrics(app.log);
+  const metrics = getPrometheusMetrics(app.log as any);
 
   app.get(
     "/metrics",

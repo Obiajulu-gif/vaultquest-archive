@@ -11,7 +11,7 @@
     "build": "prisma generate && tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "db:backup": "tsx src/scripts/backup.ts",
-    "lint": "eslint \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "lint": "eslint \"src/**/*.ts\" --ignore-pattern \"**/*.test.ts\" --ignore-pattern \"**/*.spec.ts\"",
     "test": "vitest run",
     "test:watch": "vitest",
     "prisma:generate": "prisma generate",
@@ -20,7 +20,7 @@
     "db:setup": "prisma migrate dev && prisma db seed"
   },
   "dependencies": {
-    "@fastify/rate-limit": "^11.0.0",
+    "@fastify/rate-limit": "^9.0.0",
     "@prisma/client": "^5.22.0",
     "fastify": "^4.28.1",
     "fastify-plugin": "^4.5.1",
@@ -44,7 +44,7 @@
     "testcontainers": "^10.13.2",
     "tsx": "^4.19.0",
     "typescript": "^5.5.4",
-    "vitest": "^2.1.1"
+    "vitest": "^3.2.6"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

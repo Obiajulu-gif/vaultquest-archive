@@ -135,5 +135,5 @@ npx prisma migrate reset
 ## References
 
 - [Prisma Migrations Docs](https://www.prisma.io/docs/concepts/components/prisma-migrate)
-- [VaultQuest Architecture](../docs/ARCHITECTURE.md)
-- [API Responses Documentation](../docs/API_RESPONSES.md)
+- [VaultQuest Architecture](../../docs/ARCHITECTURE.md)
+- [API Responses Documentation](../../docs/API_RESPONSES.md)

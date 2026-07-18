@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import Link from "next/link";
 import { ArrowUpDown, ArrowUpRight, Wallet, Info } from "lucide-react";
@@ -8,6 +8,10 @@ import VaultEmptyState from "@/components/app/VaultEmptyState";
 
 export default function VaultComparisonTable({ vaults = [], sortBy = "apy", suggestions = null, onSuggestionClick = null, onClearFilters = null }) {
   const [sortConfig, setSortConfig] = useState({ key: sortBy, direction: "desc" });
+
+  useEffect(() => {
+    setSortConfig({ key: sortBy, direction: "desc" });
+  }, [sortBy]);
 
   const sortedVaults = [...vaults].sort((a, b) => {
     let keyA, keyB;

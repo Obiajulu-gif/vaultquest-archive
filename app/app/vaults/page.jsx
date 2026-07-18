@@ -16,6 +16,7 @@ import VaultRewardsExplanationModal from "@/components/app/VaultRewardsExplanati
 import MobileVaultActions from "@/components/app/MobileVaultActions";
 import VaultRetryQueue from "@/components/app/VaultRetryQueue";
 import { useVaultDataReview } from "@/hooks/useVaultDataReview";
+import { filterVaults } from "@/lib/vault-filters";
 import { Archive, LayoutGrid, Table } from "lucide-react";
 
 const INITIAL_FILTERS = {
@@ -37,67 +38,10 @@ export default function VaultsPage() {
   const { vaults: reviewedVaults, warnings: dataWarnings } =
     useVaultDataReview(MOCK_VAULTS);
 
-  const filteredVaults = useMemo(() => {
-    return reviewedVaults.filter((vault) => {
-      // Search (by name, asset, or strategy)
-      if (filters.search) {
-        const search = filters.search.toLowerCase();
-        if (
-          !vault.name.toLowerCase().includes(search) &&
-          !vault.asset.toLowerCase().includes(search) &&
-          !vault.strategy.toLowerCase().includes(search)
-        ) {
-          return false;
-        }
-      }
-
-      // Networks
-      if (
-        filters.networks.length > 0 &&
-        !filters.networks.includes(vault.network)
-      ) {
-        return false;
-      }
-
-      // APY
-      if (vault.apy < filters.minApy) {
-        return false;
-      }
-
-      // TVL (in millions)
-      if (vault.tvl / 1000000 < filters.minTvl) {
-        return false;
-      }
-
-      // Lockups
-      if (filters.lockups.length > 0) {
-        const isMatch = filters.lockups.some((l) => {
-          if (l === 0) return vault.lockup === 0;
-          if (l === "short") return vault.lockup >= 1 && vault.lockup <= 14;
-          if (l === "medium") return vault.lockup >= 15 && vault.lockup <= 30;
-          if (l === "long") return vault.lockup > 30;
-          return false;
-        });
-        if (!isMatch) return false;
-      }
-
-      // Status
-      if (filters.statuses && filters.statuses.length > 0) {
-        if (!filters.statuses.includes(vault.status)) {
-          return false;
-        }
-      }
-
-      // Strategy
-      if (filters.strategies && filters.strategies.length > 0) {
-        if (!filters.strategies.includes(vault.strategy)) {
-          return false;
-        }
-      }
-
-      return true;
-    });
-  }, [filters]);
+  const filteredVaults = useMemo(
+    () => filterVaults(reviewedVaults, filters),
+    [filters, reviewedVaults],
+  );
 
   const clearFilters = () => setFilters(INITIAL_FILTERS);
 

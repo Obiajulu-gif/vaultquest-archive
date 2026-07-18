@@ -1,7 +1,7 @@
-import { connectedPublicKey, connectedNetwork, isNetworkMismatch } from "./store.js";
-import { kit } from "./kit.js";
-import { getFrontendEnv } from "./env.js";
-import { resolveHorizonUrl } from "./horizonConfig.js";
+import { connectedPublicKey, connectedNetwork, isNetworkMismatch } from "./store";
+import { kit } from "./kit";
+import { getFrontendEnv } from "./env";
+import { resolveHorizonUrl } from "./horizonConfig";
 import type { ISupportedWallet } from "@creit.tech/stellar-wallets-kit";
 import {
   EXPECTED_NETWORK,
@@ -9,8 +9,8 @@ import {
   type NetworkType,
   type WalletType,
   normalizeStellarNetwork,
-} from "../lib/wallets.js";
-import { HorizonPool } from "./horizonPool.js";
+} from "../lib/wallets";
+import { HorizonPool } from "./horizonPool";
 
 export interface WalletConnectionResult {
   address: string;

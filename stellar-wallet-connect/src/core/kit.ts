@@ -1,38 +1,38 @@
 import {
   StellarWalletsKit,
-  FreighterModule,
-  AlbedoModule,
-  xBullModule,
-  HanaModule,
-  RabetModule,
-  LobstrModule,
-  WalletNetwork,
+  Networks,
 } from "@creit.tech/stellar-wallets-kit";
+import { AlbedoModule } from "@creit.tech/stellar-wallets-kit/modules/albedo";
+import { FreighterModule } from "@creit.tech/stellar-wallets-kit/modules/freighter";
+import { HanaModule } from "@creit.tech/stellar-wallets-kit/modules/hana";
 import { LedgerModule } from "@creit.tech/stellar-wallets-kit/modules/ledger";
-import { getFrontendEnv } from "./env.js";
+import { LobstrModule } from "@creit.tech/stellar-wallets-kit/modules/lobstr";
+import { RabetModule } from "@creit.tech/stellar-wallets-kit/modules/rabet";
+import { xBullModule } from "@creit.tech/stellar-wallets-kit/modules/xbull";
+import { getFrontendEnv } from "./env";
 
 // Re-exported for the wallet layer (#rate-limits): the Horizon connection pool
 // balances on-chain reads across the nodes resolved here. The implementation
 // lives in horizonPool.ts to keep it free of the wallets-kit dependency.
-export { resolveHorizonNodes } from "./horizonPool.js";
+export { resolveHorizonNodes } from "./horizonPool";
 
-const resolveWalletNetwork = (networkPassphrase?: string): WalletNetwork => {
+const resolveWalletNetwork = (networkPassphrase?: string): Networks => {
   const env = getFrontendEnv();
   const configuredNetwork =
     networkPassphrase || env.NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE;
 
   switch (configuredNetwork) {
-    case WalletNetwork.PUBLIC:
-      return WalletNetwork.PUBLIC;
-    case WalletNetwork.FUTURENET:
-      return WalletNetwork.FUTURENET;
-    case WalletNetwork.SANDBOX:
-      return WalletNetwork.SANDBOX;
-    case WalletNetwork.STANDALONE:
-      return WalletNetwork.STANDALONE;
-    case WalletNetwork.TESTNET:
+    case Networks.PUBLIC:
+      return Networks.PUBLIC;
+    case Networks.FUTURENET:
+      return Networks.FUTURENET;
+    case Networks.SANDBOX:
+      return Networks.SANDBOX;
+    case Networks.STANDALONE:
+      return Networks.STANDALONE;
+    case Networks.TESTNET:
     default:
-      return WalletNetwork.TESTNET;
+      return Networks.TESTNET;
   }
 };
 

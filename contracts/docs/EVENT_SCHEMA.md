@@ -1,84 +1,104 @@
 # VaultQuest Soroban event schema
 
-This document is the canonical event contract for pool lifecycle and user
-actions. Contract, backend, and frontend changes that add or rename fields must
-update this file in the same PR.
+This document is the canonical contract between the Drip Pool Soroban contract,
+the backend indexer, and frontend transaction reconciliation. Any intentional
+change to an event topic, payload order, or payload type must update this file,
+`EVENT_SCHEMA_V1.snapshot`, and the contract regression tests in the same pull
+request.
 
-## Envelope
+## Event identity and indexer assumptions
 
-Every event uses these topic positions:
+Soroban events are identified by the emitting contract plus their ledger,
+transaction hash, and event index. The Drip Pool contract does not include a
+separate pool identifier in event data: **the emitting contract address is the
+pool identifier**.
 
-| Topic | Value |
+Indexers should therefore persist an event identity equivalent to:
+
+```text
+contract_id:ledger:tx_hash:event_index
+```
+
+Reprocessing must upsert by that identity. Action reconciliation should also
+retain the transaction hash and the backend action ledger's idempotency key when
+one exists. The idempotency key is backend metadata and is not currently emitted
+by the contract.
+
+## Version 1 envelope
+
+Version 1 uses two ordered topics:
+
+| Topic | Meaning |
 |---|---|
-| `0` | `"vaultquest"` |
-| `1` | schema version, currently `"v1"` |
-| `2` | event name |
-| `3` | pool id when available, otherwise admin/config scope |
+| `0` | namespace, currently `pool` |
+| `1` | event action |
 
-The payload is a Soroban map. Field names below are snake_case in indexer JSON.
-Amounts are contract base units encoded as strings.
+Payloads are positional Soroban values. Amounts use signed `i128` contract base
+units. Changing topic order, action names, payload order, or payload types is a
+breaking schema change and requires a new snapshot/version.
 
-Indexers should identify an event by `ledger:tx_hash:event_index`. If an event
-is reprocessed, upsert by that identity. For action reconciliation, also keep
-`tx_hash` and the optional frontend `idempotency_key` from the backend action
-ledger when available.
+## Emitted lifecycle events
 
-## Required events
-
-| Event | Required for | Payload fields |
+| Schema key | Topics | Payload positions |
 |---|---|---|
-| `pool_created` | backend indexing, frontend pool list refresh | `pool_id`, `creator`, `asset`, `target_amount`, `opens_at`, `locks_at`, `draws_at`, `admin`, `idempotency_key?` |
-| `pool_joined` | backend indexing, frontend position refresh | `pool_id`, `wallet`, `amount`, `shares`, `participant_count`, `idempotency_key?` |
-| `drip_deposited` | backend indexing, frontend balance/TVL refresh | `pool_id`, `wallet`, `amount`, `shares_delta`, `total_deposited`, `tvl`, `idempotency_key?` |
-| `reward_claimed` | backend indexing, frontend reward history refresh | `pool_id`, `wallet`, `amount`, `asset`, `cycle`, `idempotency_key?` |
-| `withdrawn` | backend indexing, frontend position refresh | `pool_id`, `wallet`, `amount`, `shares_burned`, `remaining_shares`, `idempotency_key?` |
-| `payout_selected` | backend indexing, frontend winner/reward refresh | `pool_id`, `winner`, `amount`, `asset`, `cycle`, `randomness_ref?` |
-| `paused` | backend operations, frontend disabled states | `scope`, `admin`, `reason`, `paused_at` |
-| `recovered` | backend operations, frontend disabled states | `scope`, `admin`, `recovered_at` |
-| `config_changed` | backend indexing, frontend config refresh | `scope`, `admin`, `key`, `old_value?`, `new_value`, `effective_at` |
+| `pool.created` | `pool`, `created` | `0: Address admin` |
+| `pool.joined` | `pool`, `joined` | `0: Address wallet` |
+| `pool.deposit` | `pool`, `deposit` | `0: Address wallet`, `1: i128 amount`, `2: i128 total_deposited` |
+| `pool.claimed` | `pool`, `claimed` | `0: Address wallet`, `1: i128 amount` |
+| `pool.withdrawn` | `pool`, `withdrawn` | `0: Address wallet`, `1: i128 amount` |
+| `pool.payout` | `pool`, `payout` | `0: Address winner`, `1: i128 prize` |
 
-## Normalized indexer examples
+The tests decode every payload into these exact Rust types, so a removed field,
+reordered field, changed topic, or incompatible type fails the contract test
+suite.
 
-```json
-{
-  "event_id": "12345:tx_abcd:2",
-  "tx_hash": "tx_abcd",
-  "contract_id": "CD...",
-  "name": "pool_joined",
-  "version": "v1",
-  "pool_id": "pool_2026_05_week_4",
-  "payload": {
-    "wallet": "G...",
-    "amount": "10000000",
-    "shares": "10000000",
-    "participant_count": 18,
-    "idempotency_key": "8d4f4bd3-..."
-  }
-}
-```
+## Explicit non-emission behavior
 
-```json
-{
-  "event_id": "12346:tx_efgh:0",
-  "tx_hash": "tx_efgh",
-  "contract_id": "CD...",
-  "name": "config_changed",
-  "version": "v1",
-  "pool_id": null,
-  "payload": {
-    "scope": "global",
-    "admin": "G...",
-    "key": "fee_bps",
-    "old_value": "25",
-    "new_value": "30",
-    "effective_at": 1780012800
-  }
-}
-```
+The following successful admin operations currently mutate contract storage but
+do not emit an event:
 
-## Versioning
+- `add_admin`
+- `remove_admin`
+- `propose`
+- `approve`
 
-Additive optional fields may ship under the same version. Required field
-changes, renamed events, changed topic order, or changed units require a new
-schema topic such as `"v2"`. Indexers must continue accepting all supported
-versions until a migration note removes the old version from this document.
+The indexer must not infer these changes from a lifecycle event. Consumers that
+need admin history must read contract state or the backend action ledger until a
+versioned admin event is introduced.
+
+Failed invocations do not produce a durable success event. In particular,
+invalid amounts and unauthorized draw attempts are regression-tested to leave
+the event stream unchanged. Error details come from the Soroban contract error,
+not from an emitted error event.
+
+## Machine-readable snapshot
+
+The block below is intentionally duplicated in `EVENT_SCHEMA_V1.snapshot`.
+Contract tests compare both copies byte-for-byte (after trimming) before checking
+emitted events.
+
+<!-- EVENT_SCHEMA_V1_START -->
+pool.created|pool,created|Address(admin)
+pool.joined|pool,joined|Address(wallet)
+pool.deposit|pool,deposit|(Address(wallet),i128(amount),i128(total_deposited))
+pool.claimed|pool,claimed|(Address(wallet),i128(amount))
+pool.withdrawn|pool,withdrawn|(Address(wallet),i128(amount))
+pool.payout|pool,payout|(Address(winner),i128(prize))
+admin.add_admin|none|none
+admin.remove_admin|none|none
+admin.propose|none|none
+admin.approve|none|none
+error.invalid_amount|none|none
+error.unauthorized|none|none
+<!-- EVENT_SCHEMA_V1_END -->
+
+## Change policy
+
+Additive metadata cannot be appended to an existing positional payload without
+breaking decoders. Introduce a new event action or a new documented schema
+version instead. Every intentional schema change must include:
+
+1. updated contract emission code;
+2. updated regression fixtures and payload decoding tests;
+3. this document and the machine-readable snapshot;
+4. a migration note for backend/indexer and frontend consumers.

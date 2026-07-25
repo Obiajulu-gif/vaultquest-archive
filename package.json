@@ -45,7 +45,7 @@
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^14.3.1",
     "@testing-library/user-event": "^14.5.2",
-    "autoprefixer": "^10.4.20",
+    "autoprefixer": "^10.5.4",
     "axe-playwright": "^2.2.2",
     "eslint": "^8.57.1",
     "eslint-config-next": "^14.2.21",

@@ -21,7 +21,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@creit.tech/stellar-wallets-kit": "^2.2.0",
+    "@creit.tech/stellar-wallets-kit": "^2.5.0",
     "@nanostores/react": "^1.1.0",
     "lucide-react": "^0.460.0",
     "nanostores": "^1.3.0",

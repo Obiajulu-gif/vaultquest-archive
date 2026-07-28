@@ -24,6 +24,9 @@ import VaultGoalTracker from "@/components/app/VaultGoalTracker";
 import VaultRewardsExplanationModal from "@/components/app/VaultRewardsExplanationModal";
 import VaultDocsQuickLinks from "@/components/app/VaultDocsQuickLinks";
 import VaultLeaderboardPlaceholder from "@/components/app/VaultLeaderboardPlaceholder";
+import DashboardWelcomeCard from "@/components/app/DashboardWelcomeCard";
+import ActivitySummaryWidget from "@/components/app/ActivitySummaryWidget";
+import AccountStatusWidget from "@/components/app/AccountStatusWidget";
 
 function DashboardSkeleton() {
   return (
@@ -134,6 +137,9 @@ export default function AppDashboardPage() {
         drawDate={new Date().toISOString()}
       />
 
+      {/* Welcome Card */}
+      <DashboardWelcomeCard />
+
       {/* Hero Header */}
       <header className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between border-b border-vault-border/20 pb-8">
         <div className="space-y-4 max-w-2xl">
@@ -160,6 +166,7 @@ export default function AppDashboardPage() {
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">
         {/* Left Column */}
         <main className="space-y-8 lg:col-span-8">
+          <ActivitySummaryWidget />
           <OnboardingChecklist walletConnected={isConnected} hasJoinedVault={hasJoinedVault} />
           {isConnected && !hasJoinedVault && (
             <VaultEmptyState variant="dashboard" />
@@ -180,6 +187,8 @@ export default function AppDashboardPage() {
             </h3>
             <PublicStatsBar layout="vertical" />
           </div>
+
+          <AccountStatusWidget />
 
           {isConnected && (
             <>

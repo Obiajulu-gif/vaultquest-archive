@@ -1072,3 +1072,73 @@ fn participant_v2_fields_present() {
     // V1 field that should NOT be present
     // The following would fail to compile: savings.claimable
 }
+
+// ── #439: Minimum participant threshold ────────────────────────────────────
+
+#[test]
+fn deposit_fails_if_activation_threshold_not_met() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let alice = Address::generate(&env);
+    client.join(&alice);
+
+    // Set threshold: requires 5 participants after sequence 100
+    let start_time = env.ledger().timestamp() + 100;
+    let pid = client.propose(&admin, &ProposalAction::SetActivationConfig(start_time, 5));
+    let signer2 = Address::generate(&env);
+    client.seed_admin(&admin, &signer2);
+    client.approve(&signer2, &pid);
+
+    env.ledger().set_timestamp(start_time + 10);
+    
+    assert_eq!(
+        client.try_deposit(&alice, &100),
+        Err(Ok(Error::ThresholdNotMetForActivation))
+    );
+}
+
+#[test]
+fn early_withdrawal_allowed_if_activation_fails() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    // deposit before start time
+    client.deposit(&alice, &100);
+
+    let start_time = env.ledger().timestamp() + 100;
+    let pid = client.propose(&admin, &ProposalAction::SetActivationConfig(start_time, 5));
+    let signer2 = Address::generate(&env);
+    client.seed_admin(&admin, &signer2);
+    client.approve(&signer2, &pid);
+
+    env.ledger().set_timestamp(start_time + 10);
+
+    // normally locked, but threshold failed, so withdraw succeeds!
+    assert_eq!(client.withdraw(&alice), 100);
+}
+
+// ── #442: Emergency withdrawal semantics ───────────────────────────────────
+
+#[test]
+fn emergency_withdrawal_allows_early_withdraw_and_blocks_deposit() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    client.deposit(&alice, &500);
+
+    let pid = client.propose(&admin, &ProposalAction::SetEmergencyMode(true));
+    let signer2 = Address::generate(&env);
+    client.seed_admin(&admin, &signer2);
+    client.approve(&signer2, &pid);
+
+    // deposit blocked
+    assert_eq!(
+        client.try_deposit(&alice, &100),
+        Err(Ok(Error::EmergencyModeActive))
+    );
+
+    // early withdraw allowed
+    assert_eq!(client.withdraw(&alice), 500);
+}

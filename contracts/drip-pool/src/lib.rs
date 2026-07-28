@@ -66,6 +66,8 @@ pub enum DataKey {
     ParticipantV1(Address),     // legacy V1 participant storage (migration source)
     Proposal(u32), // pending admin proposal
     Token,        // Address — accepted Stellar Asset Contract address (#376)
+    ActivationConfig,
+    EmergencyMode,
 }
 
 // ── Errors ─────────────────────────────────────────────────────────────────
@@ -89,9 +91,18 @@ pub enum Error {
     TokenNotConfigured = 14, // no accepted asset configured (#376)
     AssetMismatch = 15,      // caller sent a different asset than the configured one (#376)
     TransferFailed = 16,     // token transfer failed (#376)
+    NotActive = 17,
+    EmergencyModeActive = 18,
+    ThresholdNotMetForActivation = 19,
 }
 
 // ── Structs ────────────────────────────────────────────────────────────────
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct ActivationConfig {
+    pub start_time: u64,
+    pub min_participants: u32,
+}
 #[derive(Clone, Debug, PartialEq)]
 #[contracttype]
 pub struct Pool {
@@ -145,6 +156,8 @@ pub enum ProposalAction {
     AddAdmin(Address),
     RemoveAdmin(Address),
     SetThreshold(u32), // change the approval threshold (#383)
+    SetActivationConfig(u64, u32), // start_time, min_participants
+    SetEmergencyMode(bool),
 }
 
 // ── Contract ───────────────────────────────────────────────────────────────
@@ -202,6 +215,34 @@ impl DripPool {
         env.storage()
             .persistent()
             .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
+    }
+
+    fn check_emergency_and_activation(env: &Env, pool: &Pool) -> Result<(), Error> {
+        if env.storage().instance().get(&DataKey::EmergencyMode).unwrap_or(false) {
+            return Err(Error::EmergencyModeActive);
+        }
+        if let Some(config) = env.storage().instance().get::<DataKey, ActivationConfig>(&DataKey::ActivationConfig) {
+            if env.ledger().timestamp() >= config.start_time {
+                if pool.total_drips < config.min_participants as u64 {
+                    return Err(Error::ThresholdNotMetForActivation);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn can_withdraw_early(env: &Env) -> bool {
+        if env.storage().instance().get(&DataKey::EmergencyMode).unwrap_or(false) {
+            return true;
+        }
+        if let Some(pool) = env.storage().instance().get::<DataKey, Pool>(&DataKey::Pool) {
+            if let Some(config) = env.storage().instance().get::<DataKey, ActivationConfig>(&DataKey::ActivationConfig) {
+                if env.ledger().timestamp() >= config.start_time && pool.total_drips < config.min_participants as u64 {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     // ── Participant migration helpers (#377) ─────────────────────────────
@@ -511,6 +552,16 @@ impl DripPool {
                 }
                 env.storage().instance().set(&DataKey::Threshold, &t);
             }
+            ProposalAction::SetActivationConfig(start_time, min_participants) => {
+                let config = ActivationConfig {
+                    start_time,
+                    min_participants,
+                };
+                env.storage().instance().set(&DataKey::ActivationConfig, &config);
+            }
+            ProposalAction::SetEmergencyMode(mode) => {
+                env.storage().instance().set(&DataKey::EmergencyMode, &mode);
+            }
         }
         Ok(())
     }
@@ -559,6 +610,8 @@ impl DripPool {
             .get(&DataKey::Pool)
             .ok_or(Error::NotInitialized)?;
 
+        Self::check_emergency_and_activation(&env, &old_pool)?;
+
         // Transfer tokens from caller to this contract (#376)
         let contract_addr = env.current_contract_address();
         Self::transfer_tokens(&env, &who, &contract_addr, &amount)?;
@@ -604,9 +657,13 @@ impl DripPool {
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
-        if !env.storage().instance().has(&DataKey::Pool) {
-            return Err(Error::NotInitialized);
-        }
+        let mut pool: Pool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pool)
+            .ok_or(Error::NotInitialized)?;
+            
+        Self::check_emergency_and_activation(&env, &pool)?;
 
         // Transfer tokens from caller to this contract (#376)
         let contract_addr = env.current_contract_address();
@@ -705,7 +762,7 @@ impl DripPool {
 
         let mut p = Self::load_participant(&env, &who)?;
 
-        if env.ledger().sequence() < p.locked_until {
+        if env.ledger().sequence() < p.locked_until && !Self::can_withdraw_early(&env) {
             return Err(Error::LockupActive);
         }
 

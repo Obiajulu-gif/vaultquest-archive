@@ -61,7 +61,7 @@ pub(crate) fn apply_time_locked_deposit(
 pub(crate) fn apply_withdrawal(env: &Env, who: &Address) -> Result<i128, Error> {
     let p = super::DripPool::load_participant(env, who)?;
 
-    if env.ledger().sequence() < p.locked_until {
+    if env.ledger().sequence() < p.locked_until && !super::DripPool::can_withdraw_early(env) {
         return Err(Error::LockupActive);
     }
 

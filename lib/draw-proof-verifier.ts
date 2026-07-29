@@ -63,6 +63,39 @@ async function verifySeedHash(proof: DrawProof): Promise<VerificationField> {
   return fieldFail("seed_hash", `expected ${recomputed}, got ${proof.randomness.seedHash}`);
 }
 
+/**
+ * Confirms the randomness reveal actually happened on-chain (not merely
+ * self-consistent inside the document) and that it landed at or after the
+ * committed ledger — closing the gap the document-only checks in
+ * verifyProofIntegrity can't cover on their own (#494).
+ */
+async function verifyRandomnessReveal(
+  proof: DrawProof,
+  rpc: StellarRpcClient
+): Promise<VerificationField> {
+  try {
+    const tx = await rpc.getTransaction(proof.randomness.revealTxHash);
+    if (!tx) {
+      return fieldFail("randomness_reveal", `reveal transaction ${proof.randomness.revealTxHash} not found on chain`);
+    }
+    if (!tx.successful) {
+      return fieldFail("randomness_reveal", `reveal transaction ${proof.randomness.revealTxHash} was not successful (status: ${tx.status})`);
+    }
+    if (tx.ledger < proof.randomness.commitmentLedgerSeq) {
+      return fieldFail(
+        "randomness_reveal",
+        `reveal at ledger ${tx.ledger} precedes commitment ledger ${proof.randomness.commitmentLedgerSeq}`
+      );
+    }
+    return fieldPass("randomness_reveal");
+  } catch (err) {
+    return fieldUnverified(
+      "randomness_reveal",
+      `RPC error: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
 async function verifyPayoutTransaction(
   proof: DrawProof,
   rpc: StellarRpcClient
@@ -134,14 +167,20 @@ export async function verifyDrawProofClient(
   if (rpc) {
     fields.push(await verifySnapshotLedger(proof, rpc));
     fields.push(await verifyPayoutTransaction(proof, rpc));
+    fields.push(await verifyRandomnessReveal(proof, rpc));
   } else {
     fields.push(fieldUnverified("snapshot_ledger", "No RPC client provided"));
     fields.push(fieldUnverified("payout_tx", "No RPC client provided"));
+    fields.push(fieldUnverified("randomness_reveal", "No RPC client provided"));
   }
 
+  // Randomness evidence must be independently confirmed on-chain: without an
+  // RPC client the reveal can't be checked, so the proof can never be marked
+  // fully verified in the browser from the document alone (#494).
   const passCount = fields.filter((f) => f.status === "pass").length;
   const failCount = fields.filter((f) => f.status === "fail").length;
-  const allPass = failCount === 0 && passCount >= 3;
+  const randomnessRevealVerified = fields.find((f) => f.name === "randomness_reveal")?.status === "pass";
+  const allPass = failCount === 0 && passCount >= 3 && randomnessRevealVerified;
 
   return {
     verified: allPass,

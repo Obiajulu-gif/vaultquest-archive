@@ -7,6 +7,7 @@ import { BackupService } from "./services/backupService.js";
 import { NotificationService } from "./services/notificationService.js";
 import type { StellarIndexer } from "./services/stellarIndexer.js";
 import { pingDatabase } from "./db.js";
+import { LedgerService } from "./services/ledger.js";
 
 export function startReconcilerCron(opts: {
   prisma: PrismaClient;
@@ -62,6 +63,7 @@ export function startQuestCron(opts: {
 export function startIndexerCron(opts: {
   prisma: PrismaClient;
   indexer: StellarIndexer;
+  ledger: LedgerService;
   logger: Logger;
   schedule?: string;
 }): cron.ScheduledTask {
@@ -74,8 +76,28 @@ export function startIndexerCron(opts: {
       }
       const result = await opts.indexer.tick();
       opts.logger.info({ result }, "indexer tick complete");
+
+      // Persist cursor/ledger progress so a restart resumes exactly where the
+      // last successful tick left off instead of replaying or skipping events.
+      if (result.latestLedger !== null) {
+        await opts.ledger.updateIndexerCheckpoint({
+          latestLedger: result.latestLedger,
+          lastProcessedEventId: result.cursor,
+          success: true
+        });
+      }
     } catch (err) {
       opts.logger.error({ err }, "indexer tick failed");
+      try {
+        const existing = await opts.ledger.getIndexerCheckpoint();
+        await opts.ledger.updateIndexerCheckpoint({
+          latestLedger: existing?.latestLedger ?? 0,
+          success: false,
+          lastError: err instanceof Error ? err.message : String(err)
+        });
+      } catch {
+        // best-effort; don't let checkpoint persistence mask the original error
+      }
     }
   });
   return task;

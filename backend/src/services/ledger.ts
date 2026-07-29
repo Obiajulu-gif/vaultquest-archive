@@ -366,6 +366,35 @@ export class LedgerService {
     });
   }
 
+  /**
+   * Records a malformed or unrecognized event for operator triage instead of
+   * silently dropping it or letting it corrupt a projection. Idempotent on
+   * sorobanEventId so retried ticks against the same poison event don't pile up.
+   */
+  async quarantineEvent(input: {
+    sorobanEventId: string;
+    ledger: number;
+    contractId: string;
+    txHash: string;
+    rawEvent: unknown;
+    reason: string;
+  }): Promise<void> {
+    await this.prisma.poisonEvent.upsert({
+      where: { sorobanEventId: input.sorobanEventId },
+      create: {
+        sorobanEventId: input.sorobanEventId,
+        ledger: input.ledger,
+        contractId: input.contractId,
+        txHash: input.txHash,
+        rawEvent: input.rawEvent as object,
+        reason: input.reason
+      },
+      update: {
+        reason: input.reason
+      }
+    });
+  }
+
   async findByIdempotencyKey(key: string): Promise<ActionRecord | null> {
     const row = await this.prisma.actionLedger.findUnique({ where: { idempotencyKey: key } });
     return (row as unknown as ActionRecord) ?? null;

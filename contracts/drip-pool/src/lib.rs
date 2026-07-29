@@ -1,5 +1,17 @@
 #![no_std]
 
+//! # Canonical contract (#495)
+//!
+//! This is the **authoritative** contract for VaultQuest pool state: principal,
+//! rewards/yield, round/draw state, pause, and winner settlement all live here.
+//! `contracts/vault` is a deprecated, incompatible skeleton (single-admin, no
+//! rounds/lockups/claim-deadlines, no real token custody) and MUST NOT be used
+//! for new deployments — see `contracts/CONTRACT_BOUNDARY.md` for the full
+//! decision record and legacy-deployment compatibility path. The backend,
+//! wallet package, and `lib/deployment-manifest.ts` all bind to this contract
+//! via `contracts/drip-pool/canonical-spec.ts`, which is the single generated
+//! spec cross-checked by `contracts/drip-pool/tests/cross-stack-conformance.test.ts`.
+//!
 //! Drip pool contract — hardened with multi-sig admin controls (#140),
 //! reentrancy lock guards and lockup enforcement (#139).
 //!
@@ -48,8 +60,10 @@
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, vec, Address, BytesN, Env, Vec,
 };
+use vaultquest_common::YieldStrategyClient;
 
 pub mod proxy;
+pub mod strategy_adapter;
 pub mod vault;
 
 // ── Lockup duration (ledgers, ~7 days at 5 s/ledger) ──────────────────────
@@ -326,6 +340,16 @@ impl DripPool {
         token.transfer(from, to, amount);
 
         Ok(())
+    }
+    // Atomic helper that performs a token transfer and then runs a closure to update accounting.
+    fn atomic_transfer_and<F>(env: &Env, from: &Address, to: &Address, amount: i128, accounting_update: F) -> Result<(), Error>
+    where
+        F: FnOnce() -> Result<(), Error>,
+    {
+        // Perform token transfer first.
+        Self::transfer_tokens(env, from, to, &amount)?;
+        // Apply accounting changes.
+        accounting_update()
     }
 
     // ── Initialise ─────────────────────────────────────────────────────────
@@ -730,6 +754,25 @@ impl DripPool {
                 env.storage().instance().set(&DataKey::Token, &token);
                 env.events()
                     .publish((symbol_short!("pool"), symbol_short!("token_set")), token);
+                // Re-validate at execution; reserves may have changed since proposal (#384)
+                if amount > pool.total_deposited {
+                    return Err(Error::InvalidAction);
+                }
+                // Perform atomic token transfer from contract to the bound recipient.
+                let contract_addr = env.current_contract_address();
+                Self::atomic_transfer_and(
+                    &env,
+                    &contract_addr,
+                    &recipient,
+                    amount,
+                    || {
+                        // Update free-reserve bucket only (total_deposited reflects locked principal).
+                        // We decrement total_deposited to reflect the escrow payout.
+                        pool.total_deposited = pool.total_deposited.saturating_sub(amount);
+                        env.storage().instance().set(&DataKey::Pool, &pool);
+                        Ok(())
+                    },
+                )?;
             }
             ProposalAction::SetThreshold(t) => {
                 let admins = Self::get_admins(env);
@@ -768,8 +811,28 @@ impl DripPool {
                 env.storage().instance().set(&DataKey::Pool, &pool);
                 env.events().publish(
                     (symbol_short!("emergency"), symbol_short!("recap")),
+                // Transfer tokens from the caller (funder) into the contract.
+                let contract_addr = env.current_contract_address();
+                Self::atomic_transfer_and(
+                    &env,
+                    &caller,
+                    &contract_addr,
                     amount,
-                );
+                    || {
+                        let mut pool: Pool = env
+                            .storage()
+                            .instance()
+                            .get(&DataKey::Pool)
+                            .ok_or(Error::NotInitialized)?;
+                        pool.emergency_assets = pool.emergency_assets.saturating_add(amount);
+                        env.storage().instance().set(&DataKey::Pool, &pool);
+                        env.events().publish(
+                            (symbol_short!("emergency"), symbol_short!("recap")),
+                            amount,
+                        );
+                        Ok(())
+                    },
+                )?;
             }
             ProposalAction::ResumeNormal => {
                 let mut pool: Pool = env
@@ -1140,18 +1203,22 @@ impl DripPool {
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
-        let mut pool: Pool = env
-            .storage()
-            .instance()
-            .get(&DataKey::Pool)
-            .ok_or(Error::NotInitialized)?;
-        if pool.is_emergency {
-            return Err(Error::InEmergency);
-        }
-        pool.distributable_yield += amount;
-        env.storage().instance().set(&DataKey::Pool, &pool);
-        Self::bump_instance(&env);
-        Ok(())
+        // Transfer tokens from caller to this contract, then update accounting atomically.
+        let self_addr = env.current_contract_address();
+        Self::atomic_transfer_and(&env, &caller, &self_addr, amount, || {
+            let mut pool: Pool = env
+                .storage()
+                .instance()
+                .get(&DataKey::Pool)
+                .ok_or(Error::NotInitialized)?;
+            if pool.is_emergency {
+                return Err(Error::InEmergency);
+            }
+            pool.distributable_yield += amount;
+            env.storage().instance().set(&DataKey::Pool, &pool);
+            Self::bump_instance(&env);
+            Ok(())
+        })
     }
 
     /// Admin credits yield from the distributable pool to a specific participant.
@@ -1186,6 +1253,39 @@ impl DripPool {
         Self::save_participant(&env, &who, &p);
         Self::bump_instance(&env);
         Ok(())
+    }
+
+    // ── Yield strategy (#496) ───────────────────────────────────────────────
+    // See `strategy_adapter` module docs for why `withdraw`/`withdraw_locked`
+    // deliberately never call into the strategy.
+
+    /// Governed: bind a yield strategy after a capability/version check.
+    pub fn set_strategy(env: Env, caller: Address, strategy: Address) -> Result<(), Error> {
+        strategy_adapter::set_strategy(&env, &caller, &strategy)
+    }
+
+    /// Governed: deploy idle principal into the configured strategy.
+    pub fn deploy_to_strategy(env: Env, caller: Address, amount: i128) -> Result<(), Error> {
+        strategy_adapter::deploy_to_strategy(&env, &caller, amount)
+    }
+
+    /// Governed: recall up to `amount` of principal from the strategy.
+    /// Returns the amount actually recalled (may be partial).
+    pub fn recall_from_strategy(env: Env, caller: Address, amount: i128) -> Result<i128, Error> {
+        strategy_adapter::recall_from_strategy(&env, &caller, amount)
+    }
+
+    /// Governed: reconcile the strategy's real balance, crediting realized
+    /// yield to `distributable_yield` and absorbing realized loss against
+    /// `principal_in_strategy`. Returns (realized_yield, realized_loss).
+    pub fn harvest_strategy(env: Env, caller: Address) -> Result<(i128, i128), Error> {
+        strategy_adapter::harvest_strategy(&env, &caller)
+    }
+
+    /// Governed: force-recall the strategy's entire balance regardless of
+    /// cached bookkeeping. For use when a strategy is misbehaving.
+    pub fn emergency_recall_strategy(env: Env, caller: Address) -> Result<i128, Error> {
+        strategy_adapter::emergency_recall_strategy(&env, &caller)
     }
 
     // ── TTL maintenance (#385) ─────────────────────────────────────────────

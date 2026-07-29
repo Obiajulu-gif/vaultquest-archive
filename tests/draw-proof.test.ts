@@ -11,6 +11,7 @@ import {
   verifyProofIntegrity,
   assembleDrawProof,
   type DrawProof,
+  type DrawProofInput,
   type ParticipantEntry,
   type TicketWeight,
 } from "@/lib/draw-proof";
@@ -27,6 +28,32 @@ const WEIGHTS: TicketWeight[] = [
   { address: "addr-c", weight: "1000000" },
 ];
 
+/** Builds a valid DrawProofInput with a real commit(seed) = sha256(seed) binding. */
+async function makeInput(overrides: Partial<DrawProofInput> = {}): Promise<DrawProofInput> {
+  const seed = overrides.randomnessSeed ?? "seed-value";
+  const commitment = await computeHash(seed);
+  return {
+    roundId: 1,
+    contractId: "C123",
+    participants: PARTICIPANTS,
+    poolState: { admin: "addr-admin", total_deposited: "3500000" },
+    randomnessSource: "soroban_prng",
+    randomnessSeed: seed,
+    randomnessCommitment: commitment,
+    commitmentLedgerSeq: 999,
+    revealTxHash: "reveal_tx",
+    drawnAtLedger: 1000,
+    winnerAddress: "addr-a",
+    payoutTxHash: "tx_abc",
+    payoutLedgerSeq: 1001,
+    payoutAmount: "500000",
+    payoutAsset: "USDC",
+    payoutConfirmed: true,
+    contractSpecHash: "spec_v1",
+    ...overrides,
+  };
+}
+
 function makeProof(overrides: Partial<DrawProof> = {}): DrawProof {
   return {
     version: "1.0.0",
@@ -42,13 +69,16 @@ function makeProof(overrides: Partial<DrawProof> = {}): DrawProof {
       poolHash: "hash_pool",
     },
     randomness: {
-      source: "deterministic_placeholder",
+      source: "soroban_prng",
       seed: "test-seed-123",
       seedHash: "hash_seed",
+      commitment: "hash_commitment",
+      commitmentLedgerSeq: 999,
+      revealTxHash: "reveal_tx_123",
       drawnAtLedger: 1000,
     },
     winnerSelection: {
-      method: "deterministic_placeholder",
+      method: "weighted_random",
       ticketWeightsHash: "hash_weights",
       winnerAddress: "addr-a",
       winnerWeight: "2000000",
@@ -192,72 +222,52 @@ describe("computePoolHash", () => {
 
 describe("computeWinnerProofHash", () => {
   it("produces deterministic hash", async () => {
-    const a = await computeWinnerProofHash("addr-a", "seed_hash", "part_hash");
-    const b = await computeWinnerProofHash("addr-a", "seed_hash", "part_hash");
+    const a = await computeWinnerProofHash("C1", 1, "addr-a", "seed_hash", "part_hash");
+    const b = await computeWinnerProofHash("C1", 1, "addr-a", "seed_hash", "part_hash");
     expect(a).toBe(b);
   });
 
   it("changes with different winner", async () => {
-    const a = await computeWinnerProofHash("addr-a", "seed", "part");
-    const b = await computeWinnerProofHash("addr-b", "seed", "part");
+    const a = await computeWinnerProofHash("C1", 1, "addr-a", "seed", "part");
+    const b = await computeWinnerProofHash("C1", 1, "addr-b", "seed", "part");
     expect(a).not.toBe(b);
   });
 
   it("changes with different seed", async () => {
-    const a = await computeWinnerProofHash("addr-a", "seed1", "part");
-    const b = await computeWinnerProofHash("addr-a", "seed2", "part");
+    const a = await computeWinnerProofHash("C1", 1, "addr-a", "seed1", "part");
+    const b = await computeWinnerProofHash("C1", 1, "addr-a", "seed2", "part");
     expect(a).not.toBe(b);
   });
 
   it("changes with different participants", async () => {
-    const a = await computeWinnerProofHash("addr-a", "seed", "part1");
-    const b = await computeWinnerProofHash("addr-a", "seed", "part2");
+    const a = await computeWinnerProofHash("C1", 1, "addr-a", "seed", "part1");
+    const b = await computeWinnerProofHash("C1", 1, "addr-a", "seed", "part2");
+    expect(a).not.toBe(b);
+  });
+
+  it("changes with different round (blocks cross-round replay)", async () => {
+    const a = await computeWinnerProofHash("C1", 1, "addr-a", "seed", "part");
+    const b = await computeWinnerProofHash("C1", 2, "addr-a", "seed", "part");
+    expect(a).not.toBe(b);
+  });
+
+  it("changes with different contract (blocks wrong-contract substitution)", async () => {
+    const a = await computeWinnerProofHash("C1", 1, "addr-a", "seed", "part");
+    const b = await computeWinnerProofHash("C2", 1, "addr-a", "seed", "part");
     expect(a).not.toBe(b);
   });
 });
 
 describe("verifyProofIntegrity", () => {
-  it("passes for a properly assembled proof", async () => {
-    const proof = await assembleDrawProof({
-      roundId: 1,
-      contractId: "C123",
-      participants: PARTICIPANTS,
-      poolState: { admin: "addr-admin", total_deposited: "3500000" },
-      randomnessSource: "deterministic_placeholder",
-      randomnessSeed: "seed-value",
-      drawnAtLedger: 1000,
-      winnerAddress: "addr-a",
-      payoutTxHash: "tx_abc",
-      payoutLedgerSeq: 1001,
-      payoutAmount: "500000",
-      payoutAsset: "USDC",
-      payoutConfirmed: true,
-      contractSpecHash: "spec_v1",
-    });
-
+  it("passes for a properly assembled proof with real commitment evidence", async () => {
+    const proof = await assembleDrawProof(await makeInput());
     const result = await verifyProofIntegrity(proof);
     expect(result.verified).toBe(true);
     expect(result.fields.every((f) => f.status === "pass")).toBe(true);
   });
 
   it("fails when seedHash is tampered", async () => {
-    const proof = await assembleDrawProof({
-      roundId: 1,
-      contractId: "C123",
-      participants: PARTICIPANTS,
-      poolState: { admin: "addr-admin" },
-      randomnessSource: "deterministic_placeholder",
-      randomnessSeed: "seed-value",
-      drawnAtLedger: 1000,
-      winnerAddress: "addr-a",
-      payoutTxHash: "tx_abc",
-      payoutLedgerSeq: 1001,
-      payoutAmount: "500000",
-      payoutAsset: "USDC",
-      payoutConfirmed: true,
-      contractSpecHash: "spec_v1",
-    });
-
+    const proof = await assembleDrawProof(await makeInput());
     proof.randomness.seedHash = "tampered_hash";
     const result = await verifyProofIntegrity(proof);
     expect(result.verified).toBe(false);
@@ -265,93 +275,89 @@ describe("verifyProofIntegrity", () => {
   });
 
   it("fails when winner proofHash is tampered", async () => {
-    const proof = await assembleDrawProof({
-      roundId: 1,
-      contractId: "C123",
-      participants: PARTICIPANTS,
-      poolState: { admin: "addr-admin" },
-      randomnessSource: "deterministic_placeholder",
-      randomnessSeed: "seed-value",
-      drawnAtLedger: 1000,
-      winnerAddress: "addr-a",
-      payoutTxHash: "tx_abc",
-      payoutLedgerSeq: 1001,
-      payoutAmount: "500000",
-      payoutAsset: "USDC",
-      payoutConfirmed: true,
-      contractSpecHash: "spec_v1",
-    });
-
+    const proof = await assembleDrawProof(await makeInput());
     proof.winnerSelection.proofHash = "tampered_proof_hash";
     const result = await verifyProofIntegrity(proof);
     expect(result.verified).toBe(false);
   });
 
   it("fails when winnerAddress is changed after proofHash was set", async () => {
-    const proof = await assembleDrawProof({
-      roundId: 1,
-      contractId: "C123",
-      participants: PARTICIPANTS,
-      poolState: { admin: "addr-admin" },
-      randomnessSource: "deterministic_placeholder",
-      randomnessSeed: "seed-value",
-      drawnAtLedger: 1000,
-      winnerAddress: "addr-a",
-      payoutTxHash: "tx_abc",
-      payoutLedgerSeq: 1001,
-      payoutAmount: "500000",
-      payoutAsset: "USDC",
-      payoutConfirmed: true,
-      contractSpecHash: "spec_v1",
-    });
-
+    const proof = await assembleDrawProof(await makeInput());
     proof.winnerSelection.winnerAddress = "addr-b";
     const result = await verifyProofIntegrity(proof);
     expect(result.verified).toBe(false);
   });
 
   it("fails when participantsHash is tampered", async () => {
-    const proof = await assembleDrawProof({
-      roundId: 1,
-      contractId: "C123",
-      participants: PARTICIPANTS,
-      poolState: { admin: "addr-admin" },
-      randomnessSource: "deterministic_placeholder",
-      randomnessSeed: "seed-value",
-      drawnAtLedger: 1000,
-      winnerAddress: "addr-a",
-      payoutTxHash: "tx_abc",
-      payoutLedgerSeq: 1001,
-      payoutAmount: "500000",
-      payoutAsset: "USDC",
-      payoutConfirmed: true,
-      contractSpecHash: "spec_v1",
-    });
-
+    const proof = await assembleDrawProof(await makeInput());
     proof.snapshot.participantsHash = "tampered";
     const result = await verifyProofIntegrity(proof);
     expect(result.verified).toBe(false);
+  });
+
+  it("fails when randomness evidence is missing (schema rejects deterministic_placeholder source)", async () => {
+    const proof = makeProof({
+      randomness: {
+        source: "deterministic_placeholder" as any,
+        seed: "predictable-seed",
+        seedHash: "hash_seed",
+        commitment: "hash_commitment",
+        commitmentLedgerSeq: 999,
+        revealTxHash: "reveal_tx",
+        drawnAtLedger: 1000,
+      },
+    });
+    const result = await verifyProofIntegrity(proof);
+    expect(result.verified).toBe(false);
+  });
+
+  it("fails when the revealed seed doesn't match the commitment (substituted evidence)", async () => {
+    const proof = await assembleDrawProof(await makeInput());
+    proof.randomness.seed = "a-different-seed-entirely";
+    proof.randomness.seedHash = await computeHash(proof.randomness.seed);
+    // seedHash now matches seed (self-consistent) but no longer matches the
+    // original on-chain commitment — the substitution must still be caught.
+    const result = await verifyProofIntegrity(proof);
+    expect(result.verified).toBe(false);
+    expect(result.fields.some((f) => f.name === "randomness_commitment" && f.status === "fail")).toBe(true);
+  });
+
+  it("fails when randomness evidence is bound to another round (fork/replay)", async () => {
+    // Randomness evidence generated for round 2, spliced onto a round 1 proof.
+    const roundTwoInput = await makeInput({ roundId: 2 });
+    const roundTwoProof = await assembleDrawProof(roundTwoInput);
+
+    const roundOneInput = await makeInput({ roundId: 1 });
+    const roundOneProof = await assembleDrawProof(roundOneInput);
+    roundOneProof.randomness = roundTwoProof.randomness;
+
+    const result = await verifyProofIntegrity(roundOneProof);
+    expect(result.verified).toBe(false);
+    expect(result.fields.some((f) => f.name === "winner_proof_hash" && f.status === "fail")).toBe(true);
+  });
+
+  it("fails when randomness evidence is bound to another contract", async () => {
+    const otherContractInput = await makeInput({ contractId: "C_OTHER" });
+    const otherContractProof = await assembleDrawProof(otherContractInput);
+
+    const proof = await assembleDrawProof(await makeInput({ contractId: "C123" }));
+    proof.randomness = otherContractProof.randomness;
+
+    const result = await verifyProofIntegrity(proof);
+    expect(result.verified).toBe(false);
+  });
+
+  it("fails when the commitment was recorded after the draw ledger (withheld-reveal / late-choice bias)", async () => {
+    const proof = await assembleDrawProof(await makeInput({ commitmentLedgerSeq: 1500, drawnAtLedger: 1000 }));
+    const result = await verifyProofIntegrity(proof);
+    expect(result.verified).toBe(false);
+    expect(result.fields.some((f) => f.name === "randomness_commitment" && f.status === "fail")).toBe(true);
   });
 });
 
 describe("assembleDrawProof", () => {
   it("produces a valid proof with correct hash chain", async () => {
-    const proof = await assembleDrawProof({
-      roundId: 1,
-      contractId: "C123",
-      participants: PARTICIPANTS,
-      poolState: { admin: "addr-admin", total_deposited: "3500000" },
-      randomnessSource: "deterministic_placeholder",
-      randomnessSeed: "my-seed",
-      drawnAtLedger: 1000,
-      winnerAddress: "addr-a",
-      payoutTxHash: "tx_hash",
-      payoutLedgerSeq: 1001,
-      payoutAmount: "500000",
-      payoutAsset: "USDC",
-      payoutConfirmed: true,
-      contractSpecHash: "spec_v1",
-    });
+    const proof = await assembleDrawProof(await makeInput({ payoutTxHash: "tx_hash" }));
 
     expect(proof.version).toBe("1.0.0");
     expect(proof.drawId).toMatch(/^draw-[0-9a-f]{16}$/);
@@ -365,22 +371,9 @@ describe("assembleDrawProof", () => {
   });
 
   it("computes correct total weight from deposit * lockup_multiplier", async () => {
-    const proof = await assembleDrawProof({
-      roundId: 1,
-      contractId: "C123",
-      participants: PARTICIPANTS,
-      poolState: {},
-      randomnessSource: "deterministic_placeholder",
-      randomnessSeed: "seed",
-      drawnAtLedger: 1000,
-      winnerAddress: "addr-a",
-      payoutTxHash: "tx",
-      payoutLedgerSeq: 1001,
-      payoutAmount: "100",
-      payoutAsset: "XLM",
-      payoutConfirmed: false,
-      contractSpecHash: "spec",
-    });
+    const proof = await assembleDrawProof(
+      await makeInput({ payoutAmount: "100", payoutAsset: "XLM", payoutConfirmed: false })
+    );
 
     // addr-a: 2000000 * 100 = 200000000
     // addr-b: 1000000 * 150 = 150000000
@@ -390,68 +383,30 @@ describe("assembleDrawProof", () => {
     expect(proof.winnerSelection.winnerWeight).toBe("200000000");
   });
 
-  it("uses deterministic_placeholder method for placeholder randomness", async () => {
-    const proof = await assembleDrawProof({
-      roundId: 1,
-      contractId: "C123",
-      participants: PARTICIPANTS,
-      poolState: {},
-      randomnessSource: "deterministic_placeholder",
-      randomnessSeed: "seed",
-      drawnAtLedger: 1000,
-      winnerAddress: "addr-a",
-      payoutTxHash: "tx",
-      payoutLedgerSeq: 1001,
-      payoutAmount: "100",
-      payoutAsset: "XLM",
-      payoutConfirmed: false,
-      contractSpecHash: "spec",
-    });
-
-    expect(proof.randomness.source).toBe("deterministic_placeholder");
-    expect(proof.winnerSelection.method).toBe("deterministic_placeholder");
+  it("always uses weighted_random method (no placeholder method remains)", async () => {
+    const proof = await assembleDrawProof(await makeInput());
+    expect(proof.randomness.source).toBe("soroban_prng");
+    expect(proof.winnerSelection.method).toBe("weighted_random");
   });
 
-  it("uses weighted_random method for soroban_prng randomness", async () => {
-    const proof = await assembleDrawProof({
-      roundId: 1,
-      contractId: "C123",
-      participants: PARTICIPANTS,
-      poolState: {},
-      randomnessSource: "soroban_prng",
-      randomnessSeed: "seed",
-      drawnAtLedger: 1000,
-      winnerAddress: "addr-a",
-      payoutTxHash: "tx",
-      payoutLedgerSeq: 1001,
-      payoutAmount: "100",
-      payoutAsset: "XLM",
-      payoutConfirmed: false,
-      contractSpecHash: "spec",
-    });
-
-    expect(proof.randomness.source).toBe("soroban_prng");
+  it("carries external_beacon source through unchanged", async () => {
+    const proof = await assembleDrawProof(await makeInput({ randomnessSource: "external_beacon" }));
+    expect(proof.randomness.source).toBe("external_beacon");
     expect(proof.winnerSelection.method).toBe("weighted_random");
   });
 
   it("handles single participant", async () => {
     const single = [PARTICIPANTS[0]];
-    const proof = await assembleDrawProof({
-      roundId: 1,
-      contractId: "C123",
-      participants: single,
-      poolState: {},
-      randomnessSource: "deterministic_placeholder",
-      randomnessSeed: "seed",
-      drawnAtLedger: 1000,
-      winnerAddress: single[0].address,
-      payoutTxHash: "tx",
-      payoutLedgerSeq: 1001,
-      payoutAmount: "100",
-      payoutAsset: "XLM",
-      payoutConfirmed: false,
-      contractSpecHash: "spec",
-    });
+    const proof = await assembleDrawProof(
+      await makeInput({
+        participants: single,
+        poolState: {},
+        winnerAddress: single[0].address,
+        payoutAmount: "100",
+        payoutAsset: "XLM",
+        payoutConfirmed: false,
+      })
+    );
 
     expect(proof.snapshot.participantCount).toBe(1);
     const result = await verifyProofIntegrity(proof);

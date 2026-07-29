@@ -1,5 +1,37 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DrawProofService } from "../src/services/drawProofService.js";
+import type { RpcClient } from "../src/services/drawProofService.js";
+
+function b64Json(value: unknown): string {
+  return Buffer.from(JSON.stringify(value)).toString("base64");
+}
+
+/** RPC stub that publishes real (non-placeholder) randomness evidence for round 1. */
+function makeRpc(overrides: Partial<RpcClient> = {}): RpcClient {
+  return {
+    getLedger: vi.fn(),
+    getTransaction: vi.fn().mockResolvedValue({ hash: "tx_hash_abc", ledger: 1000, successful: true, status: "success" }),
+    getContractData: vi.fn().mockRejectedValue(new Error("not found")),
+    getEvents: vi.fn().mockResolvedValue({
+      events: [
+        {
+          id: "evt-1",
+          ledger: 999,
+          txHash: "reveal_tx_1",
+          topicXdr: [],
+          valueXdr: b64Json({
+            round_id: 1,
+            seed: "onchain-seed",
+            commitment: "onchain-commitment-hash",
+            commitment_ledger: 990,
+            source: "soroban_prng",
+          }),
+        },
+      ],
+    }),
+    ...overrides,
+  } as RpcClient;
+}
 
 function makeMockPrisma(overrides: Record<string, any> = {}) {
   return {
@@ -81,11 +113,32 @@ describe("DrawProofService", () => {
       expect(result).toBeNull();
     });
 
-    it("generates a proof for a confirmed select_winner action", async () => {
+    it("refuses to generate a proof when no RPC client is configured (no fabricated randomness)", async () => {
       const prisma = makeMockPrisma({
         action: makeSelectWinnerAction(),
       });
       const svc = new DrawProofService(prisma, null);
+      const result = await svc.generateProof({ actionId: "action-123" });
+      expect(result).toBeNull();
+      expect(prisma.drawProof.create).not.toHaveBeenCalled();
+    });
+
+    it("refuses to generate a proof when the contract published no randomness evidence for the round", async () => {
+      const prisma = makeMockPrisma({
+        action: makeSelectWinnerAction(),
+      });
+      const rpc = makeRpc({ getEvents: vi.fn().mockResolvedValue({ events: [] }) });
+      const svc = new DrawProofService(prisma, rpc);
+      const result = await svc.generateProof({ actionId: "action-123" });
+      expect(result).toBeNull();
+      expect(prisma.drawProof.create).not.toHaveBeenCalled();
+    });
+
+    it("generates a proof for a confirmed select_winner action using real on-chain randomness evidence", async () => {
+      const prisma = makeMockPrisma({
+        action: makeSelectWinnerAction(),
+      });
+      const svc = new DrawProofService(prisma, makeRpc());
       const result = await svc.generateProof({ actionId: "action-123" });
 
       expect(result).not.toBeNull();
@@ -93,6 +146,8 @@ describe("DrawProofService", () => {
       expect(result!.roundId).toBe(1);
       expect(result!.contractId).toBe("CDRYPPOOL123");
       expect(result!.proofJson).toBeDefined();
+      expect(result!.proofJson.randomness.source).toBe("soroban_prng");
+      expect(result!.proofJson.randomness.seed).toBe("onchain-seed");
       expect(prisma.drawProof.create).toHaveBeenCalled();
     });
 
@@ -114,7 +169,7 @@ describe("DrawProofService", () => {
         action: makeSelectWinnerAction(),
         existingProof,
       });
-      const svc = new DrawProofService(prisma, null);
+      const svc = new DrawProofService(prisma, makeRpc());
       const result = await svc.generateProof({ actionId: "action-123" });
 
       expect(result).not.toBeNull();

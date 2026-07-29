@@ -48,6 +48,24 @@ export interface ManifestMismatch {
   envValue: string;
 }
 
+/**
+ * Spec hashes for contracts that have been superseded and must never be
+ * accepted, even if still deployed on-chain (#495 — contracts/vault and any
+ * other retired drip-pool build). Populate as legacy spec hashes are confirmed.
+ */
+export const DEPRECATED_CONTRACT_SPEC_HASHES: ReadonlySet<string> = new Set([]);
+
+/** Throws when the manifest's contract spec has been superseded (#495). */
+export function assertContractSpecNotDeprecated(manifest: DeploymentManifest): void {
+  const specHash = manifest.contracts.dripPool.specHash;
+  if (specHash && DEPRECATED_CONTRACT_SPEC_HASHES.has(specHash)) {
+    throw new Error(
+      `Deployment manifest references a deprecated contract spec (${specHash}). ` +
+        `contracts/drip-pool is the sole authoritative contract; see contracts/CONTRACT_BOUNDARY.md`
+    );
+  }
+}
+
 let _cached: DeploymentManifest | null = null;
 
 function validateAndCache(raw: string): DeploymentManifest {
@@ -65,6 +83,8 @@ function validateAndCache(raw: string): DeploymentManifest {
       .join("; ");
     throw new Error(`Invalid deployment manifest: ${issues}`);
   }
+
+  assertContractSpecNotDeprecated(result.data);
 
   _cached = result.data;
   return _cached;

@@ -46,6 +46,13 @@ pub enum ContractError {
 
     // ── Proxy upgrade (41–50) ──────────────────────────────────────────────
     InvalidAddress = 41,
+
+    // ── Yield strategy (51–60) ─────────────────────────────────────────────
+    StrategyNotSet = 51,
+    StrategyVersionUnsupported = 52,
+    StrategyPaused = 53,
+    RedeemFailed = 54,
+    DepositFailed = 55,
 }
 
 impl ContractError {
@@ -69,6 +76,11 @@ impl ContractError {
             ContractError::NotPaused => "protocol is not paused",
             ContractError::ProtocolPaused => "protocol is paused",
             ContractError::InvalidAddress => "invalid contract address",
+            ContractError::StrategyNotSet => "no yield strategy configured",
+            ContractError::StrategyVersionUnsupported => "strategy interface version is unsupported",
+            ContractError::StrategyPaused => "strategy is paused",
+            ContractError::RedeemFailed => "strategy redeem returned less than the caller-verifiable balance",
+            ContractError::DepositFailed => "strategy deposit failed",
         }
     }
 

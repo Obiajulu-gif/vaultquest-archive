@@ -76,11 +76,27 @@ model IndexerCheckpoint {
   id                  String   @id @default("singleton")
   latestLedger        Int      @map("latest_ledger")
   lastProcessedEventId String?  @map("last_processed_event_id")
+  lastLedgerHash      String?  @map("last_ledger_hash")
   lastSyncTime        DateTime @map("last_sync_time")
   lastError           String?  @map("last_error")
   lastSuccessSyncTime DateTime @default(now()) @map("last_success_sync_time")
 
   @@map("indexer_checkpoints")
+}
+
+model PoisonEvent {
+  id             String    @id @default(uuid()) @db.Uuid
+  sorobanEventId String    @unique @map("soroban_event_id")
+  ledger         Int
+  contractId     String    @map("contract_id")
+  txHash         String    @map("tx_hash")
+  rawEvent       Json      @map("raw_event")
+  reason         String
+  detectedAt     DateTime  @default(now()) @map("detected_at")
+  resolvedAt     DateTime? @map("resolved_at")
+
+  @@index([resolvedAt, detectedAt])
+  @@map("poison_events")
 }
 
 model VaultSettlement {

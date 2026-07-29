@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   DeploymentManifestSchema,
   validateManifestAgainstEnv,
+  assertContractSpecNotDeprecated,
+  DEPRECATED_CONTRACT_SPEC_HASHES,
   clearManifestCache,
   type DeploymentManifest,
 } from "@/lib/deployment-manifest";
@@ -313,6 +315,40 @@ describe("malicious RPC response handling", () => {
     };
     const mismatches = validateManifestAgainstEnv(VALID_MANIFEST, env);
     expect(mismatches.some((m) => m.field === "network.horizonUrl")).toBe(true);
+  });
+});
+
+describe("deprecated contract spec rejection (#495)", () => {
+  it("accepts a manifest whose spec hash is not deprecated", () => {
+    expect(() => assertContractSpecNotDeprecated(VALID_MANIFEST)).not.toThrow();
+  });
+
+  it("accepts a manifest with no specHash pinned", () => {
+    const manifest: DeploymentManifest = {
+      ...VALID_MANIFEST,
+      contracts: {
+        ...VALID_MANIFEST.contracts,
+        dripPool: { contractId: VALID_MANIFEST.contracts.dripPool.contractId },
+      },
+    };
+    expect(() => assertContractSpecNotDeprecated(manifest)).not.toThrow();
+  });
+
+  it("rejects a manifest whose dripPool specHash is on the deprecated list", () => {
+    const deprecatedHash = "sha256:deprecated-legacy-vault-spec";
+    (DEPRECATED_CONTRACT_SPEC_HASHES as Set<string>).add(deprecatedHash);
+    try {
+      const manifest: DeploymentManifest = {
+        ...VALID_MANIFEST,
+        contracts: {
+          ...VALID_MANIFEST.contracts,
+          dripPool: { ...VALID_MANIFEST.contracts.dripPool, specHash: deprecatedHash },
+        },
+      };
+      expect(() => assertContractSpecNotDeprecated(manifest)).toThrow(/deprecated contract spec/);
+    } finally {
+      (DEPRECATED_CONTRACT_SPEC_HASHES as Set<string>).delete(deprecatedHash);
+    }
   });
 });
 

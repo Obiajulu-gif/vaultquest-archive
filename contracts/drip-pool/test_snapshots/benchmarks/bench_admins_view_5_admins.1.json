@@ -218,6 +218,14 @@
                           },
                           {
                             "key": {
+                              "symbol": "principal_in_strategy"
+                            },
+                            "val": {
+                              "i128": "0"
+                            }
+                          },
+                          {
+                            "key": {
                               "symbol": "proposal_nonce"
                             },
                             "val": {
@@ -231,6 +239,9 @@
                             "val": {
                               "i128": "0"
                             }
+                              "symbol": "strategy"
+                            },
+                            "val": "void"
                           },
                           {
                             "key": {

@@ -14,7 +14,7 @@ import { LedgerService } from "./services/ledger.js";
 import {
   StellarIndexer,
   SorobanRpcEventSource,
-  defaultXdrDecoder
+  sorobanNativeXdrDecoder
 } from "./services/stellarIndexer.js";
 import { setAttestationInfo } from "./routes/health.js";
 import type { ScheduledTask } from "node-cron";
@@ -111,14 +111,23 @@ const notificationCronTask = startNotificationReminderCron({
 let indexerCronTask: ScheduledTask | undefined;
 if (env.SOROBAN_RPC_URL && env.INDEXER_CONTRACT_IDS) {
   const contractIds = env.INDEXER_CONTRACT_IDS.split(",").map((s) => s.trim()).filter(Boolean);
+  const indexerLedgerService = new LedgerService(prisma, cacheService);
   const indexer = new StellarIndexer({
-    ledger: new LedgerService(prisma, cacheService),
-    source: new SorobanRpcEventSource({ rpcUrl: env.SOROBAN_RPC_URL, contractIds }),
-    decoder: defaultXdrDecoder,
+    ledger: indexerLedgerService,
+    source: new SorobanRpcEventSource({ rpcUrl: env.SOROBAN_RPC_URL.split(",").map((s) => s.trim()), contractIds }),
+    decoder: sorobanNativeXdrDecoder,
     logger
   });
-  indexerCronTask = startIndexerCron({ prisma, indexer, logger });
-  logger.info({ contractIds }, "stellar indexer daemon started");
+
+  // Resume from the last persisted checkpoint instead of re-fetching from the
+  // RPC's default window (which would either replay or gap-skip history).
+  const checkpoint = await indexerLedgerService.getIndexerCheckpoint();
+  if (checkpoint?.lastProcessedEventId) {
+    indexer.setCursor(checkpoint.lastProcessedEventId);
+  }
+
+  indexerCronTask = startIndexerCron({ prisma, indexer, ledger: indexerLedgerService, logger });
+  logger.info({ contractIds, resumeCursor: checkpoint?.lastProcessedEventId ?? null }, "stellar indexer daemon started");
 }
 
 // Automated database backup cron (#275). Only started when BACKUP_DIR is set.

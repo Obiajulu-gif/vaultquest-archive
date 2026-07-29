@@ -1,4 +1,23 @@
 #![no_std]
+
+//! # DEPRECATED — not the canonical contract (#495)
+//!
+//! This skeleton contract predates `contracts/drip-pool` and is kept only for
+//! reading balances from any legacy instance that may already be deployed. It
+//! is architecturally incompatible with the canonical contract: single-admin
+//! (no multisig/threshold), no round/draw state, no lockups or claim
+//! deadlines, and no real SAC token custody (`deposit`/`withdraw` only mutate
+//! internal bookkeeping).
+//!
+//! **Do not deploy this contract for new pools and do not wire new client
+//! code to it.** `contracts/drip-pool` is the single authoritative source for
+//! principal, rewards, round state, pause, and winner settlement — see
+//! `contracts/CONTRACT_BOUNDARY.md`. `lib/deployment-manifest.ts` has no slot
+//! for a `vault` contract id, so a compliant manifest cannot reference this
+//! contract at all; only `balance_of`/`total_deposits`/`get_paused` should
+//! ever be called against a pre-existing deployment, for read-only migration
+//! verification.
+
 use soroban_sdk::{
     contract, contractimpl, contracttype, panic_with_error, symbol_short, Address, Env, Symbol,
 };

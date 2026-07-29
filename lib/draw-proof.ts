@@ -12,14 +12,23 @@ const SnapshotSchema = z.object({
 });
 
 const RandomnessSchema = z.object({
-  source: z.enum(["soroban_prng", "external_beacon", "deterministic_placeholder"]),
+  // "deterministic_placeholder" is intentionally not a valid value: randomness
+  // derived from public identifiers (contract/round/ledger) is predictable and
+  // must never be accepted as evidence (#494).
+  source: z.enum(["soroban_prng", "external_beacon"]),
   seed: z.string().min(1),
   seedHash: z.string().min(1),
+  /** Hash published on-chain *before* the draw, proving the seed wasn't chosen after seeing the outcome. */
+  commitment: z.string().min(1),
+  /** Ledger at which the commitment was recorded; must precede (or equal) drawnAtLedger. */
+  commitmentLedgerSeq: z.number().int().positive(),
+  /** On-chain transaction that revealed the seed/beacon value consumed by the draw. */
+  revealTxHash: z.string().min(1),
   drawnAtLedger: z.number().int().positive(),
 });
 
 const WinnerSelectionSchema = z.object({
-  method: z.enum(["weighted_random", "deterministic_placeholder"]),
+  method: z.literal("weighted_random"),
   ticketWeightsHash: z.string().min(1),
   winnerAddress: z.string().min(1),
   winnerWeight: z.string().min(1),
@@ -164,12 +173,21 @@ export async function computePoolHash(poolState: Record<string, unknown>): Promi
 
 // ─── Winner Proof Hash ────────────────────────────────────────────────────────
 
+/**
+ * Binds contractId + roundId into the hash chain so randomness evidence
+ * lifted from another round or another contract can never reproduce a valid
+ * proofHash here (#494) — the recomputation on verify uses the *proof's own*
+ * contractId/roundId, so a substituted seed/participants pair from elsewhere
+ * mismatches even if internally self-consistent.
+ */
 export async function computeWinnerProofHash(
+  contractId: string,
+  roundId: number,
   winnerAddress: string,
   seedHash: string,
   participantsHash: string
 ): Promise<string> {
-  const input = `${winnerAddress}:${seedHash}:${participantsHash}`;
+  const input = `${contractId}:${roundId}:${winnerAddress}:${seedHash}:${participantsHash}`;
   return sha256Hex(input);
 }
 
@@ -204,6 +222,15 @@ export async function verifyProofIntegrity(
 ): Promise<VerificationResult> {
   const fields: VerificationField[] = [];
 
+  // Schema gate first: a proof with missing/predictable/malformed randomness
+  // evidence (e.g. no commitment, or the legacy "deterministic_placeholder"
+  // source) fails parsing outright and can never be verified (#494).
+  const parsed = DrawProofSchema.safeParse(proof);
+  if (!parsed.success) {
+    fields.push(fieldFail("randomness_evidence", parsed.error.issues.map((i) => i.path.join(".") + ": " + i.message).join("; ")));
+    return { verified: false, fields, verifiedAt: new Date().toISOString() };
+  }
+
   const { signature, ...proofBody } = proof;
   const expectedDocHash = await computeProofHash(proofBody);
   if (proof.signature && expectedDocHash === proof.signature) {
@@ -215,6 +242,8 @@ export async function verifyProofIntegrity(
   }
 
   const expectedWinnerHash = await computeWinnerProofHash(
+    proof.contractId,
+    proof.roundId,
     proof.winnerSelection.winnerAddress,
     proof.randomness.seedHash,
     proof.snapshot.participantsHash
@@ -224,7 +253,7 @@ export async function verifyProofIntegrity(
   } else {
     fields.push(fieldFail(
       "winner_proof_hash",
-      `expected ${expectedWinnerHash}, got ${proof.winnerSelection.proofHash}`
+      `expected ${expectedWinnerHash}, got ${proof.winnerSelection.proofHash} (randomness/participants may be substituted or from another round/contract)`
     ));
   }
 
@@ -236,6 +265,24 @@ export async function verifyProofIntegrity(
       "seed_hash",
       `expected ${recomputedSeedHash}, got ${proof.randomness.seedHash}`
     ));
+  }
+
+  // The revealed seed must match the pre-committed hash, and the commitment
+  // must have been recorded at or before the draw ledger — otherwise the
+  // "randomness" could have been chosen after the outcome was known.
+  const recomputedCommitment = await sha256Hex(proof.randomness.seed);
+  if (recomputedCommitment !== proof.randomness.commitment) {
+    fields.push(fieldFail(
+      "randomness_commitment",
+      `revealed seed does not match commitment (expected ${recomputedCommitment}, got ${proof.randomness.commitment}) — evidence may be substituted`
+    ));
+  } else if (proof.randomness.commitmentLedgerSeq > proof.randomness.drawnAtLedger) {
+    fields.push(fieldFail(
+      "randomness_commitment",
+      `commitment recorded at ledger ${proof.randomness.commitmentLedgerSeq}, after draw ledger ${proof.randomness.drawnAtLedger}`
+    ));
+  } else {
+    fields.push(fieldPass("randomness_commitment"));
   }
 
   const allPass = fields.every((f) => f.status === "pass");
@@ -257,6 +304,12 @@ export interface DrawProofInput {
   poolState: Record<string, unknown>;
   randomnessSource: Randomness["source"];
   randomnessSeed: string;
+  /** Hash published on-chain before the draw; must equal sha256(randomnessSeed). */
+  randomnessCommitment: string;
+  /** Ledger at which the commitment was recorded (must be <= drawnAtLedger). */
+  commitmentLedgerSeq: number;
+  /** On-chain tx that revealed the seed. */
+  revealTxHash: string;
   drawnAtLedger: number;
   winnerAddress: string;
   payoutTxHash: string;
@@ -293,6 +346,8 @@ export async function assembleDrawProof(
     weights.find((w) => w.address === input.winnerAddress)?.weight ?? "0";
 
   const proofHash = await computeWinnerProofHash(
+    input.contractId,
+    input.roundId,
     input.winnerAddress,
     seedHash,
     participantsHash
@@ -323,13 +378,13 @@ export async function assembleDrawProof(
       source: input.randomnessSource,
       seed: input.randomnessSeed,
       seedHash,
+      commitment: input.randomnessCommitment,
+      commitmentLedgerSeq: input.commitmentLedgerSeq,
+      revealTxHash: input.revealTxHash,
       drawnAtLedger: input.drawnAtLedger,
     },
     winnerSelection: {
-      method:
-        input.randomnessSource === "deterministic_placeholder"
-          ? "deterministic_placeholder"
-          : "weighted_random",
+      method: "weighted_random",
       ticketWeightsHash,
       winnerAddress: input.winnerAddress,
       winnerWeight,

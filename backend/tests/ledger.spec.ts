@@ -110,6 +110,8 @@ describe("LedgerService.attachTxHash", () => {
     expect(updated.status).toBe("confirmed");
     expect(updated.sorobanEventId).toBe("evt_xyz");
     expect(updated.confirmedAt).not.toBeNull();
+    // #509: the parked event's payload becomes the action's verifiedPayload.
+    expect(updated.verifiedPayload).toEqual({ ok: true });
 
     const consumed = await db.prisma.pendingEvent.findUnique({ where: { txHash: "tx_race_1" } });
     expect(consumed?.consumedAt).not.toBeNull();
@@ -239,6 +241,9 @@ describe("LedgerService.reconcileEvent", () => {
     expect(row?.status).toBe("confirmed");
     expect(row?.sorobanEventId).toBe("evt_1");
     expect(row?.confirmedAt).not.toBeNull();
+    // #509: the decoded finalized-event payload is persisted separately from
+    // the client-supplied actionPayload.
+    expect(row?.verifiedPayload).toEqual({ amount: "100" });
   });
 
   it("marks reverted on revert hint", async () => {
@@ -457,6 +462,96 @@ describe("Crash-injection: exactly-once submission", () => {
     await svc.recoverSubmittedLeases("recovery-worker", { ttlMs: 1 });
     const orphaned = await svc.getAction(orphan.id);
     expect(orphaned?.status).toBe("orphaned");
+  });
+});
+
+describe("LedgerService.verifyPayoutIntegrity", () => {
+  let db: TestDb;
+  let svc: LedgerService;
+
+  beforeAll(async () => { db = await startTestDb(); svc = new LedgerService(db.prisma); });
+  afterAll(async () => { await db.stop(); });
+  beforeEach(async () => { await resetDb(db.prisma); });
+
+  it("returns not-found for an unknown action id", async () => {
+    const result = await svc.verifyPayoutIntegrity("11111111-1111-1111-1111-111111111111");
+    expect(result.verified).toBe(false);
+    expect(result.reason).toMatch(/not found/);
+    expect(result.action).toBeNull();
+  });
+
+  it("fails closed when the action is not yet confirmed", async () => {
+    const created = await svc.createAction(
+      makeIntentInput({ actionType: "select_winner", actionPayload: { winner: "GWIN", amount: "100" } })
+    );
+    const result = await svc.verifyPayoutIntegrity(created.id);
+    expect(result.verified).toBe(false);
+    expect(result.reason).toMatch(/not confirmed/);
+  });
+
+  it("fails when the action reverted on-chain", async () => {
+    const created = await svc.createAction(
+      makeIntentInput({ actionType: "select_winner", actionPayload: { winner: "GWIN", amount: "100" } })
+    );
+    await svc.attachTxHash(created.id, "tx_reverted");
+    await svc.reconcileEvent({
+      txHash: "tx_reverted",
+      sorobanEventId: "evt_reverted",
+      eventPayload: { winner: "GWIN", amount: "100" },
+      statusHint: "reverted"
+    });
+    const result = await svc.verifyPayoutIntegrity(created.id);
+    expect(result.verified).toBe(false);
+    expect(result.reason).toMatch(/reverted on-chain/);
+  });
+
+  it("verifies when claimed and finalized-event fields agree (loose key matching)", async () => {
+    const created = await svc.createAction(
+      makeIntentInput({ actionType: "select_winner", actionPayload: { winner: "GWIN", amount: "100" } })
+    );
+    await svc.attachTxHash(created.id, "tx_match");
+    await svc.reconcileEvent({
+      txHash: "tx_match",
+      sorobanEventId: "evt_match",
+      // Event uses "recipient"/"value" instead of "winner"/"amount" — loose
+      // key matching in verifyPayoutIntegrity should still agree.
+      eventPayload: { recipient: "GWIN", value: "100" },
+      statusHint: "confirmed"
+    });
+    const result = await svc.verifyPayoutIntegrity(created.id);
+    expect(result.verified).toBe(true);
+  });
+
+  it("fails when the finalized event amount disagrees with the claimed amount", async () => {
+    const created = await svc.createAction(
+      makeIntentInput({ actionType: "select_winner", actionPayload: { winner: "GWIN", amount: "9999" } })
+    );
+    await svc.attachTxHash(created.id, "tx_mismatch");
+    await svc.reconcileEvent({
+      txHash: "tx_mismatch",
+      sorobanEventId: "evt_mismatch",
+      eventPayload: { winner: "GWIN", amount: "100" },
+      statusHint: "confirmed"
+    });
+    const result = await svc.verifyPayoutIntegrity(created.id);
+    expect(result.verified).toBe(false);
+    expect(result.reason).toMatch(/amount mismatch/);
+  });
+
+  it("fails when the finalized event recipient disagrees with the claimed recipient", async () => {
+    const created = await svc.createAction(
+      makeIntentInput({ actionType: "select_winner", actionPayload: { winner: "GATTACKER", amount: "100" } })
+    );
+    await svc.attachTxHash(created.id, "tx_wrong_recipient");
+    await svc.reconcileEvent({
+      txHash: "tx_wrong_recipient",
+      sorobanEventId: "evt_wr",
+      eventPayload: { winner: "GLEGITIMATE", amount: "100" },
+      statusHint: "confirmed"
+    });
+    const result = await svc.verifyPayoutIntegrity(created.id);
+    expect(result.verified).toBe(false);
+    expect(result.reason).toMatch(/recipient mismatch/);
   });
 });
 

@@ -1,0 +1,26 @@
+[
+  {
+    "path": "app/app/vaults/page.jsx",
+    "reason": "#510: pre-existing — the vaults listing still reads MOCK_VAULTS pending a real backend vault-listing endpoint. Tracked as a known exception rather than fixed here to keep this gate change focused; wiring a real endpoint is separate follow-up work."
+  },
+  {
+    "path": "app/app/vaults/archive/page.jsx",
+    "reason": "#510: pre-existing — same MOCK_VAULTS/VAULT_ROUND_ARCHIVE dependency as app/app/vaults/page.jsx, same follow-up."
+  },
+  {
+    "path": "app/app/vaults/[id]/page.jsx",
+    "reason": "#510: pre-existing — same MOCK_VAULTS dependency as app/app/vaults/page.jsx, same follow-up."
+  },
+  {
+    "path": "components/app/VaultList.js",
+    "reason": "#510: pre-existing — re-exports MOCK_VAULTS/VAULT_ROUND_ARCHIVE for the vaults pages above; same follow-up."
+  },
+  {
+    "path": "app/app/admin/proposals/page.jsx",
+    "reason": "#510: pre-existing — admin proposals list seeds useState from MOCK_PROPOSALS pending a real proposals-listing endpoint. Tracked as a known exception; not fixed here to keep this gate change focused."
+  },
+  {
+    "path": "components/app/VaultRetryQueue.jsx",
+    "reason": "#510: pre-existing — retry queue seeds useState from MOCK_FAILED_ACTIONS pending a real failed-actions endpoint. Tracked as a known exception; not fixed here to keep this gate change focused."
+  }
+]

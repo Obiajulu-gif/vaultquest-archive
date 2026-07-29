@@ -30,6 +30,13 @@ model ActionLedger {
   walletAddress     String       @map("wallet_address")
   actionType        ActionType   @map("action_type")
   actionPayload     Json?        @map("action_payload")
+  /// The payload decoded from the finalized on-chain event that confirmed
+  /// this action (StellarIndexer -> LedgerService.reconcileEvent), distinct
+  /// from `actionPayload` (client-supplied intent, mutable by anyone with
+  /// database write access). Null until the action reaches `confirmed`.
+  /// See #509 / verifyPayoutIntegrity: nothing should treat a payout as
+  /// confirmed based on `actionPayload` alone.
+  verifiedPayload   Json?        @map("verified_payload")
   status            ActionStatus @default(pending)
   txHash            String?      @unique @map("tx_hash")
   sorobanEventId    String?      @map("soroban_event_id")

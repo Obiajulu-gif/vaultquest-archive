@@ -82,7 +82,10 @@ pub(crate) fn apply_admin_release(env: &Env, amount: i128) -> Result<(), Error> 
         .instance()
         .get(&DataKey::Pool)
         .ok_or(Error::NotInitialized)?;
-    pool.total_deposited = pool.total_deposited.saturating_sub(amount);
+    pool.distributable_yield = pool
+        .distributable_yield
+        .checked_sub(amount)
+        .ok_or(Error::InvalidAction)?;
     env.storage().instance().set(&DataKey::Pool, &pool);
     Ok(())
 }

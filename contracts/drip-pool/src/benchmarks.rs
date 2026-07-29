@@ -471,7 +471,7 @@ fn bench_propose_and_approve_2_of_2() {
     let signer2 = Address::generate(&env);
     client.seed_admin(&admin, &signer2);
 
-    client.deposit(&admin, &10_000);
+    client.add_yield(&admin, &10_000);
 
     let recipient = Address::generate(&env);
     let pid = client.propose(
@@ -482,27 +482,22 @@ fn bench_propose_and_approve_2_of_2() {
     assert!(executed);
 
     let pool = client.pool();
-    assert_eq!(pool.total_deposited, 5_000);
+    assert_eq!(pool.distributable_yield, 5_000);
 }
 
 #[test]
 fn bench_propose_and_approve_3_of_5() {
     let (env, client, admin) = setup();
-    client.create(&admin);
-
     let signer2 = Address::generate(&env);
     let signer3 = Address::generate(&env);
     let signer4 = Address::generate(&env);
     let signer5 = Address::generate(&env);
+    let token = Address::generate(&env);
+    let manifest_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    let signers = vec![&env, admin.clone(), signer2.clone(), signer3.clone(), signer4.clone(), signer5.clone()];
+    client.initialize_ceremony(&admin, &token, &signers, &3, &manifest_hash);
 
-    client.seed_admin(&admin, &signer2);
-    client.seed_admin(&admin, &signer3);
-
-    // Lower threshold to 3 via proposal
-    let threshold_pid = client.propose(&admin, &ProposalAction::SetThreshold(3));
-    let _ = client.approve(&signer2, &threshold_pid);
-
-    client.deposit(&admin, &10_000);
+    client.add_yield(&admin, &10_000);
 
     let recipient = Address::generate(&env);
     let pid = client.propose(
@@ -514,7 +509,7 @@ fn bench_propose_and_approve_3_of_5() {
     assert!(executed);
 
     let pool = client.pool();
-    assert_eq!(pool.total_deposited, 5_000);
+    assert_eq!(pool.distributable_yield, 5_000);
 }
 
 // ── Benchmark: TTL Renewal ──────────────────────────────────────────────────
@@ -686,17 +681,14 @@ fn bench_admins_view_1_admin() {
 #[test]
 fn bench_admins_view_5_admins() {
     let (env, client, admin) = setup();
-    client.create(&admin);
-
     let signer2 = Address::generate(&env);
     let signer3 = Address::generate(&env);
     let signer4 = Address::generate(&env);
     let signer5 = Address::generate(&env);
-
-    client.seed_admin(&admin, &signer2);
-    client.seed_admin(&admin, &signer3);
-    client.seed_admin(&admin, &signer4);
-    client.seed_admin(&admin, &signer5);
+    let token = Address::generate(&env);
+    let manifest_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+    let signers = vec![&env, admin.clone(), signer2.clone(), signer3.clone(), signer4.clone(), signer5.clone()];
+    client.initialize_ceremony(&admin, &token, &signers, &3, &manifest_hash);
 
     let _admins = client.admins();
 }
@@ -1034,6 +1026,8 @@ fn bench_cancel_proposal() {
 
     let signer2 = Address::generate(&env);
     client.seed_admin(&admin, &signer2);
+
+    client.add_yield(&admin, &1_000);
 
     let recipient = Address::generate(&env);
     let pid = client.propose(

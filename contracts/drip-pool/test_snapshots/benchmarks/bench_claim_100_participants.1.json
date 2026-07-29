@@ -13750,6 +13750,22 @@
                   },
                   {
                     "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "yield_accrued"
                     },
                     "val": {
@@ -13822,6 +13838,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -15299,6 +15331,14 @@
                           },
                           {
                             "key": {
+                              "symbol": "bootstrap_completed"
+                            },
+                            "val": {
+                              "bool": false
+                            }
+                          },
+                          {
+                            "key": {
                               "symbol": "claim_deadline"
                             },
                             "val": "void"
@@ -15317,6 +15357,22 @@
                             },
                             "val": {
                               "i128": "0"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "emergency_assets"
+                            },
+                            "val": {
+                              "i128": "0"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "is_emergency"
+                            },
+                            "val": {
+                              "bool": false
                             }
                           },
                           {
@@ -15345,6 +15401,11 @@
                           },
                           {
                             "key": {
+                              "symbol": "reserved_escrow"
+                            },
+                            "val": {
+                              "i128": "0"
+                            }
                               "symbol": "strategy"
                             },
                             "val": "void"

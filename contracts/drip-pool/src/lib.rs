@@ -58,7 +58,7 @@
 //!   views so the frontend can read deadline/status without decoding `Pool`.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, vec, Address, Env, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, vec, Address, BytesN, Env, Vec,
 };
 use vaultquest_common::YieldStrategyClient;
 
@@ -93,6 +93,8 @@ pub enum DataKey {
     ParticipantV1(Address), // legacy V1 participant storage (migration source)
     Proposal(u32),          // pending admin proposal
     Token,                  // Address — accepted Stellar Asset Contract address (#376)
+    ManifestHash,           // BytesN<32> — deployment manifest hash (#498)
+    BootstrapCompleted,     // bool — ceremony completion flag (#498)
 }
 
 // ── Errors ─────────────────────────────────────────────────────────────────
@@ -140,6 +142,8 @@ pub struct Pool {
     pub unclaimed_swept: bool,     // true once an unclaimed-reward sweep has executed (#440)
     pub is_emergency: bool,        // true when loss circuit breaker triggered (#512)
     pub emergency_assets: i128,    // available assets recorded for pro-rata exit (#512)
+    pub reserved_escrow: i128,     // reserved for pending ReleaseEscrow proposals (#499)
+    pub bootstrap_completed: bool, // flag indicating ceremony completion (#498)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -186,6 +190,7 @@ pub enum ProposalAction {
     TriggerEmergency(i128), // enter emergency mode with available asset amount (#512)
     Recapitalize(i128),     // inject capital into emergency pool (#512)
     ResumeNormal,           // return to normal operations (#512)
+    SetToken(Address),      // update token via multisig proposal after finalization (#498)
 }
 
 // ── Contract ───────────────────────────────────────────────────────────────
@@ -365,6 +370,8 @@ impl DripPool {
             unclaimed_swept: false,
             is_emergency: false,
             emergency_assets: 0,
+            reserved_escrow: 0,
+            bootstrap_completed: false,
         };
         let admins: Vec<Address> = vec![&env, admin.clone()];
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -379,11 +386,123 @@ impl DripPool {
         Ok(())
     }
 
+    /// Perform atomic one-time ceremony initializing token, signer set, threshold, manifest hash and completing bootstrap (#498).
+    pub fn initialize_ceremony(
+        env: Env,
+        admin: Address,
+        token: Address,
+        signers: Vec<Address>,
+        threshold: u32,
+        manifest_hash: BytesN<32>,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        if env.storage().instance().has(&DataKey::Pool) {
+            return Err(Error::AlreadyInitialized);
+        }
+        if threshold == 0 || threshold > signers.len() {
+            return Err(Error::InvalidAction);
+        }
+        for i in 0..signers.len() {
+            for j in (i + 1)..signers.len() {
+                if signers.get(i).unwrap() == signers.get(j).unwrap() {
+                    return Err(Error::InvalidAction);
+                }
+            }
+        }
+
+        let pool = Pool {
+            admin: admin.clone(),
+            total_drips: 0,
+            total_deposited: 0,
+            created_at: env.ledger().timestamp(),
+            locked: false,
+            proposal_nonce: 0,
+            distributable_yield: 0,
+            claim_deadline: None,
+            unclaimed_swept: false,
+            is_emergency: false,
+            emergency_assets: 0,
+            reserved_escrow: 0,
+            bootstrap_completed: true,
+        };
+
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::Admins, &signers);
+        env.storage().instance().set(&DataKey::Threshold, &threshold);
+        env.storage().instance().set(&DataKey::Token, &token);
+        env.storage().instance().set(&DataKey::ManifestHash, &manifest_hash);
+        env.storage().instance().set(&DataKey::BootstrapCompleted, &true);
+        env.storage().instance().set(&DataKey::Pool, &pool);
+        Self::bump_instance(&env);
+
+        env.events()
+            .publish((symbol_short!("pool"), symbol_short!("ceremony")), admin);
+        Ok(())
+    }
+
+    /// Finalize bootstrap for an initialized pool (#498).
+    pub fn finalize_bootstrap(
+        env: Env,
+        caller: Address,
+        token: Address,
+        signers: Vec<Address>,
+        threshold: u32,
+        manifest_hash: BytesN<32>,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+        Self::require_signer(&env, &caller)?;
+
+        let mut pool: Pool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pool)
+            .ok_or(Error::NotInitialized)?;
+
+        if pool.bootstrap_completed {
+            return Err(Error::AlreadyInitialized);
+        }
+
+        if threshold == 0 || threshold > signers.len() {
+            return Err(Error::InvalidAction);
+        }
+
+        for i in 0..signers.len() {
+            for j in (i + 1)..signers.len() {
+                if signers.get(i).unwrap() == signers.get(j).unwrap() {
+                    return Err(Error::InvalidAction);
+                }
+            }
+        }
+
+        pool.bootstrap_completed = true;
+        env.storage().instance().set(&DataKey::Admins, &signers);
+        env.storage().instance().set(&DataKey::Threshold, &threshold);
+        env.storage().instance().set(&DataKey::Token, &token);
+        env.storage().instance().set(&DataKey::ManifestHash, &manifest_hash);
+        env.storage().instance().set(&DataKey::BootstrapCompleted, &true);
+        env.storage().instance().set(&DataKey::Pool, &pool);
+
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("pool"), symbol_short!("finalized")), caller);
+        Ok(())
+    }
+
     /// Configure the accepted Stellar Asset Contract address.
-    /// Only callable by an authorized signer.
+    /// Only callable by an authorized signer during bootstrap. Disabled after finalization (#498).
     pub fn set_token(env: Env, caller: Address, token: Address) -> Result<(), Error> {
         caller.require_auth();
         Self::require_signer(&env, &caller)?;
+        let pool: Pool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pool)
+            .ok_or(Error::NotInitialized)?;
+
+        if pool.bootstrap_completed {
+            return Err(Error::Unauthorized);
+        }
+
         env.storage().instance().set(&DataKey::Token, &token);
         Self::bump_instance(&env);
         env.events()
@@ -392,10 +511,20 @@ impl DripPool {
     }
 
     /// Bootstrap: directly add a signer while admin count is strictly below threshold.
-    /// Once the admin set reaches the threshold, all mutations must go through proposals.
+    /// Once the admin set reaches the threshold or bootstrap is finalized, all mutations must go through proposals (#498).
     pub fn seed_admin(env: Env, caller: Address, new_admin: Address) -> Result<(), Error> {
         caller.require_auth();
         Self::require_signer(&env, &caller)?;
+        let pool: Pool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pool)
+            .ok_or(Error::NotInitialized)?;
+
+        if pool.bootstrap_completed {
+            return Err(Error::Unauthorized);
+        }
+
         let mut admins = Self::get_admins(&env);
         let threshold = Self::get_threshold(&env);
         // Prevent direct bypass once threshold is reachable
@@ -415,8 +544,8 @@ impl DripPool {
         signer.require_auth();
         Self::require_signer(&env, &signer)?;
 
-        // Validate action payload before creating the proposal (#384)
-        let pool: Pool = env
+        // Validate action payload before creating the proposal (#384, #499)
+        let mut pool: Pool = env
             .storage()
             .instance()
             .get(&DataKey::Pool)
@@ -426,9 +555,18 @@ impl DripPool {
                 if *amount <= 0 {
                     return Err(Error::InvalidAmount);
                 }
-                if *amount > pool.total_deposited {
+                // Free reserves = distributable_yield - reserved_escrow (#499)
+                let free_reserves = pool
+                    .distributable_yield
+                    .checked_sub(pool.reserved_escrow)
+                    .ok_or(Error::InvalidAction)?;
+                if *amount > free_reserves {
                     return Err(Error::InvalidAction);
                 }
+                pool.reserved_escrow = pool
+                    .reserved_escrow
+                    .checked_add(*amount)
+                    .ok_or(Error::InvalidAction)?;
             }
             ProposalAction::SetThreshold(t) => {
                 let admins = Self::get_admins(&env);
@@ -451,10 +589,10 @@ impl DripPool {
                     return Err(Error::Insolvent);
                 }
             }
+            ProposalAction::SetToken(_) => {}
             _ => {}
         }
 
-        let mut pool = pool;
         let nonce = pool.proposal_nonce;
         pool.proposal_nonce += 1;
         env.storage().instance().set(&DataKey::Pool, &pool);
@@ -487,8 +625,20 @@ impl DripPool {
             .get(&DataKey::Proposal(proposal_id))
             .ok_or(Error::ProposalNotFound)?;
 
-        // Reject expired proposals and clean them up (#383)
+        // Reject expired proposals and clean them up (#383, #499)
         if env.ledger().sequence() > proposal.expires_at {
+            if let ProposalAction::ReleaseEscrow(_recipient, amount) = proposal.action {
+                let mut pool: Pool = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::Pool)
+                    .ok_or(Error::NotInitialized)?;
+                pool.reserved_escrow = pool
+                    .reserved_escrow
+                    .checked_sub(amount)
+                    .ok_or(Error::InvalidAction)?;
+                env.storage().instance().set(&DataKey::Pool, &pool);
+            }
             env.storage()
                 .instance()
                 .remove(&DataKey::Proposal(proposal_id));
@@ -536,6 +686,19 @@ impl DripPool {
             return Err(Error::Unauthorized);
         }
 
+        if let ProposalAction::ReleaseEscrow(_recipient, amount) = proposal.action {
+            let mut pool: Pool = env
+                .storage()
+                .instance()
+                .get(&DataKey::Pool)
+                .ok_or(Error::NotInitialized)?;
+            pool.reserved_escrow = pool
+                .reserved_escrow
+                .checked_sub(amount)
+                .ok_or(Error::InvalidAction)?;
+            env.storage().instance().set(&DataKey::Pool, &pool);
+        }
+
         env.storage()
             .instance()
             .remove(&DataKey::Proposal(proposal_id));
@@ -573,6 +736,24 @@ impl DripPool {
                     .instance()
                     .get(&DataKey::Pool)
                     .ok_or(Error::NotInitialized)?;
+                // Unreserve and deduct from free reserves (distributable_yield) using checked arithmetic (#499)
+                pool.reserved_escrow = pool
+                    .reserved_escrow
+                    .checked_sub(amount)
+                    .ok_or(Error::InvalidAction)?;
+                pool.distributable_yield = pool
+                    .distributable_yield
+                    .checked_sub(amount)
+                    .ok_or(Error::InvalidAction)?;
+                env.storage().instance().set(&DataKey::Pool, &pool);
+
+                let contract_addr = env.current_contract_address();
+                Self::transfer_tokens(env, &contract_addr, &recipient, &amount)?;
+            }
+            ProposalAction::SetToken(token) => {
+                env.storage().instance().set(&DataKey::Token, &token);
+                env.events()
+                    .publish((symbol_short!("pool"), symbol_short!("token_set")), token);
                 // Re-validate at execution; reserves may have changed since proposal (#384)
                 if amount > pool.total_deposited {
                     return Err(Error::InvalidAction);
@@ -618,6 +799,18 @@ impl DripPool {
                 if amount <= 0 {
                     return Err(Error::InvalidAmount);
                 }
+                let mut pool: Pool = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::Pool)
+                    .ok_or(Error::NotInitialized)?;
+                pool.emergency_assets = pool
+                    .emergency_assets
+                    .checked_add(amount)
+                    .ok_or(Error::InvalidAction)?;
+                env.storage().instance().set(&DataKey::Pool, &pool);
+                env.events().publish(
+                    (symbol_short!("emergency"), symbol_short!("recap")),
                 // Transfer tokens from the caller (funder) into the contract.
                 let contract_addr = env.current_contract_address();
                 Self::atomic_transfer_and(
@@ -1285,6 +1478,34 @@ impl DripPool {
             .get(&DataKey::Pool)
             .ok_or(Error::NotInitialized)?;
         Ok(pool.unclaimed_swept)
+    }
+
+    /// View the deployment manifest hash stored during ceremony initialization (#498).
+    pub fn manifest_hash(env: Env) -> Result<BytesN<32>, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::ManifestHash)
+            .ok_or(Error::NotInitialized)
+    }
+
+    /// True once bootstrap ceremony has completed (#498).
+    pub fn is_bootstrap_completed(env: Env) -> Result<bool, Error> {
+        let pool: Pool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pool)
+            .ok_or(Error::NotInitialized)?;
+        Ok(pool.bootstrap_completed)
+    }
+
+    /// View current reserved escrow amount for active proposals (#499).
+    pub fn reserved_escrow(env: Env) -> Result<i128, Error> {
+        let pool: Pool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pool)
+            .ok_or(Error::NotInitialized)?;
+        Ok(pool.reserved_escrow)
     }
 }
 

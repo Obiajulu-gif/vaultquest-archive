@@ -54,7 +54,7 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "deposit",
+              "function_name": "add_yield",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -142,82 +142,6 @@
             "contract_data": {
               "ext": "v0",
               "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "key": {
-                "vec": [
-                  {
-                    "symbol": "Participant"
-                  },
-                  {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                  }
-                ]
-              },
-              "durability": "persistent",
-              "val": {
-                "map": [
-                  {
-                    "key": {
-                      "symbol": "claimable"
-                    },
-                    "val": {
-                      "i128": "10000"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "deposited"
-                    },
-                    "val": {
-                      "i128": "10000"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "joined_at"
-                    },
-                    "val": {
-                      "u64": "0"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "locked_until"
-                    },
-                    "val": {
-                      "u32": 120960
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "lockup_multiplier"
-                    },
-                    "val": {
-                      "u32": 100
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "yield_accrued"
-                    },
-                    "val": {
-                      "i128": "0"
-                    }
-                  }
-                ]
-              }
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 500000
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
               "key": "ledger_key_contract_instance",
               "durability": "persistent",
               "val": {
@@ -277,6 +201,20 @@
                           },
                           {
                             "key": {
+                              "symbol": "bootstrap_completed"
+                            },
+                            "val": {
+                              "bool": false
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "claim_deadline"
+                            },
+                            "val": "void"
+                          },
+                          {
+                            "key": {
                               "symbol": "created_at"
                             },
                             "val": {
@@ -288,7 +226,23 @@
                               "symbol": "distributable_yield"
                             },
                             "val": {
+                              "i128": "5000"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "emergency_assets"
+                            },
+                            "val": {
                               "i128": "0"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "is_emergency"
+                            },
+                            "val": {
+                              "bool": false
                             }
                           },
                           {
@@ -309,10 +263,18 @@
                           },
                           {
                             "key": {
+                              "symbol": "reserved_escrow"
+                            },
+                            "val": {
+                              "i128": "0"
+                            }
+                          },
+                          {
+                            "key": {
                               "symbol": "total_deposited"
                             },
                             "val": {
-                              "i128": "5000"
+                              "i128": "0"
                             }
                           },
                           {
@@ -320,7 +282,15 @@
                               "symbol": "total_drips"
                             },
                             "val": {
-                              "u64": "1"
+                              "u64": "0"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "unclaimed_swept"
+                            },
+                            "val": {
+                              "bool": false
                             }
                           }
                         ]

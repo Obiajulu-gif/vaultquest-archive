@@ -281,6 +281,20 @@
                           },
                           {
                             "key": {
+                              "symbol": "bootstrap_completed"
+                            },
+                            "val": {
+                              "bool": false
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "claim_deadline"
+                            },
+                            "val": "void"
+                          },
+                          {
+                            "key": {
                               "symbol": "created_at"
                             },
                             "val": {
@@ -293,6 +307,22 @@
                             },
                             "val": {
                               "i128": "0"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "emergency_assets"
+                            },
+                            "val": {
+                              "i128": "0"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "is_emergency"
+                            },
+                            "val": {
+                              "bool": false
                             }
                           },
                           {
@@ -313,6 +343,14 @@
                           },
                           {
                             "key": {
+                              "symbol": "reserved_escrow"
+                            },
+                            "val": {
+                              "i128": "0"
+                            }
+                          },
+                          {
+                            "key": {
                               "symbol": "total_deposited"
                             },
                             "val": {
@@ -325,6 +363,14 @@
                             },
                             "val": {
                               "u64": "1"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "unclaimed_swept"
+                            },
+                            "val": {
+                              "bool": false
                             }
                           }
                         ]

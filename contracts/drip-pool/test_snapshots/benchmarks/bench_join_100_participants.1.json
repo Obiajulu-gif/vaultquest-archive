@@ -1959,7 +1959,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -1995,6 +1995,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -2035,7 +2051,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -2071,6 +2087,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -2111,7 +2143,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -2147,6 +2179,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -2187,7 +2235,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -2223,6 +2271,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -2263,7 +2327,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -2299,6 +2363,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -2339,7 +2419,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -2375,6 +2455,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -2415,7 +2511,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -2451,6 +2547,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -2491,7 +2603,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -2527,6 +2639,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -2567,7 +2695,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -2603,6 +2731,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -2643,7 +2787,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -2679,6 +2823,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -2719,7 +2879,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -2755,6 +2915,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -2795,7 +2971,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -2831,6 +3007,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -2871,7 +3063,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -2907,6 +3099,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -2947,7 +3155,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -2983,6 +3191,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -3023,7 +3247,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -3059,6 +3283,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -3099,7 +3339,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -3135,6 +3375,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -3175,7 +3431,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -3211,6 +3467,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -3251,7 +3523,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -3287,6 +3559,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -3327,7 +3615,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -3363,6 +3651,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -3403,7 +3707,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -3439,6 +3743,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -3479,7 +3799,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -3515,6 +3835,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -3555,7 +3891,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -3591,6 +3927,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -3631,7 +3983,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -3667,6 +4019,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -3707,7 +4075,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -3743,6 +4111,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -3783,7 +4167,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -3819,6 +4203,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -3859,7 +4259,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -3895,6 +4295,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -3935,7 +4351,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -3971,6 +4387,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -4011,7 +4443,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -4047,6 +4479,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -4087,7 +4535,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -4123,6 +4571,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -4163,7 +4627,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -4199,6 +4663,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -4239,7 +4719,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -4275,6 +4755,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -4315,7 +4811,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -4351,6 +4847,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -4391,7 +4903,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -4427,6 +4939,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -4467,7 +4995,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -4503,6 +5031,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -4543,7 +5087,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -4579,6 +5123,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -4619,7 +5179,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -4655,6 +5215,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -4695,7 +5271,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -4731,6 +5307,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -4771,7 +5363,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -4807,6 +5399,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -4847,7 +5455,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -4883,6 +5491,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -4923,7 +5547,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -4959,6 +5583,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -4999,7 +5639,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -5035,6 +5675,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -5075,7 +5731,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -5111,6 +5767,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -5151,7 +5823,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -5187,6 +5859,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -5227,7 +5915,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -5263,6 +5951,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -5303,7 +6007,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -5339,6 +6043,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -5379,7 +6099,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -5415,6 +6135,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -5455,7 +6191,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -5491,6 +6227,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -5531,7 +6283,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -5567,6 +6319,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -5607,7 +6375,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -5643,6 +6411,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -5683,7 +6467,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -5719,6 +6503,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -5759,7 +6559,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -5795,6 +6595,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -5835,7 +6651,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -5871,6 +6687,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -5911,7 +6743,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -5947,6 +6779,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -5987,7 +6835,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -6023,6 +6871,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -6063,7 +6927,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -6099,6 +6963,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -6139,7 +7019,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -6175,6 +7055,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -6215,7 +7111,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -6251,6 +7147,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -6291,7 +7203,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -6327,6 +7239,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -6367,7 +7295,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -6403,6 +7331,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -6443,7 +7387,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -6479,6 +7423,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -6519,7 +7479,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -6555,6 +7515,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -6595,7 +7571,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -6631,6 +7607,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -6671,7 +7663,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -6707,6 +7699,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -6747,7 +7755,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -6783,6 +7791,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -6823,7 +7847,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -6859,6 +7883,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -6899,7 +7939,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -6935,6 +7975,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -6975,7 +8031,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -7011,6 +8067,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -7051,7 +8123,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -7087,6 +8159,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -7127,7 +8215,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -7163,6 +8251,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -7203,7 +8307,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -7239,6 +8343,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -7279,7 +8399,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -7315,6 +8435,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -7355,7 +8491,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -7391,6 +8527,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -7431,7 +8583,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -7467,6 +8619,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -7507,7 +8675,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -7543,6 +8711,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -7583,7 +8767,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -7619,6 +8803,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -7659,7 +8859,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -7695,6 +8895,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -7735,7 +8951,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -7771,6 +8987,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -7811,7 +9043,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -7847,6 +9079,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -7887,7 +9135,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -7923,6 +9171,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -7963,7 +9227,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -7999,6 +9263,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -8039,7 +9319,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -8075,6 +9355,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -8115,7 +9411,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -8151,6 +9447,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -8191,7 +9503,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -8227,6 +9539,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -8267,7 +9595,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -8303,6 +9631,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -8343,7 +9687,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -8379,6 +9723,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -8419,7 +9779,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -8455,6 +9815,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -8495,7 +9871,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -8531,6 +9907,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -8571,7 +9963,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -8607,6 +9999,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -8647,7 +10055,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -8683,6 +10091,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -8723,7 +10147,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -8759,6 +10183,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -8799,7 +10239,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -8835,6 +10275,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -8875,7 +10331,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -8911,6 +10367,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -8951,7 +10423,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -8987,6 +10459,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -9027,7 +10515,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -9063,6 +10551,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -9103,7 +10607,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -9139,6 +10643,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -9179,7 +10699,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -9215,6 +10735,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -9255,7 +10791,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -9291,6 +10827,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -9331,7 +10883,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -9367,6 +10919,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -9407,7 +10975,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -9443,6 +11011,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -9483,7 +11067,7 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "claimable"
+                      "symbol": "claimed_reward"
                     },
                     "val": {
                       "i128": "0"
@@ -9519,6 +11103,22 @@
                     },
                     "val": {
                       "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "prize"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "withdrawn_principal"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -9600,6 +11200,20 @@
                           },
                           {
                             "key": {
+                              "symbol": "bootstrap_completed"
+                            },
+                            "val": {
+                              "bool": false
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "claim_deadline"
+                            },
+                            "val": "void"
+                          },
+                          {
+                            "key": {
                               "symbol": "created_at"
                             },
                             "val": {
@@ -9612,6 +11226,22 @@
                             },
                             "val": {
                               "i128": "0"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "emergency_assets"
+                            },
+                            "val": {
+                              "i128": "0"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "is_emergency"
+                            },
+                            "val": {
+                              "bool": false
                             }
                           },
                           {
@@ -9632,6 +11262,14 @@
                           },
                           {
                             "key": {
+                              "symbol": "reserved_escrow"
+                            },
+                            "val": {
+                              "i128": "0"
+                            }
+                          },
+                          {
+                            "key": {
                               "symbol": "total_deposited"
                             },
                             "val": {
@@ -9644,6 +11282,14 @@
                             },
                             "val": {
                               "u64": "0"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "unclaimed_swept"
+                            },
+                            "val": {
+                              "bool": false
                             }
                           }
                         ]

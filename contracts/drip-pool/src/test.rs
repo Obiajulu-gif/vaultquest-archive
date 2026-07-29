@@ -162,7 +162,7 @@ fn non_signer_cannot_propose() {
 fn single_sig_does_not_execute_release() {
     let (env, client, admin) = setup();
     client.create(&admin);
-    client.deposit(&admin, &500);
+    client.add_yield(&admin, &500);
 
     let recipient = Address::generate(&env);
     let pid = client.propose(
@@ -173,14 +173,14 @@ fn single_sig_does_not_execute_release() {
         client.try_approve(&admin, &pid),
         Err(Ok(Error::AlreadySigned))
     );
-    assert_eq!(client.pool().total_deposited, 500);
+    assert_eq!(client.pool().distributable_yield, 500);
 }
 
 #[test]
 fn two_of_two_sigs_executes_release() {
     let (env, client, admin) = setup();
     client.create(&admin);
-    client.deposit(&admin, &500);
+    client.add_yield(&admin, &500);
 
     let signer2 = Address::generate(&env);
     let add_pid = client.propose(&admin, &ProposalAction::AddAdmin(signer2.clone()));
@@ -191,7 +191,8 @@ fn two_of_two_sigs_executes_release() {
 
     let recipient = Address::generate(&env);
     let rel_pid = client.propose(&admin, &ProposalAction::ReleaseEscrow(recipient, 200));
-    assert_eq!(client.pool().total_deposited, 500);
+    assert_eq!(client.pool().distributable_yield, 500);
+    assert_eq!(client.reserved_escrow(), 200);
     let _ = rel_pid;
 }
 
@@ -610,7 +611,7 @@ fn propose_release_zero_amount_fails() {
 fn propose_release_exceeds_reserves_fails() {
     let (env, client, admin) = setup();
     client.create(&admin);
-    client.deposit(&admin, &100);
+    client.add_yield(&admin, &100);
     let recipient = Address::generate(&env);
     assert_eq!(
         client.try_propose(&admin, &ProposalAction::ReleaseEscrow(recipient, 101)),
@@ -1466,4 +1467,201 @@ fn recapitalization_and_resume_normal() {
     client.approve(&signer2, &pid3);
 
     assert!(!client.is_emergency());
+}
+
+// ── #498: Governance Ceremony & #499: Escrow Reservation ─────────────────────
+
+#[test]
+fn test_initialize_ceremony_atomic_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let id = env.register_contract(None, DripPool);
+    let client = DripPoolClient::new(&env, &id);
+
+    let admin = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+    let token = Address::generate(&env);
+    let manifest_hash = soroban_sdk::BytesN::from_array(&env, &[7u8; 32]);
+
+    let signers = vec![&env, admin.clone(), signer2.clone()];
+    client.initialize_ceremony(&admin, &token, &signers, &2, &manifest_hash);
+
+    assert!(client.is_bootstrap_completed());
+    assert_eq!(client.token(), token);
+    assert_eq!(client.threshold(), 2);
+    assert_eq!(client.admins().len(), 2);
+    assert_eq!(client.manifest_hash(), manifest_hash);
+}
+
+#[test]
+fn test_ceremony_rejects_duplicate_signers() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let id = env.register_contract(None, DripPool);
+    let client = DripPoolClient::new(&env, &id);
+
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+    let manifest_hash = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+
+    let signers = vec![&env, admin.clone(), admin.clone()];
+    assert_eq!(
+        client.try_initialize_ceremony(&admin, &token, &signers, &2, &manifest_hash),
+        Err(Ok(Error::InvalidAction))
+    );
+}
+
+#[test]
+fn test_ceremony_rejects_impossible_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let id = env.register_contract(None, DripPool);
+    let client = DripPoolClient::new(&env, &id);
+
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+    let manifest_hash = soroban_sdk::BytesN::from_array(&env, &[2u8; 32]);
+
+    let signers = vec![&env, admin.clone()];
+    assert_eq!(
+        client.try_initialize_ceremony(&admin, &token, &signers, &3, &manifest_hash),
+        Err(Ok(Error::InvalidAction))
+    );
+}
+
+#[test]
+fn test_post_finalization_seed_admin_and_set_token_disabled() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let token = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+    let manifest_hash = soroban_sdk::BytesN::from_array(&env, &[3u8; 32]);
+    let signers = vec![&env, admin.clone(), signer2.clone()];
+
+    client.finalize_bootstrap(&admin, &token, &signers, &2, &manifest_hash);
+    assert!(client.is_bootstrap_completed());
+
+    // Single-signer bypasses disabled post finalization
+    let extra = Address::generate(&env);
+    assert_eq!(
+        client.try_seed_admin(&admin, &extra),
+        Err(Ok(Error::Unauthorized))
+    );
+
+    let new_token = Address::generate(&env);
+    assert_eq!(
+        client.try_set_token(&admin, &new_token),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+#[test]
+fn test_governed_set_token_via_proposal() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let token = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+    let manifest_hash = soroban_sdk::BytesN::from_array(&env, &[4u8; 32]);
+    let signers = vec![&env, admin.clone(), signer2.clone()];
+
+    client.finalize_bootstrap(&admin, &token, &signers, &2, &manifest_hash);
+
+    let new_token = Address::generate(&env);
+    let pid = client.propose(&admin, &ProposalAction::SetToken(new_token.clone()));
+    client.approve(&signer2, &pid);
+
+    assert_eq!(client.token(), new_token);
+}
+
+#[test]
+fn test_release_escrow_cannot_reduce_custody_below_protected_liabilities() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    client.deposit(&alice, &1_000); // 1,000 principal liability
+
+    let recipient = Address::generate(&env);
+    // ReleaseEscrow fails because free reserves (distributable_yield) is 0
+    assert_eq!(
+        client.try_propose(&admin, &ProposalAction::ReleaseEscrow(recipient, 500)),
+        Err(Ok(Error::InvalidAction))
+    );
+
+    // Deposit yield so free reserves = 600
+    client.add_yield(&admin, &600);
+    // Now proposing 500 succeeds
+    let recipient2 = Address::generate(&env);
+    let pid = client.propose(&admin, &ProposalAction::ReleaseEscrow(recipient2, 500));
+    assert_eq!(client.reserved_escrow(), 500);
+
+    // Protected principal total_deposited remains untouched at 1,000
+    assert_eq!(client.pool().total_deposited, 1_000);
+    let _ = pid;
+}
+
+#[test]
+fn test_concurrent_proposals_cannot_reserve_same_free_balance() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    client.add_yield(&admin, &100); // 100 free reserves
+
+    let recipient1 = Address::generate(&env);
+    let recipient2 = Address::generate(&env);
+
+    // First proposal reserves 80
+    let pid1 = client.propose(&admin, &ProposalAction::ReleaseEscrow(recipient1, 80));
+    assert_eq!(client.reserved_escrow(), 80);
+
+    // Second proposal for 30 fails because remaining free balance is 20
+    assert_eq!(
+        client.try_propose(&admin, &ProposalAction::ReleaseEscrow(recipient2, 30)),
+        Err(Ok(Error::InvalidAction))
+    );
+
+    let _ = pid1;
+}
+
+#[test]
+fn test_expired_proposal_releases_reservation() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let signer2 = Address::generate(&env);
+    client.seed_admin(&admin, &signer2);
+
+    client.add_yield(&admin, &500);
+    let recipient = Address::generate(&env);
+
+    let pid = client.propose(&admin, &ProposalAction::ReleaseEscrow(recipient, 300));
+    assert_eq!(client.reserved_escrow(), 300);
+
+    // Skip past expiry window
+    let current_seq = env.ledger().sequence();
+    env.ledger().set_sequence_number(current_seq + 17_280 * 31);
+
+    assert_eq!(
+        client.try_approve(&signer2, &pid),
+        Err(Ok(Error::ProposalExpired))
+    );
+    assert_eq!(client.reserved_escrow(), 0);
+}
+
+#[test]
+fn test_cancelled_proposal_releases_reservation() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    client.add_yield(&admin, &500);
+    let recipient = Address::generate(&env);
+
+    let pid = client.propose(&admin, &ProposalAction::ReleaseEscrow(recipient, 300));
+    assert_eq!(client.reserved_escrow(), 300);
+
+    client.cancel_proposal(&admin, &pid);
+    assert_eq!(client.reserved_escrow(), 0);
 }

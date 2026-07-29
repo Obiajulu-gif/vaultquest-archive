@@ -83,11 +83,42 @@ async function main() {
       participantCount: 4,
       expectedYield: "22.1%",
       prize: "100000 AQUA"
+    },
+    {
+      walletAddress: walletC,
+      poolId: "vault-btc-safe-reserve",
+      poolName: "BTC Safe Reserve",
+      status: "active",
+      tvl: "15600000",
+      asset: "BTC",
+      participantCount: 1205,
+      expectedYield: "10.1%",
+      prize: "0.5 BTC"
     }
   ];
 
   for (const pool of pools) {
     await prisma.savedPool.create({ data: pool });
+  }
+
+  console.log("Seeding mock PendingEvent entries...");
+  const pendingEvents = [
+    {
+      txHash: "0x9999999999999999999999999999999999999999999999999999999999999999",
+      sorobanEventId: "0000000000000000001-0000000001",
+      eventPayload: { type: "deposit", amount: "500", from: walletA },
+      statusHint: "confirmed"
+    },
+    {
+      txHash: "0x8888888888888888888888888888888888888888888888888888888888888888",
+      sorobanEventId: "0000000000000000002-0000000001",
+      eventPayload: { type: "withdraw", amount: "100", from: walletB },
+      statusHint: "submitted"
+    }
+  ];
+
+  for (const event of pendingEvents) {
+    await prisma.pendingEvent.create({ data: event });
   }
 
   console.log("Seeding mock ActionLedger logs...");
@@ -288,6 +319,26 @@ async function main() {
       status: ActionStatus.pending,
       idempotencyKey: randomUUID(),
       actionPayload: { vault_id: "vault-aqua-governance-boost", amount: 25000, token: "AQUA" }
+    },
+    {
+      walletAddress: walletC,
+      actionType: ActionType.deposit,
+      status: ActionStatus.confirmed,
+      idempotencyKey: randomUUID(),
+      actionPayload: { vault_id: "vault-btc-safe-reserve", amount: 0.1, token: "BTC" },
+      txHash: "0x2323232323232323232323232323232323232323232323232323232323232323",
+      submittedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
+      confirmedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000)
+    },
+    {
+      walletAddress: walletC,
+      actionType: ActionType.withdraw,
+      status: ActionStatus.failed,
+      idempotencyKey: randomUUID(),
+      actionPayload: { vault_id: "vault-btc-safe-reserve", amount: 0.05, token: "BTC" },
+      txHash: "0x2424242424242424242424242424242424242424242424242424242424242424",
+      errorCode: "INSUFFICIENT_FUNDS",
+      submittedAt: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000)
     }
   ];
 

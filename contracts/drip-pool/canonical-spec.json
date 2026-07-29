@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "contract": "drip-pool",
+  "description": "Canonical contract specification for cross-stack conformance testing. Exported from Rust contract types in contracts/drip-pool/src/lib.rs.",
+  "errors": {
+    "AlreadyInitialized": 1,
+    "NotInitialized": 2,
+    "AlreadyJoined": 3,
+    "NotJoined": 4,
+    "InvalidAmount": 5,
+    "Locked": 6,
+    "LockupActive": 7,
+    "Unauthorized": 8,
+    "ThresholdNotMet": 9,
+    "AlreadySigned": 10,
+    "ProposalNotFound": 11,
+    "ProposalExpired": 12,
+    "InvalidAction": 13
+  },
+  "events": {
+    "pool/created": {
+      "topics": ["pool", "created"],
+      "data": {
+        "type": "address",
+        "description": "The admin who created the pool"
+      }
+    },
+    "pool/joined": {
+      "topics": ["pool", "joined"],
+      "data": {
+        "type": "address",
+        "description": "The participant who joined"
+      }
+    },
+    "pool/deposit": {
+      "topics": ["pool", "deposit"],
+      "data": {
+        "type": "vec",
+        "fields": [
+          { "name": "who", "type": "address" },
+          { "name": "amount", "type": "i128" },
+          { "name": "total_deposited", "type": "i128" }
+        ]
+      }
+    },
+    "pool/withdrawn": {
+      "topics": ["pool", "withdrawn"],
+      "data": {
+        "type": "vec",
+        "fields": [
+          { "name": "who", "type": "address" },
+          { "name": "amount", "type": "i128" }
+        ]
+      }
+    },
+    "pool/claimed": {
+      "topics": ["pool", "claimed"],
+      "data": {
+        "type": "vec",
+        "fields": [
+          { "name": "who", "type": "address" },
+          { "name": "amount", "type": "i128" }
+        ]
+      }
+    },
+    "pool/payout": {
+      "topics": ["pool", "payout"],
+      "data": {
+        "type": "vec",
+        "fields": [
+          { "name": "winner", "type": "address" },
+          { "name": "prize", "type": "i128" }
+        ]
+      }
+    }
+  },
+  "structs": {
+    "Pool": {
+      "fields": [
+        { "name": "admin", "type": "address" },
+        { "name": "total_drips", "type": "u64" },
+        { "name": "total_deposited", "type": "i128" },
+        { "name": "created_at", "type": "u64" },
+        { "name": "locked", "type": "bool" },
+        { "name": "proposal_nonce", "type": "u32" },
+        { "name": "distributable_yield", "type": "i128" }
+      ]
+    },
+    "Participant": {
+      "fields": [
+        { "name": "joined_at", "type": "u64" },
+        { "name": "deposited", "type": "i128" },
+        { "name": "claimable", "type": "i128" },
+        { "name": "locked_until", "type": "u32" },
+        { "name": "lockup_multiplier", "type": "u32" },
+        { "name": "yield_accrued", "type": "i128" }
+      ]
+    },
+    "Proposal": {
+      "fields": [
+        { "name": "action", "type": "ProposalAction" },
+        { "name": "approvals", "type": "vec" },
+        { "name": "expires_at", "type": "u32" },
+        { "name": "approver_snapshot", "type": "vec" }
+      ]
+    }
+  },
+  "methods": {
+    "create": {
+      "params": ["admin"],
+      "returns": "void",
+      "description": "Initialize the pool with an admin"
+    },
+    "seed_admin": {
+      "params": ["caller", "new_admin"],
+      "returns": "void",
+      "description": "Bootstrap add signer while admin count < threshold"
+    },
+    "propose": {
+      "params": ["signer", "action"],
+      "returns": "u32",
+      "description": "Create a multi-sig proposal"
+    },
+    "approve": {
+      "params": ["signer", "proposal_id"],
+      "returns": "bool",
+      "description": "Approve a proposal; auto-executes when threshold met"
+    },
+    "cancel_proposal": {
+      "params": ["signer", "proposal_id"],
+      "returns": "void",
+      "description": "Cancel a pending proposal"
+    },
+    "join": {
+      "params": ["who"],
+      "returns": "void",
+      "description": "Join the pool"
+    },
+    "deposit": {
+      "params": ["who", "amount"],
+      "returns": "void",
+      "description": "Deposit into the pool"
+    },
+    "drip": {
+      "params": ["who", "amount"],
+      "returns": "void",
+      "description": "Alias for deposit"
+    },
+    "deposit_with_duration": {
+      "params": ["who", "amount", "lockup_days"],
+      "returns": "void",
+      "description": "Deposit with explicit lockup duration"
+    },
+    "claim": {
+      "params": ["who"],
+      "returns": "i128",
+      "description": "Alias for claim_reward"
+    },
+    "claim_reward": {
+      "params": ["who"],
+      "returns": "i128",
+      "description": "Claim accumulated rewards"
+    },
+    "withdraw": {
+      "params": ["who"],
+      "returns": "i128",
+      "description": "Withdraw after lockup"
+    },
+    "withdraw_locked": {
+      "params": ["who"],
+      "returns": "i128",
+      "description": "Withdraw time-locked deposit"
+    },
+    "add_yield": {
+      "params": ["caller", "amount"],
+      "returns": "void",
+      "description": "Admin deposits realized yield"
+    },
+    "credit_yield": {
+      "params": ["caller", "who", "amount"],
+      "returns": "void",
+      "description": "Admin credits yield to participant"
+    },
+    "draw_winner": {
+      "params": ["caller", "prize"],
+      "returns": "address",
+      "description": "Draw a prize winner"
+    },
+    "pool": {
+      "params": [],
+      "returns": "Pool",
+      "description": "View pool state"
+    },
+    "savings": {
+      "params": ["who"],
+      "returns": "Participant",
+      "description": "View participant state"
+    },
+    "admins": {
+      "params": [],
+      "returns": "vec",
+      "description": "View admin list"
+    },
+    "threshold": {
+      "params": [],
+      "returns": "u32",
+      "description": "View multisig threshold"
+    }
+  },
+  "type_mapping": {
+    "contract_to_backend": {
+      "deposit": "deposit",
+      "withdraw": "withdraw",
+      "create": "create_vault",
+      "claim": "claim",
+      "draw_winner": "select_winner"
+    },
+    "contract_to_wallet": {
+      "create": "create",
+      "join": "join",
+      "deposit": "drip",
+      "drip": "drip",
+      "claim": "claim",
+      "claim_reward": "claim",
+      "withdraw": "withdraw"
+    },
+    "backend_to_wallet": {
+      "deposit": "drip",
+      "withdraw": "withdraw",
+      "create_vault": "create",
+      "claim": "claim",
+      "select_winner": "draw_winner"
+    }
+  },
+  "error_code_mapping": {
+    "contract_to_backend": {
+      "AlreadyInitialized": "INVALID_PAYLOAD",
+      "NotInitialized": "INVALID_PAYLOAD",
+      "AlreadyJoined": "INVALID_PAYLOAD",
+      "NotJoined": "NOT_FOUND",
+      "InvalidAmount": "INVALID_PAYLOAD",
+      "Locked": "REVERTED_ON_CHAIN",
+      "LockupActive": "REVERTED_ON_CHAIN",
+      "Unauthorized": "UNAUTHORIZED",
+      "ThresholdNotMet": "FORBIDDEN",
+      "AlreadySigned": "INVALID_PAYLOAD",
+      "ProposalNotFound": "NOT_FOUND",
+      "ProposalExpired": "INVALID_PAYLOAD",
+      "InvalidAction": "INVALID_PAYLOAD"
+    },
+    "contract_to_wallet": {
+      "AlreadyInitialized": "contract_error",
+      "NotInitialized": "contract_error",
+      "AlreadyJoined": "contract_error",
+      "NotJoined": "contract_error",
+      "InvalidAmount": "contract_error",
+      "Locked": "contract_error",
+      "LockupActive": "contract_error",
+      "Unauthorized": "signature_rejected",
+      "ThresholdNotMet": "contract_error",
+      "AlreadySigned": "contract_error",
+      "ProposalNotFound": "contract_error",
+      "ProposalExpired": "contract_error",
+      "InvalidAction": "contract_error"
+    }
+  }
+}

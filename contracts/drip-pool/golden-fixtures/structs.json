@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "description": "Golden fixtures for contract struct shapes.",
+  "structs": {
+    "Pool": {
+      "fields": [
+        {
+          "name": "admin",
+          "type": "address"
+        },
+        {
+          "name": "total_drips",
+          "type": "u64"
+        },
+        {
+          "name": "total_deposited",
+          "type": "i128"
+        },
+        {
+          "name": "created_at",
+          "type": "u64"
+        },
+        {
+          "name": "locked",
+          "type": "bool"
+        },
+        {
+          "name": "proposal_nonce",
+          "type": "u32"
+        },
+        {
+          "name": "distributable_yield",
+          "type": "i128"
+        }
+      ]
+    },
+    "Participant": {
+      "fields": [
+        {
+          "name": "joined_at",
+          "type": "u64"
+        },
+        {
+          "name": "deposited",
+          "type": "i128"
+        },
+        {
+          "name": "claimable",
+          "type": "i128"
+        },
+        {
+          "name": "locked_until",
+          "type": "u32"
+        },
+        {
+          "name": "lockup_multiplier",
+          "type": "u32"
+        },
+        {
+          "name": "yield_accrued",
+          "type": "i128"
+        }
+      ]
+    },
+    "Proposal": {
+      "fields": [
+        {
+          "name": "action",
+          "type": "ProposalAction"
+        },
+        {
+          "name": "approvals",
+          "type": "vec"
+        },
+        {
+          "name": "expires_at",
+          "type": "u32"
+        },
+        {
+          "name": "approver_snapshot",
+          "type": "vec"
+        }
+      ]
+    }
+  }
+}

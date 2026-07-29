@@ -1,0 +1,30 @@
+{
+  "version": "1.0.0",
+  "environment": "staging",
+  "network": {
+    "passphrase": "Test SDF Network ; September 2015",
+    "name": "testnet",
+    "sorobanRpcUrl": "https://rpc.testnet.stellar.org",
+    "horizonUrl": "https://horizon-testnet.stellar.org"
+  },
+  "contracts": {
+    "dripPool": {
+      "contractId": "CA_PLACEHOLDER_DRIP_POOL_CONTRACT_ID",
+      "specHash": ""
+    },
+    "escrow": {
+      "contractId": "",
+      "specHash": ""
+    },
+    "evm": {
+      "address": "0x1234567890123456789012345678901234567890",
+      "chainId": 43113
+    }
+  },
+  "assets": [],
+  "build": {
+    "commitSha": "HEAD",
+    "buildTimestamp": "2026-07-24T00:00:00Z",
+    "contractWasmHash": ""
+  }
+}

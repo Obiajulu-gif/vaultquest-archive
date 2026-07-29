@@ -4,11 +4,12 @@ import {
   EmptyState,
   ErrorState,
   LoadingState,
-  StaleIndicator,
   WalletDisconnectedState,
 } from "../../components/FallbackStates";
+import { DataRefreshControl } from "../../components/DataRefreshControl";
 import type { SavedPoolEntry, PoolStatus } from "../contract/types";
 import { formatAmount, formatDate } from "../lib/format";
+import PoolStatusBadge from "./PoolStatusBadge";
 
 /**
  * Saved pools watchlist (#89, #90).
@@ -30,14 +31,11 @@ export interface SavedPoolsWatchlistProps {
   onOpenPool?: (poolId: string) => void;
   onUnsave?: (entry: SavedPoolEntry) => void;
   savingPoolId?: string | null;
+  updatedAt?: number | null;
+  fetching?: boolean;
+  partialError?: Error | null;
+  refetch?: () => void;
 }
-
-const STATUS_BADGE: Record<PoolStatus, { label: string; className: string }> = {
-  open: { label: "Open", className: "bg-emerald-500/15 text-emerald-300" },
-  locked: { label: "Locked", className: "bg-sky-500/15 text-sky-300" },
-  drawing: { label: "Drawing", className: "bg-amber-500/15 text-amber-300" },
-  settled: { label: "Settled", className: "bg-gray-500/15 text-gray-300" },
-};
 
 const HeaderIcon: FC<{ children: ReactNode }> = ({ children }) => (
   <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-900/20 text-red-300">
@@ -56,6 +54,10 @@ export const SavedPoolsWatchlist: FC<SavedPoolsWatchlistProps> = ({
   onOpenPool,
   onUnsave,
   savingPoolId = null,
+  updatedAt = null,
+  fetching = false,
+  partialError = null,
+  refetch = () => {},
 }) => {
   if (!walletConnected) {
     return <WalletDisconnectedState onConnect={onConnect} />;
@@ -88,7 +90,13 @@ export const SavedPoolsWatchlist: FC<SavedPoolsWatchlistProps> = ({
             <p className="text-sm text-gray-400">Pools you bookmarked for later.</p>
           </div>
         </div>
-        {stale && <StaleIndicator />}
+        <DataRefreshControl
+          updatedAt={updatedAt}
+          stale={stale}
+          fetching={fetching}
+          partialError={partialError}
+          onRefresh={refetch}
+        />
       </header>
 
       <div className="hidden overflow-hidden rounded-2xl border border-red-900/30 bg-[#1A0505]/60 lg:block">
@@ -105,7 +113,6 @@ export const SavedPoolsWatchlist: FC<SavedPoolsWatchlistProps> = ({
           </thead>
           <tbody>
             {entries.map((entry) => {
-              const badge = STATUS_BADGE[entry.status];
               return (
                 <tr key={entry.id} className="border-b border-red-900/20 last:border-0">
                   <td className="px-4 py-3">
@@ -113,9 +120,7 @@ export const SavedPoolsWatchlist: FC<SavedPoolsWatchlistProps> = ({
                     <div className="text-xs text-gray-400">{entry.asset}</div>
                   </td>
                   <td className="px-4 py-3">
-                    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${badge.className}`}>
-                      {badge.label}
-                    </span>
+                    <PoolStatusBadge status={entry.status} />
                   </td>
                   <td className="px-4 py-3 text-gray-300">{formatAmount(entry.tvl, entry.asset)}</td>
                   <td className="px-4 py-3 text-gray-300">{entry.expectedYield}</td>
@@ -154,7 +159,6 @@ export const SavedPoolsWatchlist: FC<SavedPoolsWatchlistProps> = ({
 
       <ul className="space-y-3 lg:hidden">
         {entries.map((entry) => {
-          const badge = STATUS_BADGE[entry.status];
           return (
             <li key={entry.id} className="rounded-2xl border border-red-900/30 bg-[#1A0505]/60 p-4">
               <div className="flex items-start justify-between gap-3">
@@ -162,9 +166,7 @@ export const SavedPoolsWatchlist: FC<SavedPoolsWatchlistProps> = ({
                   <div className="font-medium text-white">{entry.name}</div>
                   <div className="mt-1 text-xs text-gray-400">{formatDate(entry.savedAt)}</div>
                 </div>
-                <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${badge.className}`}>
-                  {badge.label}
-                </span>
+                <PoolStatusBadge status={entry.status} />
               </div>
               <dl className="mt-3 space-y-1.5 text-sm">
                 <div className="flex justify-between gap-2">

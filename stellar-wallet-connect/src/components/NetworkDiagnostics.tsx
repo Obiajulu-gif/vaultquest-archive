@@ -6,11 +6,13 @@ import {
   Check,
   Terminal,
   Settings,
-  AlertCircle
+  AlertCircle,
+  Shield
 } from "lucide-react";
 import { connectedPublicKey, connectedNetwork, isNetworkMismatch } from "../core/store.js";
 import { EXPECTED_NETWORK, STELLAR_NETWORKS, type NetworkType } from "../lib/wallets.js";
-import { getFrontendEnv } from "../core/env.js";
+import { getFrontendEnv, getManifestAttestation } from "../core/env.js";
+import { resolveHorizonUrl } from "../core/horizonConfig.js";
 
 export const NetworkDiagnostics: FC = () => {
   const publicKey = useStore(connectedPublicKey);
@@ -31,8 +33,13 @@ export const NetworkDiagnostics: FC = () => {
 
   const expectedNetworkConfig = STELLAR_NETWORKS[EXPECTED_NETWORK as NetworkType];
   const connectedNetworkConfig = network ? STELLAR_NETWORKS[network as NetworkType] : null;
+  const activeHorizonUrl = resolveHorizonUrl(
+    env.NEXT_PUBLIC_HORIZON_URL ?? "",
+    expectedNetworkConfig?.horizonUrl ?? "",
+  );
 
   const handleCopy = () => {
+    const attestation = getManifestAttestation();
     const info = `### VaultQuest Diagnostic Report
 - **Timestamp**: ${new Date().toISOString()}
 - **Wallet Connected**: ${publicKey ? "Yes" : "No"}
@@ -41,11 +48,17 @@ export const NetworkDiagnostics: FC = () => {
 - **Expected Network**: ${EXPECTED_NETWORK} (Passphrase: ${expectedNetworkConfig?.passphrase || "N/A"})
 - **Network Mismatch Detected**: ${mismatch ? "Yes" : "No"}
 
+#### Deployment Manifest:
+- **Verified**: ${attestation?.verified ? "Yes" : "No"}
+- **Version**: ${attestation?.version || "N/A"}
+- **Environment**: ${attestation?.environment || "N/A"}
+- **Mismatches**: ${attestation?.mismatches.length || 0}
+
 #### Configuration Info:
 - **Drip Pool Contract ID**: ${env.NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID || "Not Set"}
 - **Trustless Work Escrow Contract ID**: ${env.NEXT_PUBLIC_TRUSTLESS_WORK_ESCROW_CONTRACT_ID || "Not Set"}
 - **Soroban RPC URL**: ${env.NEXT_PUBLIC_SOROBAN_RPC_URL || "Not Set"}
-- **Horizon URL**: ${env.NEXT_PUBLIC_HORIZON_URL || "Not Set"}
+- **Horizon URL**: ${activeHorizonUrl || env.NEXT_PUBLIC_HORIZON_URL || "Not Set"}
 - **Trustless Work API Base URL**: ${env.TRUSTLESS_WORK_API_BASE_URL || "Not Set"}
 - **Trustless Work API Key**: ${env.TRUSTLESS_WORK_API_KEY ? "[HIDDEN / PRESENT]" : "[NOT SET]"}
 - **Environment Status**: ${envError ? `Degraded (${envError})` : "Healthy"}
@@ -177,6 +190,56 @@ export const NetworkDiagnostics: FC = () => {
               </dl>
             </div>
 
+            {/* Deployment Manifest Attestation */}
+            <div className="space-y-2 rounded-xl border border-red-900/10 bg-black/10 p-3 md:col-span-2">
+              <h4 className="font-semibold text-white uppercase tracking-wider text-[10px] text-red-400 flex items-center gap-1.5">
+                <Shield className="h-3 w-3" aria-hidden="true" />
+                Deployment Manifest Attestation
+              </h4>
+              {(() => {
+                const attestation = getManifestAttestation();
+                if (!attestation) {
+                  return (
+                    <p className="text-xs text-gray-500 italic">No deployment manifest loaded</p>
+                  );
+                }
+                return (
+                  <dl className="grid gap-x-4 gap-y-1.5 sm:grid-cols-2">
+                    <div>
+                      <dt className="text-gray-400">Verification Status:</dt>
+                      <dd className={`font-semibold ${attestation.verified ? "text-emerald-400" : "text-red-400"}`}>
+                        {attestation.verified ? "Verified" : "Mismatch Detected"}
+                      </dd>
+                    </div>
+                    {attestation.version && (
+                      <div>
+                        <dt className="text-gray-400">Manifest Version:</dt>
+                        <dd className="font-mono text-gray-200">{attestation.version}</dd>
+                      </div>
+                    )}
+                    {attestation.environment && (
+                      <div>
+                        <dt className="text-gray-400">Environment:</dt>
+                        <dd className="font-mono text-gray-200 uppercase">{attestation.environment}</dd>
+                      </div>
+                    )}
+                    {attestation.mismatches.length > 0 && (
+                      <div className="sm:col-span-2">
+                        <dt className="text-gray-400">Mismatches:</dt>
+                        <dd className="mt-1 space-y-1">
+                          {attestation.mismatches.map((m, i) => (
+                            <div key={i} className="text-[10px] font-mono bg-red-950/30 rounded p-1.5 border border-red-900/20">
+                              <span className="text-red-400">{m.field}</span>: manifest=<span className="text-emerald-400">{m.manifestValue}</span> env=<span className="text-red-400">{m.envValue}</span>
+                            </div>
+                          ))}
+                        </dd>
+                      </div>
+                    )}
+                  </dl>
+                );
+              })()}
+            </div>
+
             {/* Smart Contracts Configuration */}
             <div className="space-y-2 rounded-xl border border-red-900/10 bg-black/10 p-3 md:col-span-2">
               <h4 className="font-semibold text-white uppercase tracking-wider text-[10px] text-red-400">Registered Smart Contracts & API</h4>
@@ -190,7 +253,7 @@ export const NetworkDiagnostics: FC = () => {
                 <div>
                   <dt className="text-gray-400">Horizon Endpoint URL:</dt>
                   <dd className="font-mono text-gray-200 break-all bg-black/30 p-1 rounded mt-0.5 select-all">
-                    {env.NEXT_PUBLIC_HORIZON_URL || "Not Set"}
+                    {activeHorizonUrl || env.NEXT_PUBLIC_HORIZON_URL || "Not Set"}
                   </dd>
                 </div>
                 <div>

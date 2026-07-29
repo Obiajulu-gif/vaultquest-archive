@@ -46,6 +46,7 @@ export const portfolioQuery = z.object({
 
 export const checkpointBody = z.object({
   latest_ledger: z.number().int().nonnegative(),
+  last_processed_event_id: z.string().min(1).max(200).nullable().optional(),
   last_error: z.string().nullable().optional(),
   success: z.boolean().default(true)
 });
@@ -57,4 +58,11 @@ export const exportQuery = z.object({
   from: z.string().datetime({ offset: true }).optional(),
   to: z.string().datetime({ offset: true }).optional(),
   limit: z.coerce.number().int().min(1).max(1000).default(500)
+});
+
+export const actionHistoryQuery = z.object({
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+  type: z.enum(ACTION_TYPES).optional(),
+  status: z.enum(ACTION_STATUSES).optional(),
 });

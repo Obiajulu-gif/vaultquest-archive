@@ -1,0 +1,23 @@
+{
+  "eventType": "withdrawal",
+  "valid": {
+    "topic": "withdrawal",
+    "value": { "vault_id": "v1", "amount": "2500", "recipient": "GRECIP...", "version": 2 },
+    "successful": true
+  },
+  "malformed": {
+    "topic": "withdrawal",
+    "rawValue": "{ \"amount\": ",
+    "successful": true
+  },
+  "legacyVersion": {
+    "topic": "withdrawal",
+    "value": { "vault_id": "v1", "amount": "2500", "version": 1 },
+    "successful": true
+  },
+  "unknownVersion": {
+    "topic": "withdrawal",
+    "value": { "vault_id": "v1", "amount": "2500", "version": 999 },
+    "successful": true
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "eventType": "deposit",
+  "valid": {
+    "topic": "deposit",
+    "value": { "vault_id": "v1", "amount": "1000000", "depositor": "GABCDE...", "version": 2 },
+    "successful": true
+  },
+  "malformed": {
+    "topic": "deposit",
+    "rawValue": "{ amount: 1000000 ",
+    "successful": true
+  },
+  "legacyVersion": {
+    "topic": "deposit",
+    "value": { "vault_id": "v1", "amount": "1000000", "version": 1 },
+    "successful": true
+  },
+  "unknownVersion": {
+    "topic": "deposit",
+    "value": { "vault_id": "v1", "amount": "1000000", "version": 999 },
+    "successful": true
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "meta": {
+    "title": "VaultQuest — Risikofreies Sparen mit Preisen",
+    "description": "Zahlen Sie ein, erwirtschaften Sie Rendite und gewinnen Sie Preise, ohne Ihr Kapital zu riskieren."
+  },
+  "nav": {
+    "vaults": "Tresore",
+    "activity": "Aktivität",
+    "account": "Konto",
+    "prizes": "Preise",
+    "trust": "Vertrauen",
+    "notifications": "Benachrichtigungen",
+    "admin": "Admin"
+  },
+  "footer": {
+    "terms": "Produktbedingungen",
+    "privacy": "Datenschutz",
+    "language": "Sprache",
+    "copyright": "© {{year}} VaultQuest. Alle Rechte vorbehalten."
+  },
+  "vaults": {
+    "title": "Tresore",
+    "empty": "Noch keine Tresore verfügbar.",
+    "active": "Aktiv",
+    "archived": "Archiviert",
+    "startSaving": "Jetzt sparen starten",
+    "viewDetails": "Details anzeigen"
+  },
+  "activity": {
+    "title": "Aktivität",
+    "noActivity": "Noch keine Aktivität.",
+    "status": {
+      "pending": "Ausstehend",
+      "submitted": "Eingereicht",
+      "confirmed": "Bestätigt",
+      "failed": "Fehlgeschlagen",
+      "canceled": "Storniert"
+    }
+  },
+  "account": {
+    "title": "Konto",
+    "positions": "Positionen",
+    "rewards": "Belohnungen",
+    "export": "Transaktionen exportieren"
+  },
+  "prizes": {
+    "title": "Preise",
+    "empty": "Noch keine Preise gezogen.",
+    "countdown": "Nächste Ziehung in",
+    "winners": "Letzte Gewinner"
+  },
+  "trust": {
+    "title": "Vertrauen & Sicherheit",
+    "sections": {
+      "intro": "Einführung",
+      "contracts": "Verträge",
+      "audits": "Audits",
+      "risk": "Risikofaktoren"
+    }
+  },
+  "modals": {
+    "history": {
+      "title": "Transaktionsverlauf",
+      "empty": "Keine Transaktionen gefunden.",
+      "columns": {
+        "date": "Datum",
+        "type": "Typ",
+        "status": "Status",
+        "amount": "Betrag",
+        "token": "Token",
+        "txHash": "Tx-Hash"
+      }
+    }
+  },
+  "common": {
+    "loading": "Laden...",
+    "error": "Etwas ist schiefgelaufen.",
+    "retry": "Erneut versuchen",
+    "copy": "Kopieren",
+    "copied": "Kopiert",
+    "close": "Schließen"
+  }
+}

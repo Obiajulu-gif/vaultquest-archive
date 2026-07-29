@@ -7,6 +7,19 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model User {
+  id            String   @id @default(uuid()) @db.Uuid
+  walletAddress String?  @unique @map("wallet_address")
+  email         String?  @unique
+  name          String?
+  bio           String?
+  passwordHash  String?  @map("password_hash")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
 enum ActionType {
   deposit
   withdraw
@@ -45,6 +58,8 @@ model ActionLedger {
 
   @@index([walletAddress, createdAt(sort: Desc)])
   @@index([status, updatedAt])
+  @@index([walletAddress, actionType])
+  @@index([status, createdAt(sort: Desc)])
   @@map("action_ledger")
 }
 
@@ -56,17 +71,143 @@ model PendingEvent {
   receivedAt      DateTime  @default(now()) @map("received_at")
   consumedAt      DateTime? @map("consumed_at")
 
+  @@index([statusHint, receivedAt])
   @@map("pending_events")
+}
+
+model ActionLease {
+  actionId   String    @id @map("action_id") @db.Uuid
+  workerId   String    @map("worker_id")
+  acquiredAt DateTime  @default(now()) @map("acquired_at")
+  expiresAt  DateTime  @map("expires_at")
+
+  @@index([expiresAt])
+  @@map("action_leases")
 }
 
 model IndexerCheckpoint {
   id                  String   @id @default("singleton")
   latestLedger        Int      @map("latest_ledger")
+  lastProcessedEventId String?  @map("last_processed_event_id")
+  lastLedgerHash      String?  @map("last_ledger_hash")
   lastSyncTime        DateTime @map("last_sync_time")
   lastError           String?  @map("last_error")
   lastSuccessSyncTime DateTime @default(now()) @map("last_success_sync_time")
 
   @@map("indexer_checkpoints")
+}
+
+model PoisonEvent {
+  id             String    @id @default(uuid()) @db.Uuid
+  sorobanEventId String    @unique @map("soroban_event_id")
+  ledger         Int
+  contractId     String    @map("contract_id")
+  txHash         String    @map("tx_hash")
+  rawEvent       Json      @map("raw_event")
+  reason         String
+  detectedAt     DateTime  @default(now()) @map("detected_at")
+  resolvedAt     DateTime? @map("resolved_at")
+
+  @@index([resolvedAt, detectedAt])
+  @@map("poison_events")
+}
+
+model VaultSettlement {
+  id             String    @id @default(uuid()) @db.Uuid
+  vaultId        String    @unique @map("vault_id")
+  state          String    @default("Unresolved")
+  settlementType String    @map("settlement_type")
+  recipient      String?
+  amount         String?
+  txHash         String?   @unique @map("tx_hash")
+  resultCode     String?   @map("result_code")
+  errorCode      String?   @map("error_code")
+  errorDetail    String?   @map("error_detail")
+  attempts       Int       @default(0)
+  resolvedAt     DateTime? @map("resolved_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@index([state, updatedAt])
+  @@index([recipient, state])
+  @@map("vault_settlements")
+}
+
+model UserQuest {
+  id                    String    @id @default(uuid()) @db.Uuid
+  walletAddress         String    @map("wallet_address")
+  questId               String    @map("quest_id")
+  progress              Float     @default(0)
+  target                Float
+  status                String    @default("in_progress")
+  metadata              Json?
+  completedAt           DateTime? @map("completed_at")
+  lastEvaluatedAt       DateTime  @default(now()) @map("last_evaluated_at")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
+
+  @@unique([walletAddress, questId])
+  @@index([walletAddress, status])
+  @@index([status, completedAt(sort: Desc)])
+  @@map("user_quests")
+}
+
+model RepairAudit {
+  id          String   @id @default(uuid()) @db.Uuid
+  planJson    Json     @map("plan_json")
+  appliedJson Json?    @map("applied_json")
+  operatorId  String?  @map("operator_id")
+  appliedAt   DateTime @default(now()) @map("applied_at")
+
+  @@map("repair_audits")
+}
+
+model WalletChallenge {
+  challengeId   String    @id @map("challenge_id") @db.Uuid
+  walletAddress String    @map("wallet_address")
+  publicKey     String    @map("public_key")
+  network       String
+  nonce         String
+  domain        String
+  expiresAt     DateTime  @map("expires_at")
+  consumedAt    DateTime? @map("consumed_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  @@index([walletAddress, consumedAt])
+  @@index([expiresAt])
+  @@map("wallet_challenges")
+}
+
+model WalletSession {
+  id              String    @id @default(uuid()) @db.Uuid
+  walletAddress   String    @map("wallet_address")
+  publicKey       String    @map("public_key")
+  network         String
+  token           String    @unique
+  refreshToken    String?   @map("refresh_token")
+  expiresAt       DateTime  @map("expires_at")
+  lastUsedAt      DateTime  @default(now()) @map("last_used_at")
+  revokedAt       DateTime? @map("revoked_at")
+  prevSessionId   String?   @map("prev_session_id") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@index([walletAddress, revokedAt])
+  @@index([token])
+  @@map("wallet_sessions")
+}
+
+model RepairQuarantine {
+  id          String   @id @default(uuid()) @db.Uuid
+  recordType  String   @map("record_type")
+  recordId    String   @map("record_id")
+  driftType   String   @map("drift_type")
+  details     Json     @map("details")
+  detectedAt  DateTime @default(now()) @map("detected_at")
+  resolvedAt  DateTime? @map("resolved_at")
+
+  @@index([recordType, recordId])
+  @@index([driftType, detectedAt])
+  @@map("repair_quarantine")
 }
 
 model SavedPool {
@@ -88,5 +229,74 @@ model SavedPool {
 
   @@unique([walletAddress, poolId])
   @@index([walletAddress, createdAt(sort: Desc)])
+  @@index([poolId])
   @@map("saved_pools")
+}
+
+model DrawProof {
+  id                String    @id @default(uuid()) @db.Uuid
+  drawId            String    @unique @map("draw_id")
+  roundId           Int       @map("round_id")
+  contractId        String    @map("contract_id")
+  proofJson         Json      @map("proof_json")
+  proofHash         String    @unique @map("proof_hash")
+  signature         String?
+  verified          Boolean   @default(false)
+  verifiedAt        DateTime? @map("verified_at")
+  verificationError String?   @map("verification_error")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  @@index([roundId])
+  @@index([contractId, createdAt(sort: Desc)])
+  @@map("draw_proofs")
+}
+
+model Category {
+  id          String   @id @default(uuid()) @db.Uuid
+  slug        String   @unique
+  name        String
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("categories")
+}
+
+model Notification {
+  id             String    @id @default(uuid()) @db.Uuid
+  walletAddress  String    @map("wallet_address")
+  type           String
+  positionId     String    @map("position_id")
+  title          String
+  message        String
+  dismissedAt    DateTime? @map("dismissed_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  @@unique([walletAddress, positionId, type])
+  @@index([walletAddress, dismissedAt])
+  @@map("notifications")
+}
+
+model NotificationPreference {
+  walletAddress String   @id @map("wallet_address")
+  disabledTypes String[] @default([]) @map("disabled_types")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("notification_preferences")
+}
+
+model TransactionMetric {
+  id            String    @id @default(uuid()) @db.Uuid
+  actionId      String    @unique @map("action_id")
+  actionType    String    @map("action_type")
+  network       String
+  walletAddress String    @map("wallet_address")
+  submittedAt   DateTime  @map("submitted_at")
+  confirmedAt   DateTime? @map("confirmed_at")
+  indexedAt     DateTime? @map("indexed_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  @@index([actionType, network])
+  @@index([submittedAt])
+  @@map("transaction_metrics")
 }

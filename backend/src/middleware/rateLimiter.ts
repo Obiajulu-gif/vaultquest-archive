@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import fp from "fastify-plugin";
+import { ERROR_CODES } from "../constants.js";
 import { AppError } from "../errors.js";
 import { randomUUID } from "node:crypto";
 
@@ -49,7 +50,7 @@ const plugin: FastifyPluginAsync = async (app) => {
     } else {
       limitInfo.count++;
       if (limitInfo.count > limit) {
-        throw new AppError("RATE_LIMIT_EXCEEDED" as any, 429, "Rate limit exceeded. Try again later.");
+        throw new AppError(ERROR_CODES.RATE_LIMIT_EXCEEDED, 429, "Rate limit exceeded. Try again later.");
       }
     }
 
@@ -79,7 +80,7 @@ const plugin: FastifyPluginAsync = async (app) => {
     const headerTokenStr = Array.isArray(headerToken) ? headerToken[0] : headerToken;
 
     if (!cookieToken || !headerTokenStr || cookieToken !== headerTokenStr) {
-      throw new AppError("FORBIDDEN" as any, 403, "Invalid or missing CSRF token");
+      throw new AppError(ERROR_CODES.FORBIDDEN, 403, "Invalid or missing CSRF token");
     }
   });
 };

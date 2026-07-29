@@ -100,7 +100,9 @@ export interface VaultContractClient {
 
   // Reads
   getPool(poolId: string): Promise<PoolSummary>;
-  getUserPosition(poolId: string): Promise<UserPosition | null>;
+  /** Optional discovery read used when backend pool reads are disabled/unavailable. */
+  listPools?(): Promise<PoolSummary[]>;
+  getUserPosition(poolId: string, walletAddress?: string): Promise<UserPosition | null>;
   listRewardHistory(walletAddress: string): Promise<RewardHistoryEntry[]>;
 
   // Writes (wallet-signed)

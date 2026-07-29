@@ -22,4 +22,13 @@ export class AppError extends Error {
   static unauthorized(): AppError {
     return new AppError(ERROR_CODES.UNAUTHORIZED, 401, "unauthorized");
   }
+  static validation(message: string, detail?: string): AppError {
+    return new AppError(ERROR_CODES.INVALID_PAYLOAD, 400, message, detail);
+  }
+  static badRequest(code: ErrorCode, message: string, detail?: string): AppError {
+    return new AppError(code, 400, message, detail);
+  }
+  static forbidden(message: string = "forbidden"): AppError {
+    return new AppError(ERROR_CODES.FORBIDDEN, 403, message);
+  }
 }

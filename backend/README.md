@@ -18,7 +18,7 @@ Action ledger and reconciliation service for TrustQuest (issue #34).
 cp .env.example .env
 pnpm install
 # Setup database (migrations and mock seed data)
-npm run db:setup
+pnpm run db:setup
 pnpm test
 pnpm dev
 ```

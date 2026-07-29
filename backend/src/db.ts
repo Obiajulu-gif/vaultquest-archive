@@ -18,3 +18,17 @@ export async function disconnectPrisma(): Promise<void> {
     client = undefined;
   }
 }
+
+/**
+ * Lightweight connectivity probe (#indexer). The indexer daemon calls this
+ * before each poll so it skips a tick — rather than fetching Horizon events it
+ * cannot persist — when the database is temporarily unreachable.
+ */
+export async function pingDatabase(prisma: PrismaClient): Promise<boolean> {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    return true;
+  } catch {
+    return false;
+  }
+}

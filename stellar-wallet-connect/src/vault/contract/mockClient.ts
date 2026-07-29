@@ -82,6 +82,11 @@ export function createMockVaultClient(config: MockVaultConfig = {}): VaultContra
       return pool;
     },
 
+    async listPools() {
+      maybeFailRead();
+      return Object.values(pools);
+    },
+
     async getUserPosition(poolId) {
       maybeFailRead();
       return positions[poolId] ?? null;

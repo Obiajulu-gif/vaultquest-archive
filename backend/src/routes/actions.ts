@@ -1,4 +1,4 @@
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, preHandlerHookHandler } from "fastify";
 import type { LedgerService } from "../services/ledger.js";
 import {
   createActionBody,
@@ -8,7 +8,8 @@ import {
   dashboardQuery,
   portfolioQuery,
   exportQuery,
-  idempotencyKeySchema
+  idempotencyKeySchema,
+  actionHistoryQuery
 } from "../schemas/actions.js";
 import { AppError } from "../errors.js";
 import { ok, page } from "../responses.js";
@@ -36,7 +37,10 @@ function serialize(row: Awaited<ReturnType<LedgerService["getAction"]>>) {
   };
 }
 
-export const actionsRoutes = (svc: LedgerService): FastifyPluginAsync =>
+export const actionsRoutes = (
+  svc: LedgerService,
+  apiKeyGuard: preHandlerHookHandler
+): FastifyPluginAsync =>
   async (app) => {
     app.post("/actions", async (req, reply) => {
       const keyHeader = req.headers["idempotency-key"];
@@ -66,7 +70,8 @@ export const actionsRoutes = (svc: LedgerService): FastifyPluginAsync =>
 
     app.patch<{ Params: { id: string } }>("/actions/:id/submitted", async (req) => {
       const body = attachTxBody.parse(req.body);
-      const result = await svc.attachTxHash(req.params.id, body.tx_hash);
+      const workerId = (req.headers["x-worker-id"] as string | undefined) ?? "anonymous";
+      const result = await svc.attachTxHash(req.params.id, body.tx_hash, { workerId });
       return ok(serialize(result));
     });
 
@@ -188,5 +193,17 @@ export const actionsRoutes = (svc: LedgerService): FastifyPluginAsync =>
       }
 
       return ok(rows.map(serialize));
+    });
+
+    app.get<{ Params: { walletAddress: string } }>("/api/actions/:walletAddress", { preHandler: apiKeyGuard }, async (req) => {
+      const q = actionHistoryQuery.parse(req.query);
+      const result = await svc.listActions({
+        walletAddress: req.params.walletAddress,
+        status: q.status,
+        type: q.type,
+        cursor: q.cursor ?? null,
+        limit: q.limit
+      });
+      return page(result.items.map(serialize), { nextCursor: result.nextCursor, limit: q.limit });
     });
   };

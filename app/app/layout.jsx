@@ -1,5 +1,7 @@
 import AppNav from "@/components/app/AppNav";
 import SystemStatusBanner from "@/components/app/SystemStatusBanner";
+import SupportWidget from "@/components/app/SupportWidget";
+import Footer from "@/components/app/Footer";
 
 export default function AppLayout({ children }) {
   return (
@@ -9,6 +11,8 @@ export default function AppLayout({ children }) {
         <SystemStatusBanner />
         {children}
       </main>
+      <Footer />
+      <SupportWidget />
     </div>
   );
 }

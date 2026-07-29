@@ -58,6 +58,9 @@ horizontally scaled independently) later without rewriting the data model:
   straight into `LedgerService.reconcileEvent`, which is replay-safe
   (event-first writes go to `PendingEvent` and are claimed when the
   intent eventually attaches its `tx_hash`).
+- **Processed-event checkpointing** — the indexer also persists the last
+  processed paging token alongside the ledger checkpoint, so a restart can
+  resume from the next unread event instead of replaying an entire batch.
 - **Worker runtime** — `src/cron.ts` schedules the reconciler sweep and
   the orphan TTL eviction. Worker concerns never reach into route
   handlers; they call `LedgerService` directly so they share the same
@@ -69,6 +72,7 @@ horizontally scaled independently) later without rewriting the data model:
 |---|---|---|
 | `action_ledger` | Intent record. Created the moment a user clicks a button, before any tx is signed. | `idempotency_key` (unique), `wallet_address`, `action_type`, `status`, `tx_hash`, `correlation_id`, `error_code`, `redacted_at` |
 | `pending_events` | Indexer-first events that arrived before the matching intent attached its `tx_hash`. Drained on attach. | `tx_hash` (PK), `soroban_event_id`, `event_payload`, `status_hint`, `consumed_at` |
+| `indexer_checkpoints` | Singleton indexer cursor and health checkpoint. | `latest_ledger`, `last_processed_event_id`, `last_sync_time`, `last_success_sync_time`, `last_error` |
 
 Status machine (enforced in `src/constants.ts`):
 

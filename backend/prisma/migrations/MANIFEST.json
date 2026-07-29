@@ -1,0 +1,122 @@
+{
+  "version": "1.0.0",
+  "description": "VaultQuest Database Migrations Manifest",
+  "phases": {
+    "core": {
+      "description": "Foundational tables and structures",
+      "order": 1,
+      "migrations": [
+        {
+          "id": "20260423000000_core_init",
+          "timestamp": "2026-04-23T00:00:00Z",
+          "description": "Initial schema with ActionLedger and PendingEvent tables",
+          "tables": ["action_ledger", "pending_events"],
+          "breaking": false
+        },
+        {
+          "id": "20260423000001_core_nullable_action_payload",
+          "timestamp": "2026-04-23T00:01:00Z",
+          "description": "Make action_payload nullable in ActionLedger",
+          "tables": ["action_ledger"],
+          "breaking": false
+        },
+        {
+          "id": "20260528000000_core_unique_tx_hash",
+          "timestamp": "2026-05-28T00:00:00Z",
+          "description": "Add unique constraint on tx_hash for idempotency",
+          "tables": ["action_ledger"],
+          "breaking": false,
+          "relatedIssues": ["#72"]
+        }
+      ]
+    },
+    "features": {
+      "description": "Additional feature tables",
+      "order": 2,
+      "migrations": [
+        {
+          "id": "20260529000000_feature_saved_pools",
+          "timestamp": "2026-05-29T00:00:00Z",
+          "description": "User pool watchlist functionality",
+          "tables": ["saved_pools"],
+          "breaking": false,
+          "relatedIssues": ["#89", "#90"]
+        },
+        {
+          "id": "20260530000000_feature_indexer_checkpoint",
+          "timestamp": "2026-05-30T00:00:00Z",
+          "description": "Blockchain indexer state tracking",
+          "tables": ["indexer_checkpoints"],
+          "breaking": false
+        },
+        {
+          "id": "20260531000000_feature_user_quests",
+          "timestamp": "2026-05-31T00:00:00Z",
+          "description": "Quest progress tracking system",
+          "tables": ["user_quests"],
+          "breaking": false,
+          "relatedIssues": ["#26"]
+        },
+        {
+          "id": "20260531000001_feature_vault_settlements",
+          "timestamp": "2026-05-31T00:01:00Z",
+          "description": "Vault settlement and escrow pipeline",
+          "tables": ["vault_settlements"],
+          "breaking": false,
+          "relatedIssues": ["#settlement"]
+        }
+      ]
+    },
+    "optimization": {
+      "description": "Performance improvements and indexes",
+      "order": 3,
+      "migrations": [
+        {
+          "id": "20260627000000_optimize_query_indexes",
+          "timestamp": "2026-06-27T00:00:00Z",
+          "description": "Add indexes for frequently-filtered columns",
+          "indexes": [
+            "action_ledger_wallet_action_type_idx",
+            "action_ledger_status_created_at_idx",
+            "vault_settlements_recipient_state_idx",
+            "pending_events_status_hint_received_at_idx",
+            "saved_pools_pool_id_idx"
+          ],
+          "breaking": false
+        }
+      ]
+    }
+  },
+  "tables": {
+    "action_ledger": {
+      "phase": "core",
+      "createdIn": "20260423000000_core_init",
+      "description": "Transaction tracking and status management"
+    },
+    "pending_events": {
+      "phase": "core",
+      "createdIn": "20260423000000_core_init",
+      "description": "Event queue for blockchain events"
+    },
+    "saved_pools": {
+      "phase": "features",
+      "createdIn": "20260529000000_feature_saved_pools",
+      "description": "User's saved/watchlisted pools"
+    },
+    "indexer_checkpoints": {
+      "phase": "features",
+      "createdIn": "20260530000000_feature_indexer_checkpoint",
+      "description": "Blockchain indexer state tracking"
+    },
+    "user_quests": {
+      "phase": "features",
+      "createdIn": "20260531000000_feature_user_quests",
+      "description": "User quest progress tracking"
+    },
+    "vault_settlements": {
+      "phase": "features",
+      "createdIn": "20260531000001_feature_vault_settlements",
+      "description": "Vault settlement state machine"
+    }
+  }
+}

@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useAccount } from "wagmi";
+import { useTranslation } from "next-i18next";
 import {
   Shield,
   CheckCircle,
@@ -14,12 +15,7 @@ import {
   Settings,
 } from "lucide-react";
 import { motion } from "framer-motion";
-
-// Mock admin addresses - in production, fetch from smart contract
-const ADMIN_ADDRESSES = [
-  "0x1234567890123456789012345678901234567890",
-  "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
-];
+import { ADMIN_ADDRESSES } from "../admin-config";
 
 const MOCK_PROPOSALS = [
   {
@@ -308,6 +304,7 @@ function ProposalCard({ proposal, isAdmin, onApprove, onReject }) {
 }
 
 export default function AdminProposalsPage() {
+  const { t } = useTranslation("common");
   const { address, isConnected } = useAccount();
   const [proposals, setProposals] = useState(MOCK_PROPOSALS);
   const [filter, setFilter] = useState("all");
@@ -371,11 +368,9 @@ export default function AdminProposalsPage() {
     return (
       <div className="space-y-6">
         <header>
-          <h1 className="text-3xl font-bold text-vault-text">
-            Admin Proposals
-          </h1>
+          <h1 className="text-3xl font-bold text-vault-text">{t("routes.admin.proposals.title")}</h1>
           <p className="mt-2 text-vault-muted">
-            Multi-signature governance dashboard
+            {t("routes.admin.proposals.subtitle")}
           </p>
         </header>
 
@@ -396,11 +391,9 @@ export default function AdminProposalsPage() {
     return (
       <div className="space-y-6">
         <header>
-          <h1 className="text-3xl font-bold text-vault-text">
-            Admin Proposals
-          </h1>
+          <h1 className="text-3xl font-bold text-vault-text">{t("routes.admin.proposals.title")}</h1>
           <p className="mt-2 text-vault-muted">
-            Multi-signature governance dashboard
+            {t("routes.admin.proposals.subtitle")}
           </p>
         </header>
 
@@ -427,13 +420,10 @@ export default function AdminProposalsPage() {
       <header>
         <div className="flex items-center gap-2">
           <Shield className="h-8 w-8 text-red-500" aria-hidden="true" />
-          <h1 className="text-3xl font-bold text-vault-text">
-            Admin Proposals
-          </h1>
+          <h1 className="text-3xl font-bold text-vault-text">{t("routes.admin.proposals.title")}</h1>
         </div>
         <p className="mt-2 text-vault-muted">
-          Review and approve governance proposals requiring multi-signature
-          authorization
+          {t("routes.admin.proposals.reviewBody")}
         </p>
       </header>
 

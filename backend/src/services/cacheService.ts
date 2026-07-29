@@ -102,6 +102,10 @@ export class CacheService {
     });
   }
 
+  get redisClient(): RedisClient | null {
+    return this.redis;
+  }
+
   // --- generic read-through cache -----------------------------------------
 
   /**

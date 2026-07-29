@@ -1,5 +1,6 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import type { PrismaClient } from "@prisma/client";
+import rateLimit from "@fastify/rate-limit";
 import correlation from "./middleware/correlation.js";
 import prometheusPlugin from "./middleware/prometheusPlugin.js";
 import { LedgerService } from "./services/ledger.js";
@@ -51,6 +52,21 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     logger: loggerInstance as any,
     disableRequestLogging: true,
   });
+
+  // Register global rate limiting with Redis store if available
+  const rateLimitOptions: any = {
+    global: true,
+    max: 100,
+    timeWindow: 60_000, // 1 minute
+    keyGenerator(req: FastifyRequest) {
+      return req.headers["x-forwarded-for"]?.toString().split(",")[0].trim() || req.ip;
+    },
+  };
+  const redisClient = deps.cacheService?.redisClient;
+  if (redisClient) {
+    rateLimitOptions.redis = redisClient;
+  }
+  app.register(rateLimit, rateLimitOptions);
 
   // Register rate limiting and CSRF protection
   app.register(rateLimiter);

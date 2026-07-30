@@ -157,14 +157,24 @@ export const actionsRoutes = (
         walletAddress: q.wallet,
         from: q.from ? new Date(q.from) : undefined,
         to: q.to ? new Date(q.to) : undefined,
+        actionType: q.action_type,
         limit: q.limit
       });
 
       if (q.format === "csv") {
         const CSV_HEADERS = [
-          "id", "date", "action_type", "pool_id", "amount", "token",
+          "id", "date", "action_type", "pool_id", "asset", "amount",
           "status", "tx_hash", "error_code", "submitted_at", "confirmed_at"
         ];
+
+        if (rows.length === 0) {
+          const csv = CSV_HEADERS.join(",") + "\n";
+          const filename = `vaultquest-activity-${q.wallet.slice(0, 8)}.csv`;
+          reply
+            .header("Content-Type", "text/csv; charset=utf-8")
+            .header("Content-Disposition", `attachment; filename="${filename}"`);
+          return reply.send(csv);
+        }
 
         const csvRows = rows.map((r) => {
           const payload = (r.actionPayload as Record<string, unknown> | null) ?? {};
@@ -172,9 +182,9 @@ export const actionsRoutes = (
             r.id,
             r.createdAt.toISOString(),
             r.actionType,
-            String(payload["vault_id"] ?? ""),
+            String(payload["vault_id"] ?? payload["pool_id"] ?? ""),
+            String(payload["token"] ?? payload["asset"] ?? ""),
             String(payload["amount"] ?? ""),
-            String(payload["token"] ?? ""),
             r.status,
             r.txHash ?? "",
             r.errorCode ?? "",

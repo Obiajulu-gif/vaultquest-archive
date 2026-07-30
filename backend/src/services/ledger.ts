@@ -544,13 +544,15 @@ export class LedgerService {
     walletAddress: string;
     from?: Date;
     to?: Date;
+    actionType?: string;
     limit: number;
   }): Promise<ActionRecord[]> {
-    const { walletAddress, from, to, limit } = params;
+    const { walletAddress, from, to, actionType, limit } = params;
     const rows = await this.prisma.actionLedger.findMany({
       where: {
         walletAddress,
         redactedAt: null,
+        ...(actionType !== undefined ? { actionType: actionType as any } : {}),
         ...(from || to
           ? {
               createdAt: {

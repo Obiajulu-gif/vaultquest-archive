@@ -22,7 +22,9 @@ export const savedPoolUpsertBody = z.object({
 });
 
 export const savedPoolListQuery = z.object({
-  wallet: z.string().min(1).max(120)
+  wallet: z.string().min(1).max(120),
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(25)
 });
 
 export const savedPoolDeleteParams = z.object({

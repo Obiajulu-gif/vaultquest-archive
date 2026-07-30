@@ -19,6 +19,49 @@ All states (loading, empty, stale, error, wallet-disconnected) reuse the shared
 can dismiss it or reopen it from the compact checklist button; the preference is
 stored in `localStorage` under `vaultquest.onboarding.dismissed`.
 
+## Shared data-access and query state (#22)
+
+Frontend surfaces should call the hooks in `hooks.ts` rather than embedding
+`fetch`, Soroban client calls, cache timers, or polling logic inside pages.
+The shared layer standardizes these boundaries:
+
+| Boundary | Hook/client | Source strategy | Cache key |
+|---|---|---|---|
+| Pool discovery | `usePoolDiscovery` | Backend `/pools`, with optional `VaultContractClient.listPools()` fallback | `vaultQueryKeys.pools()` |
+| Pool detail | `usePoolDetail` | Contract adapter (`getPool`, `getUserPosition`) | `vaultQueryKeys.poolDetail(poolId, wallet)` |
+| Account dashboard | `useAccountView` | Backend saved pools + contract rewards/positions | `vaultQueryKeys.account(wallet)` |
+| Prize views | `usePrizeViews` | Backend `/prizes`, with reward-history fallback | `vaultQueryKeys.prizes(wallet)` |
+| Saved pools | `useSavedPools` | Backend `/saved-pools` via `VaultApiClient` | `vaultQueryKeys.savedPools(wallet)` |
+| Transaction status | `useTransactionStatus` | Backend `/actions/:id`, polling until terminal | `vaultQueryKeys.transaction(actionId)` |
+| Wallet actions | `usePoolAction` | Contract write adapter + shared invalidation | `vaultQueryKeys.actionFlow(type, poolId, wallet)` |
+
+All hooks return the same loading semantics: `loading` means no usable data is
+available yet, `stale` means cached data is being refreshed or is expired, and
+`partialError` means a background refetch failed while previous data remains
+safe to render. Fatal `error` is reserved for cases with no usable cached data.
+
+Mutations and terminal transaction statuses invalidate the pool-detail, account,
+reward, saved-pool, and discovery keys that downstream UI surfaces depend on.
+This keeps create, join, drip, claim, and withdraw flows aligned without each
+component re-implementing cache behavior.
+
+### Local data configuration
+
+`data/config.ts` centralizes frontend data-layer configuration from environment
+variables. Defaults favor backend reads with intentional contract fallbacks.
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `NEXT_PUBLIC_VAULTQUEST_API_BASE_URL` / `PUBLIC_VAULTQUEST_API_BASE_URL` | Backend API base URL for reads and transaction polling | `/api` |
+| `NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID` | Soroban drip-pool contract ID | empty string |
+| `NEXT_PUBLIC_TRUSTLESS_WORK_ESCROW_CONTRACT_ID` | Optional escrow contract ID | unset |
+| `NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE` / `PUBLIC_SOROBAN_NETWORK_PASSPHRASE` | Network passphrase used to infer testnet/mainnet/futurenet/custom | empty string |
+| `NEXT_PUBLIC_HORIZON_URL` / `PUBLIC_HORIZON_URL` | Horizon URL metadata | empty string |
+| `NEXT_PUBLIC_SOROBAN_RPC_URL` | Soroban RPC URL metadata | empty string |
+| `NEXT_PUBLIC_VAULTQUEST_BACKEND_READS` | Enable backend-driven reads | `true` |
+| `NEXT_PUBLIC_VAULTQUEST_CONTRACT_FALLBACK_READS` | Allow direct contract fallback reads | `true` |
+| `NEXT_PUBLIC_VAULTQUEST_TRANSACTION_POLLING` | Poll non-terminal action statuses | `true` |
+
 ## Contract-interface mock strategy (#67)
 
 UI code depends only on the `VaultContractClient` interface — never on a live

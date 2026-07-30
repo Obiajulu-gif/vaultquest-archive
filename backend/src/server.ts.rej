@@ -1,0 +1,42 @@
+diff a/backend/src/server.ts b/backend/src/server.ts	(rejected hunks)
+@@ -1,18 +1,38 @@
++// backend/src/server.ts
++// Fastify application entry-point.
++// Registers plugins (including rate-limiting) and route handlers.
++
+ import Fastify from "fastify";
++import rateLimitPlugin from "./plugins/rate-limit.js";
+ import actionLedgerRoutes from "./routes/action-ledger.js";
+ import reconciliationRoutes from "./routes/reconciliation.js";
+ 
+ export async function buildApp() {
+-  const app = Fastify({ logger: true });
++  const app = Fastify({
++    logger: true,
++    trustProxy: true, // Required so @fastify/rate-limit can read X-Forwarded-For
++  });
++
++  // ── Plugins ──────────────────────────────────────────────────────────
++  // Global IP-based rate limit: 100 req / minute (configurable via env).
++  await app.register(rateLimitPlugin, {
++    max: Number(process.env.RATE_LIMIT_MAX ?? 100),
++    timeWindow: Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60_000),
++  });
+ 
++  // ── Routes ───────────────────────────────────────────────────────────
+   await app.register(actionLedgerRoutes, { prefix: "/action-ledger" });
+   await app.register(reconciliationRoutes, { prefix: "/reconciliation" });
+ 
+-  app.get("/health", async () => ({ status: "ok" }));
++  // ── Health ───────────────────────────────────────────────────────────
++  app.get("/health", { config: { rateLimit: { max: 300 } } }, async () => ({
++    status: "ok",
++  }));
+ 
+   return app;
+ }
+ 
++// Stand-alone start (not used when imported for testing)
+ if (process.argv[1] === new URL(import.meta.url).pathname) {
+   const app = await buildApp();
+   await app.listen({ port: Number(process.env.PORT ?? 3001), host: "0.0.0.0" });

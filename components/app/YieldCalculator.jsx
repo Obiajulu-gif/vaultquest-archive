@@ -97,15 +97,15 @@ export default function YieldCalculator() {
   };
 
   return (
-    <section className="vq-glass p-6 lg:p-8">
-      <div className="mb-6 flex items-center justify-between border-b border-vault-border/30 pb-4">
+    <section className="vq-glass p-4 sm:p-6 lg:p-8">
+      <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-vault-border/30 pb-4">
         <div className="flex items-center gap-2">
           <Calculator className="h-6 w-6 text-red-500" aria-hidden="true" />
-          <h2 className="text-xl font-bold text-vault-text">
+          <h2 className="text-lg sm:text-xl font-bold text-vault-text">
             Savings Calculator
           </h2>
         </div>
-        <span className="rounded-full bg-red-500/15 px-3 py-1 text-xs font-medium text-red-600 dark:text-red-400">
+        <span className="self-start sm:self-auto rounded-full bg-red-500/15 px-2.5 py-1 text-xs font-medium text-red-600 dark:text-red-400">
           Interactive
         </span>
       </div>
@@ -279,7 +279,7 @@ export default function YieldCalculator() {
                 fontSize={11}
                 tickLine={false}
                 axisLine={false}
-                tickFormatter={(value) => `$${(value / 1000).toFixed(0)}k`}
+                tickFormatter={(value) => value >= 1000 ? `$${(value / 1000).toFixed(0)}k` : `$${value}`}
               />
               <Tooltip
                 content={<CustomTooltip />}

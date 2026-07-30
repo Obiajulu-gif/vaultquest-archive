@@ -11,6 +11,8 @@ const LOCKUP_OPTIONS = [
   { label: "Medium (15-30 days)", value: "medium" },
   { label: "Long (30+ days)", value: "long" },
 ];
+const STRATEGIES = ["Stable Yield", "Growth", "High Yield", "Flexible Drip", "Conservative"];
+const STATUSES = ["Active", "Pending", "Completed"];
 
 export default function VaultFilters({ filters, setFilters, onClear }) {
   const [isMobileOpen, setIsMobileOpen] = useState(false);
@@ -150,6 +152,83 @@ export default function VaultFilters({ filters, setFilters, onClear }) {
             </label>
           ))}
         </div>
+      </div>
+
+      {/* Status */}
+      <div className="space-y-3">
+        <label className="text-xs font-bold uppercase tracking-wider text-vault-muted">
+          Status
+        </label>
+        <div className="flex flex-wrap gap-2">
+          {STATUSES.map((status) => {
+            const statusValue = status.toLowerCase();
+            return (
+              <button
+                key={status}
+                onClick={() => {
+                  const next = filters.statuses?.includes(statusValue)
+                    ? filters.statuses.filter((s) => s !== statusValue)
+                    : [...(filters.statuses || []), statusValue];
+                  setFilters({ ...filters, statuses: next });
+                }}
+                className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-all ${
+                  filters.statuses?.includes(statusValue)
+                    ? "border-vault-accent bg-vault-accent/10 text-vault-accent"
+                    : "border-vault-border bg-vault-surface/30 text-vault-muted hover:border-vault-accent/50 hover:text-vault-text"
+                }`}
+              >
+                {status}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Strategy */}
+      <div className="space-y-3">
+        <label className="text-xs font-bold uppercase tracking-wider text-vault-muted">
+          Strategy
+        </label>
+        <div className="space-y-2">
+          {STRATEGIES.map((strategy) => (
+            <label
+              key={strategy}
+              className="flex cursor-pointer items-center gap-3 rounded-lg border border-vault-border bg-vault-surface/30 p-3 transition-all hover:border-vault-accent/30"
+            >
+              <input
+                type="checkbox"
+                checked={filters.strategies?.includes(strategy) || false}
+                onChange={() => {
+                  const next = filters.strategies?.includes(strategy)
+                    ? filters.strategies.filter((s) => s !== strategy)
+                    : [...(filters.strategies || []), strategy];
+                  setFilters({ ...filters, strategies: next });
+                }}
+                className="h-4 w-4 rounded border-vault-border bg-vault-surface text-vault-accent focus:ring-vault-accent"
+              />
+              <span className="text-sm text-vault-text font-medium">
+                {strategy}
+              </span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {/* Sort by Activity */}
+      <div className="space-y-3">
+        <label className="text-xs font-bold uppercase tracking-wider text-vault-muted">
+          Sort
+        </label>
+        <select
+          value={filters.sortBy || "apy"}
+          onChange={(e) => setFilters({ ...filters, sortBy: e.target.value })}
+          className="w-full rounded-xl border border-vault-border bg-vault-surface/50 px-3 py-2.5 text-sm text-vault-text focus:border-vault-accent focus:outline-none transition-all"
+        >
+          <option value="apy">Yield (Highest)</option>
+          <option value="tvl">TVL (Largest)</option>
+          <option value="activity">Activity (Recent)</option>
+          <option value="lockup">Lockup (Shortest)</option>
+        </select>
       </div>
 
       {/* Clear Filters */}

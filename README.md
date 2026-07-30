@@ -45,6 +45,6 @@ We welcome contributions from everyone. Before opening a PR, please read
 
 ## License
 
-See [LICENSE](./LICENSE).
+License details are managed separately.
 
 // Comment befire starting

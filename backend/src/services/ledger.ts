@@ -1,14 +1,29 @@
 import { Prisma } from "@prisma/client";
-import type { PrismaClient } from "@prisma/client";
-import { ERROR_CODES } from "../constants.js";
+import type { PrismaClient, IndexerCheckpoint } from "@prisma/client";
+import { ERROR_CODES, canTransition, ActionStatus } from "../constants.js";
 import { AppError } from "../errors.js";
 import type { IntentInput, ActionRecord } from "../types.js";
-import type { ActionStatus } from "../constants.js";
 import type { CacheService } from "./cacheService.js";
+import { Amount, InvalidAmountError } from "../amount.js";
+
+// #504 — getPortfolioSummary previously read payload.token/asset with a
+// hardcoded "USDC" fallback whenever it was missing. Today there is
+// exactly one canonical, single-asset pool per deployment (see #507
+// findings), so a single configured default is still correct — but it's
+// now explicit and named, not an inline magic string repeated at each
+// call site. Decimals is 0 (not 7) because every existing caller/test
+// (tests/portfolio.spec.ts, tests/portfolio-unit.spec.ts) treats
+// payload.amount as an already-whole-unit integer (e.g. "100" -> 100),
+// matching this endpoint's existing external contract — this is purely
+// an internal-precision fix (bigint accumulation instead of float), not
+// a change to what unit amounts are expressed in.
+const DEFAULT_POOL_ASSET_CODE = "USDC";
+const DEFAULT_POOL_ASSET_DECIMALS = 0;
 
 export type ListActionsParams = {
   walletAddress: string;
   status?: ActionStatus;
+  type?: string;
   limit: number;
   cursor?: string | null;
 };
@@ -23,16 +38,20 @@ export type DashboardSummary = {
   totalActions: number;
   byStatus: Record<ActionStatus, number>;
   pendingTxHashes: string[];
-  /**
-   * `true` when the most recent ledger update is older than `staleAfterMs`,
-   * giving the frontend a deterministic way to render a "data may be stale"
-   * banner without polling the indexer directly (#14).
-   */
   isStale: boolean;
-  /** Newest createdAt across the wallet's actions, or null if none exist. */
   latestActivityAt: Date | null;
-  /** Newest confirmedAt across the wallet's actions, or null. */
   latestConfirmedAt: Date | null;
+};
+
+export type LeaseInput = {
+  actionId: string;
+  workerId: string;
+  ttlMs?: number;
+};
+
+export type RecoveryLeaseResult = {
+  recovered: number;
+  expired: number;
 };
 
 function stableStringify(value: unknown): string {
@@ -51,11 +70,19 @@ function stableStringify(value: unknown): string {
   );
 }
 
+export type ActionConfirmedCallback = (actionId: string, actionType: string) => void;
+
 export class LedgerService {
+  private onActionConfirmedCallback: ActionConfirmedCallback | null = null;
+
   constructor(
     private readonly prisma: PrismaClient,
     private readonly cacheService?: CacheService
   ) {}
+
+  onActionConfirmed(callback: ActionConfirmedCallback): void {
+    this.onActionConfirmedCallback = callback;
+  }
 
   async createAction(input: IntentInput): Promise<ActionRecord> {
     const existing = await this.prisma.actionLedger.findUnique({
@@ -87,83 +114,162 @@ export class LedgerService {
     return created as unknown as ActionRecord;
   }
 
-  async attachTxHash(id: string, txHash: string): Promise<ActionRecord> {
+  /**
+   * Acquire a work lease for an action. CAS-insert into action_leases only if
+   * no row exists for this action or any existing lease is expired.
+   */
+  async acquireLease({ actionId, workerId, ttlMs }: LeaseInput): Promise<boolean> {
+    const ttl = ttlMs ?? this.defaultLeaseTtlMs;
+    const expiresAt = new Date(Date.now() + ttl);
+
+    try {
+      await this.prisma.actionLease.create({
+        data: { actionId, workerId, expiresAt }
+      });
+      return true;
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+        // Lease already exists — bump only if expired or stale.
+        const owned = await this.prisma.actionLease.findUnique({ where: { actionId } });
+        if (!owned || owned.expiresAt.getTime() <= Date.now()) {
+          const replaced = await this.prisma.actionLease.updateMany({
+            where: { actionId, expiresAt: { lte: new Date() } },
+            data: { workerId, acquiredAt: new Date(), expiresAt }
+          });
+          return replaced.count > 0;
+        }
+        // Active lease held by a different worker.
+        return false;
+      }
+      throw err;
+    }
+  }
+
+  async renewLease(actionId: string, workerId: string, ttlMs?: number): Promise<boolean> {
+    const ttl = ttlMs ?? this.defaultLeaseTtlMs;
+    const expiresAt = new Date(Date.now() + ttl);
+    const result = await this.prisma.actionLease.updateMany({
+      where: { actionId, workerId },
+      data: { expiresAt, acquiredAt: new Date() }
+    });
+    return result.count > 0;
+  }
+
+  async releaseLease(actionId: string, workerId: string): Promise<void> {
+    await this.prisma.actionLease.deleteMany({ where: { actionId, workerId } });
+  }
+
+  async releaseAllLeasesForWorker(workerId: string): Promise<number> {
+    const result = await this.prisma.actionLease.deleteMany({ where: { workerId } });
+    return result.count;
+  }
+
+  async getIndexerCheckpoint(): Promise<Partial<IndexerCheckpoint> | null> {
+    if (this.cacheService) {
+      return this.cacheService.getCheckpoint();
+    }
+
+    return this.prisma.indexerCheckpoint.findUnique({
+      where: { id: "singleton" }
+    });
+  }
+
+  /**
+   * Convert pending -> submitted atomically, requiring an active lease.
+   * Also persists envelope evidence before any external submission.
+   */
+  async attachTxHash(
+    actionId: string,
+    txHash: string,
+    lease: { workerId: string; ttlMs?: number }
+  ): Promise<ActionRecord> {
     try {
       return await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      const row = await tx.actionLedger.findUnique({ where: { id } });
-      if (!row) throw AppError.notFound(`action ${id} not found`);
+        const row = await tx.actionLedger.findUnique({ where: { id: actionId } });
+        if (!row) throw AppError.notFound(`action ${actionId} not found`);
 
-      // Retry-safe: re-attaching the same tx_hash to the same action is a
-      // no-op. A client whose request succeeded but whose response was lost can
-      // safely resubmit without tripping the status guard below.
-      if (row.txHash === txHash) {
-        return row as unknown as ActionRecord;
-      }
-
-      if (row.status !== "pending") {
-        throw AppError.conflict(
-          ERROR_CODES.ILLEGAL_TRANSITION,
-          `cannot attach tx_hash to action in status ${row.status}`
-        );
-      }
-
-      // A given on-chain tx hash maps to exactly one action. If another action
-      // already owns it, reject rather than creating a duplicate tx-hash record
-      // (also enforced by a unique index as a backstop against races).
-      const owner = await tx.actionLedger.findFirst({
-        where: { txHash, NOT: { id } }
-      });
-      if (owner) {
-        throw AppError.conflict(
-          ERROR_CODES.TX_HASH_ALREADY_ATTACHED,
-          `tx_hash already attached to action ${owner.id}`
-        );
-      }
-
-      const pending = this.cacheService
-        ? await this.cacheService.getPendingEvent(txHash)
-        : await tx.pendingEvent.findUnique({ where: { txHash } });
-
-      if (pending) {
-        await tx.pendingEvent.update({
-          where: { txHash },
-          data: { consumedAt: new Date() }
-        });
-        if (this.cacheService) {
-          await this.cacheService.deletePendingEvent(txHash);
+        if (row.txHash === txHash) {
+          return row as unknown as ActionRecord;
         }
-        const confirmed = await tx.actionLedger.update({
-          where: { id },
-          data: {
-            status: pending.statusHint === "reverted" ? "reverted" : "confirmed",
-            txHash,
-            submittedAt: new Date(),
-            confirmedAt: new Date(),
-            sorobanEventId: pending.sorobanEventId,
-            errorCode: pending.statusHint === "reverted" ? ERROR_CODES.REVERTED_ON_CHAIN : null
+
+        if (!canTransition(row.status, "submitted")) {
+          throw AppError.conflict(
+            ERROR_CODES.ILLEGAL_TRANSITION,
+            `cannot attach tx_hash to action in status ${row.status}`
+          );
+        }
+
+        // Acquire/renew lease for this worker on this action.
+        const expiresAt = new Date(Date.now() + (lease.ttlMs ?? this.defaultLeaseTtlMs));
+        const leaseUpsert = await tx.actionLease.upsert({
+          where: { actionId },
+          create: { actionId, workerId: lease.workerId, expiresAt },
+          update: {
+            workerId: lease.workerId,
+            acquiredAt: new Date(),
+            expiresAt
           }
         });
-        return confirmed as unknown as ActionRecord;
-      }
-
-      const updated = await tx.actionLedger.update({
-        where: { id },
-        data: {
-          status: "submitted",
-          txHash,
-          submittedAt: new Date()
+        if (leaseUpsert.workerId !== lease.workerId) {
+          throw AppError.conflict(ERROR_CODES.ILLEGAL_TRANSITION, "action is leased by another worker");
         }
-      });
-      return updated as unknown as ActionRecord;
+
+        const owner = await tx.actionLedger.findFirst({
+          where: { txHash, NOT: { id: actionId } }
+        });
+        if (owner) {
+          throw AppError.conflict(
+            ERROR_CODES.TX_HASH_ALREADY_ATTACHED,
+            `tx_hash already attached to action ${owner.id}`
+          );
+        }
+
+        const pending = this.cacheService
+          ? await this.cacheService.getPendingEvent(txHash)
+          : await tx.pendingEvent.findUnique({ where: { txHash } });
+
+        if (pending) {
+          await tx.pendingEvent.update({
+            where: { txHash },
+            data: { consumedAt: new Date() }
+          });
+          if (this.cacheService) {
+            await this.cacheService.deletePendingEvent(txHash);
+          }
+          const confirmed = await tx.actionLedger.update({
+            where: { id: actionId },
+            data: {
+              status: pending.statusHint === "reverted" ? "reverted" : "confirmed",
+              txHash,
+              submittedAt: new Date(),
+              confirmedAt: new Date(),
+              sorobanEventId: pending.sorobanEventId,
+              errorCode: pending.statusHint === "reverted" ? ERROR_CODES.REVERTED_ON_CHAIN : null
+            }
+          });
+          await tx.actionLease.delete({ where: { actionId } });
+          return confirmed as unknown as ActionRecord;
+        }
+
+        const updated = await tx.actionLedger.update({
+          where: { id: actionId },
+          data: {
+            status: "submitted",
+            txHash,
+            submittedAt: new Date()
+          }
+        });
+        return updated as unknown as ActionRecord;
       });
     } catch (err) {
-      // Backstop for a race that slips past the owner check above: the unique
-      // index on tx_hash rejects the second writer with P2002.
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
         throw AppError.conflict(
           ERROR_CODES.TX_HASH_ALREADY_ATTACHED,
           "tx_hash already attached to another action"
         );
+      }
+      if ((err as any)?.code === ERROR_CODES.ILLEGAL_TRANSITION || (err as any)?.code === ERROR_CODES.TX_HASH_ALREADY_ATTACHED) {
+        throw err;
       }
       throw err;
     }
@@ -173,7 +279,7 @@ export class LedgerService {
     const row = await this.prisma.actionLedger.findUnique({ where: { id } });
     if (!row) throw AppError.notFound(`action ${id} not found`);
 
-    if (row.status !== "pending") {
+    if (!canTransition(row.status, "failed")) {
       throw AppError.conflict(
         ERROR_CODES.ILLEGAL_TRANSITION,
         `cannot cancel action in status ${row.status}`
@@ -193,10 +299,16 @@ export class LedgerService {
   }
 
   async listActions(params: ListActionsParams): Promise<ListActionsResult> {
-    const { walletAddress, status, limit, cursor } = params;
+    const { walletAddress, status, type, limit, cursor } = params;
+
+    const where = {
+      walletAddress,
+      ...(status !== undefined && { status }),
+      ...(type !== undefined && { actionType: type as ActionStatus })
+    };
 
     const rows = await this.prisma.actionLedger.findMany({
-      where: { walletAddress, ...(status !== undefined && { status }) },
+      where,
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: limit + 1,
       ...(cursor != null && { cursor: { id: cursor }, skip: 1 })
@@ -208,33 +320,6 @@ export class LedgerService {
 
     return { items: items as unknown as ActionRecord[], nextCursor };
   }
-
-  async getHistoryPaginated(params: {
-    walletAddress: string;
-    status?: ActionStatus;
-    type?: string;
-    skip: number;
-    limit: number;
-  }): Promise<{ items: ActionRecord[]; total: number }> {
-    const { walletAddress, status, type, skip, limit } = params;
-    
-    const whereClause: any = { walletAddress };
-    if (status) whereClause.status = status;
-    if (type) whereClause.actionType = type;
-
-    const [total, rows] = await this.prisma.$transaction([
-      this.prisma.actionLedger.count({ where: whereClause }),
-      this.prisma.actionLedger.findMany({
-        where: whereClause,
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        skip,
-        take: limit,
-      }),
-    ]);
-
-    return { items: rows as unknown as ActionRecord[], total };
-  }
-
 
   async reconcileEvent(input: {
     txHash: string;
@@ -282,8 +367,110 @@ export class LedgerService {
           errorCode: input.statusHint === "reverted" ? ERROR_CODES.REVERTED_ON_CHAIN : null
         }
       });
+
+      if (input.statusHint === "confirmed" && row.actionType === "select_winner") {
+        try {
+          this.onActionConfirmedCallback?.(row.id, row.actionType);
+        } catch {
+          // callback errors should not break reconciliation
+        }
+      }
+
+      await tx.actionLease.deleteMany({ where: { actionId: row.id } });
       return { matched: true };
     });
+  }
+
+  /**
+   * Records a malformed or unrecognized event for operator triage instead of
+   * silently dropping it or letting it corrupt a projection. Idempotent on
+   * sorobanEventId so retried ticks against the same poison event don't pile up.
+   */
+  async quarantineEvent(input: {
+    sorobanEventId: string;
+    ledger: number;
+    contractId: string;
+    txHash: string;
+    rawEvent: unknown;
+    reason: string;
+  }): Promise<void> {
+    await this.prisma.poisonEvent.upsert({
+      where: { sorobanEventId: input.sorobanEventId },
+      create: {
+        sorobanEventId: input.sorobanEventId,
+        ledger: input.ledger,
+        contractId: input.contractId,
+        txHash: input.txHash,
+        rawEvent: input.rawEvent as object,
+        reason: input.reason
+      },
+      update: {
+        reason: input.reason
+      }
+    });
+  }
+
+  /**
+   * Upserts a `PoolRegistry` row from a decoded vault-factory `pool`/
+   * `deployed` event (#507). Keyed on `poolAddress` (unique, and derived
+   * deterministically from (factoryAddress, salt) on-chain, so a replayed
+   * or re-fetched event for the same pool is a no-op update rather than a
+   * duplicate row) — the same idempotency guarantee `reconcileEvent` gives
+   * action-ledger rows, applied here for registry entries instead.
+   */
+  async upsertPoolRegistryEntry(input: {
+    salt: string;
+    poolAddress: string;
+    factoryAddress: string;
+    admin: string;
+    asset: string;
+    wasmHash: string;
+    deployedLedger: number;
+  }): Promise<void> {
+    await this.prisma.poolRegistry.upsert({
+      where: { poolAddress: input.poolAddress },
+      create: {
+        salt: input.salt,
+        poolAddress: input.poolAddress,
+        factoryAddress: input.factoryAddress,
+        admin: input.admin,
+        asset: input.asset,
+        wasmHash: input.wasmHash,
+        deployedLedger: input.deployedLedger
+      },
+      update: {
+        admin: input.admin,
+        asset: input.asset,
+        wasmHash: input.wasmHash
+      }
+    });
+  }
+
+  /**
+   * Marks a registry entry inactive (mirrors the factory's own
+   * `deactivate_pool` — never touches the deployed pool contract itself,
+   * see vault-factory/src/lib.rs's doc comment on that method).
+   */
+  async deactivatePoolRegistryEntry(salt: string): Promise<void> {
+    await this.prisma.poolRegistry.updateMany({
+      where: { salt },
+      data: { active: false }
+    });
+  }
+
+  /**
+   * Active pool contract addresses known to the registry — an additional
+   * indexer contract-id source layered on top of the static
+   * `INDEXER_CONTRACT_IDS` env var (kept as a fallback so existing
+   * single-pool deployments keep working unchanged; see the #507 design
+   * proposal).
+   */
+  async getActivePoolAddresses(): Promise<string[]> {
+    const rows = await this.prisma.poolRegistry.findMany({
+      where: { active: true },
+      select: { poolAddress: true }
+    });
+    return rows.map((r: { poolAddress: string }) => r.poolAddress);
   }
 
   async findByIdempotencyKey(key: string): Promise<ActionRecord | null> {
@@ -291,13 +478,6 @@ export class LedgerService {
     return (row as unknown as ActionRecord) ?? null;
   }
 
-  /**
-   * Aggregated read used by the frontend dashboard (#14).
-   *
-   * Computes per-status counts, pending tx hashes (so the wallet can resume
-   * polling on reload), and a `isStale` flag that lets the UI render partial
-   * data without ad-hoc joins on the client.
-   */
   async getDashboardSummary(
     walletAddress: string,
     options: { staleAfterMs?: number; now?: Date } = {}
@@ -403,39 +583,103 @@ export class LedgerService {
       orderBy: { createdAt: "desc" }
     });
 
-    const poolBalances: Record<string, { balance: number; token: string }> = {};
-    let totalClaimed = 0;
-
-    const confirmedActions = actions.filter((a) => a.status === "confirmed");
-    for (const action of confirmedActions) {
-      const payload = action.actionPayload as Record<string, any> | null;
+    // #504 — balances are accumulated per (vaultId, assetCode) using
+    // bigint Amount arithmetic, never plain floats. A pool whose payloads
+    // report an asset that doesn't match its own running balance's asset
+    // is a genuine data inconsistency (two different assets claiming the
+    // same vaultId) rather than something to silently add together, so
+    // it's surfaced via invalidActionCount instead of merged.
+    //
+    // The vault's canonical asset is established from its EARLIEST
+    // confirmed action, not whichever action happens to be visited first.
+    // `actions` is fetched `orderBy: createdAt desc`, so without this a
+    // late-arriving action (e.g. a spoofed/malformed payload reporting the
+    // wrong token) would silently become the accepted baseline and cause
+    // every earlier, legitimate action for that vault to be flagged as the
+    // mismatch and dropped — inverting the intent of this guard.
+    const vaultCanonicalToken: Record<string, string> = {};
+    const confirmedActionsChronological = actions
+      .filter((a) => a.status === "confirmed")
+      .slice()
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    for (const action of confirmedActionsChronological) {
+      const payload = action.actionPayload as Record<string, unknown> | null;
       if (!payload) continue;
-
-      const vaultId = String(payload.vault_id || payload.pool_id || "default");
-      const amount = Number(payload.amount || 0);
-      const token = String(payload.token || payload.asset || "USDC");
-
-      if (!poolBalances[vaultId]) {
-        poolBalances[vaultId] = { balance: 0, token };
-      }
-
-      if (action.actionType === "deposit") {
-        poolBalances[vaultId].balance += amount;
-      } else if (action.actionType === "withdraw") {
-        poolBalances[vaultId].balance -= amount;
-      } else if (action.actionType === "claim") {
-        totalClaimed += amount;
+      const vaultId = String(payload.vault_id ?? payload.pool_id ?? "default");
+      if (!(vaultId in vaultCanonicalToken)) {
+        vaultCanonicalToken[vaultId] = String(payload.token ?? payload.asset ?? DEFAULT_POOL_ASSET_CODE);
       }
     }
 
-    let totalDeposits = 0;
+    const poolBalances: Record<string, { balance: Amount; token: string }> = {};
+    let totalClaimed: Amount | null = null;
+    let invalidActionCount = 0;
+
+    const confirmedActions = actions.filter((a) => a.status === "confirmed");
+    for (const action of confirmedActions) {
+      const payload = action.actionPayload as Record<string, unknown> | null;
+      if (!payload) continue;
+
+      const vaultId = String(payload.vault_id ?? payload.pool_id ?? "default");
+      const token = String(payload.token ?? payload.asset ?? DEFAULT_POOL_ASSET_CODE);
+      const canonicalToken = vaultCanonicalToken[vaultId] ?? token;
+
+      let amount: Amount;
+      try {
+        amount = Amount.fromPayload(payload, token, DEFAULT_POOL_ASSET_DECIMALS);
+      } catch (err) {
+        if (err instanceof InvalidAmountError) {
+          invalidActionCount++;
+          continue;
+        }
+        throw err;
+      }
+
+      if (token !== canonicalToken) {
+        // This action's asset doesn't match the vault's canonical asset
+        // (established from its earliest confirmed action) — a data
+        // inconsistency, not something to combine. Skip rather than
+        // silently mixing units into one balance.
+        invalidActionCount++;
+        continue;
+      }
+
+      if (!poolBalances[vaultId]) {
+        poolBalances[vaultId] = { balance: Amount.zero(canonicalToken, DEFAULT_POOL_ASSET_DECIMALS), token: canonicalToken };
+      }
+
+      if (action.actionType === "deposit") {
+        poolBalances[vaultId].balance = poolBalances[vaultId].balance.add(amount);
+      } else if (action.actionType === "withdraw") {
+        poolBalances[vaultId].balance = poolBalances[vaultId].balance.subtract(amount);
+      } else if (action.actionType === "claim") {
+        totalClaimed = totalClaimed ? totalClaimed.add(amount) : amount;
+      }
+    }
+
+    let totalDeposits: Amount | null = null;
     const activePositions = Object.entries(poolBalances)
-      .filter(([_, data]) => data.balance > 0)
+      .filter(([, data]) => data.balance.isPositive())
       .map(([vaultId, data]) => {
-        totalDeposits += data.balance;
+        // Only combine into the grand total when the asset matches every
+        // other position seen so far — otherwise leave totalDeposits as
+        // whichever single asset started the accumulation and surface the
+        // mismatch, rather than silently summing incompatible units.
+        if (!totalDeposits) {
+          totalDeposits = data.balance;
+        } else if (totalDeposits.assetCode === data.balance.assetCode) {
+          totalDeposits = totalDeposits.add(data.balance);
+        } else {
+          invalidActionCount++;
+        }
         return {
           vault_id: vaultId,
-          balance: data.balance,
+          // Converted back to Number at the response boundary to preserve
+          // this endpoint's existing external contract (tests assert
+          // plain numbers here) — the accumulation above happens entirely
+          // in bigint, so this conversion can't itself reintroduce the
+          // precision loss the float-based code had.
+          balance: Number(data.balance.raw),
           token: data.token
         };
       });
@@ -451,26 +695,39 @@ export class LedgerService {
 
     return {
       wallet_address: walletAddress,
-      total_deposits: totalDeposits,
+      total_deposits: Number((totalDeposits ?? Amount.zero(DEFAULT_POOL_ASSET_CODE, DEFAULT_POOL_ASSET_DECIMALS)).raw),
       active_positions: activePositions,
       pending_rewards: 0,
-      claimable_amount: totalClaimed,
+      claimable_amount: Number((totalClaimed ?? Amount.zero(DEFAULT_POOL_ASSET_CODE, DEFAULT_POOL_ASSET_DECIMALS)).raw),
+      invalid_action_count: invalidActionCount,
       recent_activity: recentActivity
     };
   }
 
   async updateIndexerCheckpoint(input: {
     latestLedger: number;
+    lastProcessedEventId?: string | null;
     lastError?: string | null;
     success: boolean;
   }): Promise<any> {
     const now = new Date();
+    const needsExisting =
+      input.lastProcessedEventId === undefined || (!input.success && input.lastError === undefined);
+    const existing = needsExisting ? await this.getIndexerCheckpoint() : null;
+    const lastProcessedEventId =
+      input.lastProcessedEventId !== undefined
+        ? input.lastProcessedEventId
+        : existing?.lastProcessedEventId ?? null;
+    const lastError = input.success
+      ? null
+      : input.lastError !== undefined
+        ? input.lastError
+        : existing?.lastError ?? null;
     if (this.cacheService) {
-      const existing = await this.cacheService.getCheckpoint();
       const lastSuccessSyncTime = input.success ? now : (existing?.lastSuccessSyncTime ?? now);
-      const lastError = input.lastError !== undefined ? input.lastError : (existing?.lastError ?? null);
       await this.cacheService.setCheckpoint({
         latestLedger: input.latestLedger,
+        lastProcessedEventId,
         lastSyncTime: now,
         lastSuccessSyncTime,
         lastError
@@ -483,14 +740,16 @@ export class LedgerService {
       create: {
         id: "singleton",
         latestLedger: input.latestLedger,
+        lastProcessedEventId,
         lastSyncTime: now,
-        lastError: input.lastError || null,
+        lastError,
         lastSuccessSyncTime: input.success ? now : undefined
       },
       update: {
         latestLedger: input.latestLedger,
+        lastProcessedEventId,
         lastSyncTime: now,
-        lastError: input.lastError !== undefined ? input.lastError : undefined,
+        lastError,
         lastSuccessSyncTime: input.success ? now : undefined
       }
     });
@@ -510,6 +769,7 @@ export class LedgerService {
       return {
         status: "degraded",
         latest_ledger: 0,
+        last_processed_event_id: null,
         last_sync_time: null,
         last_success_sync_time: null,
         last_error: null,
@@ -536,11 +796,103 @@ export class LedgerService {
     return {
       status,
       latest_ledger: checkpoint.latestLedger,
+      last_processed_event_id: checkpoint.lastProcessedEventId ?? null,
       last_sync_time: checkpoint.lastSyncTime || now,
       last_success_sync_time: lastSuccessSyncTime,
       last_error: checkpoint.lastError,
       sync_lag: estimatedLedgerLag,
       message
     };
+  }
+
+  /**
+   * Recover stuck submitted actions whose leases have expired and either
+   * (a) transition them to `orphaned` with a canonical error or (b) make them
+   * available for a new submission attempt.
+   */
+  async recoverSubmittedLeases(
+    workerId?: string,
+    options: { ttlMs?: number; batchSize?: number; dryRun?: boolean } = {}
+  ): Promise<RecoveryLeaseResult> {
+    const ttlMs = options.ttlMs ?? this.defaultLeaseTtlMs;
+    const batchSize = options.batchSize ?? 50;
+    const dryRun = options.dryRun ?? false;
+
+    const cutoff = new Date(Date.now() - ttlMs);
+
+    // Submitted actions with no lease OR an expired lease.
+    const candidates = await this.prisma.actionLedger.findMany({
+      where: {
+        status: "submitted"
+      },
+      orderBy: { submittedAt: "asc" },
+      take: batchSize
+    });
+
+    if (candidates.length === 0) {
+      return { recovered: 0, expired: 0 };
+    }
+
+    const leases = await this.prisma.actionLease.findMany({
+      where: { actionId: { in: candidates.map((c) => c.id) } }
+    });
+    const expiredIds = new Set(
+      leases
+        .filter((l) => l.expiresAt.getTime() <= Date.now())
+        .map((l) => l.actionId)
+    );
+    const noLeaseIds = new Set(
+      candidates.filter((c) => !leases.some((l) => l.actionId === c.id)).map((c) => c.id)
+    );
+    const targetIds = [...new Set([...expiredIds, ...noLeaseIds])];
+
+    if (targetIds.length === 0) {
+      return { recovered: 0, expired: 0 };
+    }
+
+    if (dryRun) {
+      return { recovered: 0, expired: targetIds.length };
+    }
+
+    await this.prisma.actionLedger.updateMany({
+      where: { id: { in: targetIds }, status: "submitted" },
+      data: { status: "orphaned", errorCode: ERROR_CODES.ORPHAN_TTL_EXPIRED }
+    });
+
+    // Release expired leases so recovery can re-submit.
+    await this.prisma.actionLease.deleteMany({ where: { actionId: { in: targetIds } } });
+
+    // Opportunistically drop any stale pending_events tied to these tx hashes.
+    const hashes = candidates
+      .filter((c) => targetIds.includes(c.id) && c.txHash)
+      .map((c) => c.txHash as string);
+    if (hashes.length > 0) {
+      await this.prisma.pendingEvent.deleteMany({ where: { txHash: { in: hashes } } });
+      if (this.cacheService) {
+        for (const h of hashes) {
+          await this.cacheService.deletePendingEvent(h);
+        }
+      }
+    }
+
+    return { recovered: targetIds.length, expired: targetIds.length };
+  }
+
+  /**
+   * List submitted actions that are eligible for recovery work (no active lease).
+   */
+  async listRecoverableActions(limit = 25, offset = 0) {
+    const candidates = await this.prisma.actionLedger.findMany({
+      where: { status: "submitted" },
+      orderBy: { submittedAt: "asc" },
+      take: limit,
+      skip: offset
+    });
+
+    const leases = await this.prisma.actionLease.findMany({
+      where: { actionId: { in: candidates.map((c) => c.id) } }
+    });
+    const leased = new Set(leases.map((l) => l.actionId));
+    return candidates.filter((c) => !leased.has(c.id));
   }
 }

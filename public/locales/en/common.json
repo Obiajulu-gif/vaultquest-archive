@@ -1,0 +1,166 @@
+{
+  "meta": {
+    "title": "VaultQuest — No-loss prize savings",
+    "description": "Deposit, earn yield, and win prizes without risking your principal."
+  },
+  "nav": {
+    "vaults": "Vaults",
+    "activity": "Activity",
+    "account": "Account",
+    "prizes": "Prizes",
+    "trust": "Trust",
+    "notifications": "Notifications",
+    "admin": "Admin"
+  },
+  "footer": {
+    "terms": "Product terms",
+    "privacy": "Privacy policy",
+    "language": "Language",
+    "copyright": "© {{year}} VaultQuest. All rights reserved."
+  },
+  "buttons": {
+    "retry": "Retry",
+    "reload": "Reload",
+    "returnHome": "Return home",
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyFailed": "Copy failed"
+  },
+  "errors": {
+    "routeFallbackDescription": "The page hit an unexpected error. You can retry, reload this section, or return home without clearing browser storage.",
+    "diagnosticId": "Diagnostic ID"
+  },
+  "wallet": {
+    "reconnect": {
+      "networkMismatchTitle": "Network Mismatch Detected",
+      "interruptedTitle": "Wallet Connection Interrupted",
+      "networkMismatchBody": "Your wallet is connected to a different blockchain network than VaultQuest expects. Please switch to the correct network in your wallet settings to continue.",
+      "interruptedBody": "Your wallet connection was lost. This might happen due to a network issue or if you switched to another application. Click the button below to reconnect securely.",
+      "reconnect": "Reconnect Wallet"
+    }
+  },
+  "routes": {
+    "dashboard": {
+      "tagline": "Prize-linked savings · Principal protected",
+      "title": "Save together. Win together.",
+      "subtitle": "VaultQuest pools your deposits, routes yield to weekly prizes, and keeps every saver&apos;s principal withdrawable in full. No-loss by design.",
+      "joinTitle": "Ready to join a pool?",
+      "connectedBody": "Explore active prize savings pools and manage your yields.",
+      "disconnectedBody": "Connect your wallet or follow the steps to start your savings journey.",
+      "startSaving": "Start Saving",
+      "viewAllPrizes": "View All Prizes",
+      "manageVaults": "Manage Vaults",
+      "connectWallet": "Connect wallet"
+    },
+    "vaults": {
+      "title": "Vaults",
+      "subtitle": "Manage your pool positions and drip deposits. Review live fee tiers before you submit a transaction. Learn more about our",
+      "strategies": "Vault Strategies",
+      "roundArchive": "Round archive",
+      "depositReview": "Deposit review",
+      "quickDepositTitle": "Quick Deposit Flow",
+      "quickDepositBody": "Select a vault below to begin your deposit. Live network estimates will be calculated automatically.",
+      "openDepositModal": "Open deposit modal",
+      "recurringPlanner": "Recurring Planner",
+      "availablePools": "Available Pools"
+    },
+    "account": {
+      "title": "Your profile",
+      "subtitle": "Track savings, live yield, and pool activity in one place.",
+      "walletNotConnected": "Wallet not connected",
+      "walletNotConnectedBody": "Connect your wallet to view deposits, live yield accrual, and your transaction history.",
+      "connectWallet": "Connect wallet"
+    },
+    "prizes": {
+      "title": "Prizes",
+      "subtitle": "Browse active prize rounds and past winners.",
+      "currentRound": "Current Round",
+      "backToDashboard": "Back to dashboard"
+    },
+    "admin": {
+      "settings": {
+        "kicker": "Admin console",
+        "title": "Settings Overview",
+        "subtitle": "Review protocol parameters, active rounds, service status, and the current operating notes before making a governance change.",
+        "viewProposals": "View proposals",
+        "reviewRounds": "Review public rounds"
+      },
+      "proposals": {
+        "title": "Admin Proposals",
+        "subtitle": "Multi-signature governance dashboard",
+        "reviewBody": "Review and approve governance proposals requiring multi-signature authorization"
+      }
+    },
+    "vaultDetail": {
+      "notFoundTitle": "Vault Not Found",
+      "notFoundBody": "The vault directory index could not resolve vault ID \"{{id}}\". It may have expired, changed addresses, or been archived.",
+      "returnToVaults": "Return to Vaults",
+      "breadcrumbVaults": "Vaults",
+      "backToVaults": "Back to Vaults",
+      "viewTransaction": "View transaction"
+    }
+  },
+  "vaults": {
+    "title": "Vaults",
+    "empty": "No vaults available yet.",
+    "active": "Active",
+    "archived": "Archived",
+    "startSaving": "Start Saving",
+    "viewDetails": "View details"
+  },
+  "activity": {
+    "title": "Activity",
+    "noActivity": "No activity yet.",
+    "status": {
+      "pending": "Pending",
+      "submitted": "Submitted",
+      "confirmed": "Confirmed",
+      "failed": "Failed",
+      "canceled": "Canceled"
+    }
+  },
+  "account": {
+    "title": "Account",
+    "positions": "Positions",
+    "rewards": "Rewards",
+    "export": "Export transactions"
+  },
+  "prizes": {
+    "title": "Prizes",
+    "empty": "No prizes drawn yet.",
+    "countdown": "Next draw in",
+    "winners": "Recent winners"
+  },
+  "trust": {
+    "title": "Trust & Security",
+    "sections": {
+      "intro": "Introduction",
+      "contracts": "Contracts",
+      "audits": "Audits",
+      "risk": "Risk factors"
+    }
+  },
+  "modals": {
+    "history": {
+      "title": "Transaction history",
+      "empty": "No transactions found.",
+      "columns": {
+        "date": "Date",
+        "type": "Type",
+        "status": "Status",
+        "amount": "Amount",
+        "token": "Token",
+        "txHash": "Tx hash"
+      }
+    }
+  },
+  "common": {
+    "loading": "Loading...",
+    "error": "Something went wrong.",
+    "retry": "Retry",
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyFailed": "Copy failed",
+    "close": "Close"
+  }
+}

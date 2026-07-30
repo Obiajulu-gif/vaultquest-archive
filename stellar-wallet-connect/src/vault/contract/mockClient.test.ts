@@ -73,6 +73,7 @@ describe("mock VaultContractClient — read flows", () => {
       positions: { "pool-1": { walletAddress: SAMPLE_ADDRESS, deposited: "500", shares: "500", joined: true } },
     });
     expect(await client.getPool("pool-1")).toEqual(pool);
+    expect(await client.listPools!()).toEqual([pool]);
     const position = await client.getUserPosition("pool-1");
     expect(position?.joined).toBe(true);
   });

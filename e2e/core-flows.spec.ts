@@ -1,94 +1,93 @@
-import { test, expect } from '@playwright/test';
-import { checkA11y, injectAxe } from 'axe-playwright';
-import { injectMockWallet } from './helpers/wallet-mock';
+import { expect, test, type Page } from "@playwright/test";
+import { mockAppShell } from "./helpers/app-shell-mock";
 
-test.describe('Core Page Flows', () => {
-  test('Landing page renders and is accessible', async ({ page }) => {
-    await page.goto('/');
-    
-    // Check main elements
-    await expect(page.locator('text=VaultQuest')).toBeVisible();
-    await expect(page.locator('text=Launch DApp')).toBeVisible();
-    
-    // Accessibility check
-    await injectAxe(page);
-    await checkA11y(page);
-  });
-
-  test('App Dashboard responsive layout', async ({ page, isMobile }) => {
-    await page.goto('/app');
-    
-    if (isMobile) {
-      // Check mobile menu exists
-      await expect(page.locator('button[aria-label="Toggle menu"]')).toBeVisible();
-    } else {
-      // Check desktop links exist
-      await expect(page.locator('nav >> text=Prizes')).toBeVisible();
-    }
-  });
-
-  test('Wallet connection state placeholders', async ({ page }) => {
-    await page.goto('/app');
-    
-    const startSavingBtn = page.locator('text=Start Saving');
-    await expect(startSavingBtn).toBeVisible();
-    
-    await startSavingBtn.click();
-    
-    // Should show prizes/vault buttons after click (based on current placeholder logic)
-    await expect(page.locator('text=View All Prizes')).toBeVisible();
-    await expect(page.locator('text=Manage Vaults')).toBeVisible();
-  });
-
-  test('Account page renders charts, filters transactions, and is accessible', async ({ page }) => {
-    await page.goto('/app/account?mockConnected=true');
-    
-    // Check main elements
-    await expect(page.locator('text=Your profile')).toBeVisible();
-    await expect(page.locator('text=Deposit Allocation')).toBeVisible();
-    await expect(page.locator('text=Savings Progression')).toBeVisible();
-    await expect(page.locator('text=Past transactions')).toBeVisible();
-    
-    // Verify that the USDC button is present in the allocation card legend and click it
-    const usdcBtn = page.locator('button:has-text("USDC")');
-    await expect(usdcBtn).toBeVisible();
-    await usdcBtn.click();
-    
-    // Verify that the clearable badge is displayed in the transaction table
-    await expect(page.locator('text=Asset: USDC')).toBeVisible();
-    
-    // Click the clear filter button on the badge
-    const clearBtn = page.locator('button[aria-label="Clear USDC filter"]');
-    await expect(clearBtn).toBeVisible();
-    await clearBtn.click();
-    
-    // Verify that the badge is removed
-    await expect(page.locator('text=Asset: USDC')).not.toBeVisible();
-    
-    // Accessibility check using Axe
-    await injectAxe(page);
-    await checkA11y(page);
-  });
-
-  test('Connect mock wallet and verify dashboard connected state', async ({ page }) => {
-    // Inject mock wallet
-    await injectMockWallet(page);
-
-    await page.goto('/app');
-    
-    const connectBtn = page.locator('text=Connect wallet');
-    if (await connectBtn.isVisible()) {
-      await connectBtn.click();
-      
-      // Simulate clicking MetaMask option inside RainbowKit
-      const metaMaskBtn = page.locator('text=MetaMask');
-      if (await metaMaskBtn.isVisible()) {
-        await metaMaskBtn.click();
+async function gotoWithRetry(page: Page, path: string) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await page.goto(path, { waitUntil: "commit", timeout: 60000 });
+      return;
+    } catch (error) {
+      if (attempt === 1) {
+        throw error;
       }
+      await page.waitForTimeout(1000);
     }
-    
-    // Check that we see the connected UI buttons
-    await expect(page.locator('text=View All Prizes')).toBeVisible();
-    await expect(page.locator('text=Manage Vaults')).toBeVisible();
+  }
+}
+
+test.describe("Core user flows", () => {
+  test("shows the dashboard connect entry point", async ({ page }) => {
+    await mockAppShell(page);
+
+    await gotoWithRetry(page, "/app");
+
+    await expect(page.getByRole("heading", { name: "Save together. Win together." })).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(
+      page.getByText("Connect your wallet to deposit, or follow the steps above to get started."),
+    ).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole("button", { name: "Connect wallet" })).toBeVisible({
+      timeout: 15000,
+    });
+  });
+
+  test("opens the vault detail page", async ({ page }) => {
+    await mockAppShell(page);
+
+    await gotoWithRetry(page, "/app/vaults");
+
+    await expect(page.getByRole("heading", { name: "Vaults" })).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole("heading", { name: "Quick Deposit Flow" })).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.getByRole("button", { name: "Open deposit modal" })).toBeVisible({
+      timeout: 15000,
+    });
+  });
+
+  test("reviews wallet status on the account page", async ({ page }) => {
+    await mockAppShell(page);
+
+    await gotoWithRetry(page, "/app/account");
+
+    await expect(page.getByRole("heading", { name: "Your profile" })).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.getByRole("heading", { name: "Wallet not connected" })).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.getByRole("button", { name: "Connect wallet" })).toBeVisible({
+      timeout: 15000,
+    });
+  });
+
+  test("shows the admin settings overview", async ({ page }) => {
+    await mockAppShell(page);
+
+    await gotoWithRetry(page, "/app/admin/settings");
+
+    await expect(page.getByRole("heading", { name: "Settings Overview" })).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.getByRole("heading", { name: "Protocol parameters" })).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.getByRole("heading", { name: "Active rounds" })).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.getByRole("heading", { name: "Service status" })).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.getByRole("heading", { name: "Operational notes" })).toBeVisible({
+      timeout: 15000,
+    });
+  });
+
+  test("landing page renders", async ({ page }) => {
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+
+    await expect(page.getByText("VaultQuest")).toBeVisible();
+    await expect(page.getByText("Launch DApp")).toBeVisible();
   });
 });

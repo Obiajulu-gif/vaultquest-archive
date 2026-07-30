@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle,
@@ -63,19 +63,19 @@ export default function SystemStatusBanner() {
     }
   };
 
-  const checkAllServices = async () => {
+  const checkAllServices = useCallback(async () => {
     setChecking(true);
     const results = await Promise.all(ENDPOINTS.map(checkServiceHealth));
     setServices(results);
     setLastCheck(new Date());
     setChecking(false);
-  };
+  }, []);
 
   useEffect(() => {
     checkAllServices();
     const interval = setInterval(checkAllServices, 60000); // Check every minute
     return () => clearInterval(interval);
-  }, []);
+  }, [checkAllServices]);
 
   const hasIssues = services.some((s) => s.status !== "operational");
   const criticalIssues = services.filter((s) => s.status === "outage").length;

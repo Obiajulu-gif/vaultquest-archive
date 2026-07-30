@@ -112,7 +112,10 @@ export class HorizonPool {
 
   /** Snapshot of current node health, sorted by latency (best first). */
   getHealth(): NodeHealth[] {
-    return [...this.health.values()].sort((a, b) => this.score(a) - this.score(b));
+    return [...this.health.values()].sort((a, b) => {
+      const delta = this.score(a) - this.score(b);
+      return Number.isNaN(delta) ? 0 : delta;
+    });
   }
 
   /** Lower score = preferred. Unhealthy / cooling-down nodes sort last. */
@@ -120,7 +123,7 @@ export class HorizonPool {
     const now = this.opts.now();
     if (now < h.cooldownUntil) return Number.MAX_SAFE_INTEGER;
     if (!h.healthy) return Number.MAX_SAFE_INTEGER - 1;
-    return h.latencyMs;
+    return Number.isFinite(h.latencyMs) ? h.latencyMs : Number.MAX_SAFE_INTEGER / 2;
   }
 
   /**
@@ -128,9 +131,9 @@ export class HorizonPool {
    * refreshed health snapshot. Routing favours the lowest-latency node.
    */
   async pingAll(path = "/"): Promise<NodeHealth[]> {
-    await Promise.all(
-      [...this.health.keys()].map((url) => this.pingNode(url, path))
-    );
+    for (const url of this.health.keys()) {
+      await this.pingNode(url, path);
+    }
     return this.getHealth();
   }
 
@@ -212,10 +215,16 @@ export class HorizonPool {
 
   /** Currently preferred node, or null if all nodes are cooling down. */
   pickNode(): HorizonNode | null {
-    const best = this.getHealth()[0];
-    if (!best) return null;
-    if (this.score(best) >= Number.MAX_SAFE_INTEGER - 1) return null;
-    return { url: best.url, kind: best.kind };
+    const candidate = this.getHealth().find((node) => {
+      const health = this.health.get(node.url);
+      return Boolean(health && health.healthy && this.opts.now() >= health.cooldownUntil);
+    });
+
+    if (!candidate) {
+      return null;
+    }
+
+    return { url: candidate.url, kind: candidate.kind };
   }
 
   private async timedFetch(url: string, init?: RequestInit): Promise<Response> {

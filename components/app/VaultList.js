@@ -1,18 +1,16 @@
 "use client";
 
 import { motion, AnimatePresence } from "framer-motion";
+import Link from "next/link";
 import { Wallet, Info, ArrowUpRight } from "lucide-react";
+import RoundStatusBadge from "@/components/app/RoundStatusBadge";
+import SavePoolButton from "@/components/app/SavePoolButton";
+import ComparePoolButton from "@/components/app/ComparePoolButton";
+import { MOCK_VAULTS } from "@/lib/vault-mock-data";
 
-export const MOCK_VAULTS = [
-  { id: 1, name: "USDC Stable Pool", network: "Avalanche", tvl: 1250000, lockup: 7, apy: 5.2, asset: "USDC" },
-  { id: 2, name: "XLM Drip Vault", network: "Stellar", tvl: 450000, lockup: 0, apy: 3.8, asset: "XLM" },
-  { id: 3, name: "ETH Growth Pool", network: "Avalanche", tvl: 8900000, lockup: 30, apy: 8.5, asset: "ETH" },
-  { id: 4, name: "SOL Yield Max", network: "Solana", tvl: 2100000, lockup: 14, apy: 12.4, asset: "SOL" },
-  { id: 5, name: "USDT Liquidity", network: "Avalanche", tvl: 3400000, lockup: 0, apy: 4.5, asset: "USDT" },
-  { id: 6, name: "BTC Reserve", network: "Stellar", tvl: 15600000, lockup: 90, apy: 10.1, asset: "BTC" },
-];
+export { MOCK_VAULTS, VAULT_ROUND_ARCHIVE } from "@/lib/vault-mock-data";
 
-export default function VaultList({ vaults = [] }) {
+export default function VaultList({ vaults = [], suggestions = null, onSuggestionClick = null, comparisonMode = null }) {
   if (vaults.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-center">
@@ -20,7 +18,23 @@ export default function VaultList({ vaults = [] }) {
           <Info size={32} />
         </div>
         <h3 className="text-xl font-semibold text-vault-text">No vaults found</h3>
-        <p className="text-vault-muted">Try adjusting your filters to find more opportunities.</p>
+        <p className="text-vault-muted mb-6">Try adjusting your filters to find more opportunities.</p>
+        {suggestions && suggestions.length > 0 && (
+          <div className="max-w-md">
+            <p className="text-sm font-semibold text-vault-muted mb-3">Did you mean:</p>
+            <div className="flex flex-wrap gap-2 justify-center">
+              {suggestions.map((suggestion) => (
+                <button
+                  key={suggestion}
+                  onClick={() => onSuggestionClick?.(suggestion)}
+                  className="rounded-lg border border-vault-border bg-vault-surface/50 px-3 py-1.5 text-xs font-medium text-vault-accent transition-all hover:border-vault-accent hover:bg-vault-surface"
+                >
+                  {suggestion}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -38,7 +52,7 @@ export default function VaultList({ vaults = [] }) {
             transition={{ duration: 0.2 }}
             className="vq-glass-hover group flex flex-col justify-between p-5"
           >
-            <div className="flex items-start justify-between">
+            <div className="flex items-start justify-between gap-3">
               <div className="flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-vault-accent/10 text-vault-accent border border-vault-accent/20">
                   <Wallet size={20} />
@@ -48,13 +62,17 @@ export default function VaultList({ vaults = [] }) {
                   <p className="text-xs text-vault-muted">{vault.network} • {vault.asset}</p>
                 </div>
               </div>
-              <div className="text-right">
-                <p className="text-lg font-bold text-emerald-500">{vault.apy}%</p>
-                <p className="text-[10px] uppercase tracking-wider text-vault-muted font-bold">Est. APY</p>
+              <div className="flex items-center gap-2 shrink-0">
+                <SavePoolButton pool={vault} />
+                <RoundStatusBadge status={vault.status} />
               </div>
             </div>
 
-            <div className="mt-6 grid grid-cols-2 gap-4 border-t border-vault-border pt-4">
+            <div className="mt-6 grid grid-cols-3 gap-3 border-t border-vault-border pt-4">
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-vault-muted font-bold">Est. APY</p>
+                <p className="font-bold text-emerald-500">{vault.apy}%</p>
+              </div>
               <div>
                 <p className="text-[10px] uppercase tracking-wider text-vault-muted font-bold">TVL</p>
                 <p className="font-medium text-vault-text">
@@ -69,10 +87,43 @@ export default function VaultList({ vaults = [] }) {
               </div>
             </div>
 
-            <button className="vq-btn-ghost mt-6 w-full group-hover:bg-vault-accent group-hover:text-white group-hover:border-vault-accent transition-all">
+            <button
+              type="button"
+              aria-label={`View ${vault.name} details`}
+              className="vq-btn-ghost mt-6 w-full group-hover:bg-vault-accent group-hover:text-white group-hover:border-vault-accent transition-all"
+            >
+            <div className="mt-4 rounded-xl border border-vault-border bg-vault-surface/30 p-3">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-vault-muted">
+                Participants
+              </p>
+              <p className="mt-1 text-sm font-semibold text-vault-text">
+                {vault.participantCount?.toLocaleString("en-US") ?? "No participant data"}
+              </p>
+              <p className="mt-1 text-xs text-vault-muted">
+                {vault.activityTrend ?? "Activity trend pending"}
+              </p>
+            </div>
+
+            <Link href={`/app/vaults/${vault.id}`} className="vq-btn-primary mt-6 w-full text-center">
               View Vault
-              <ArrowUpRight size={16} className="ml-1" />
-            </button>
+              <ArrowUpRight size={16} className="ml-1 inline" />
+            </Link>
+
+            {comparisonMode && (
+              <ComparePoolButton
+                pool={vault}
+                isSelected={comparisonMode.isSelected(vault.id)}
+                onToggle={() => {
+                  if (comparisonMode.isSelected(vault.id)) {
+                    comparisonMode.removePool(vault.id);
+                  } else {
+                    comparisonMode.addPool(vault);
+                  }
+                }}
+                disabled={!comparisonMode.isSelected(vault.id) && !comparisonMode.canAddMore}
+                className="mt-2 w-full"
+              />
+            )}
           </motion.div>
         ))}
       </AnimatePresence>

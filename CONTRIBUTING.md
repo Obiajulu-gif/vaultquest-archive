@@ -86,13 +86,37 @@ break anything else. Run the relevant commands for your area:
 | Backend | `pnpm --filter backend run lint` | ESLint + TypeScript |
 | Backend | `pnpm --filter backend exec prisma format` | Prisma schema formatting |
 | Frontend | `pnpm test` (root) | Vitest unit tests |
-| Frontend | `pnpm exec playwright test` | E2E smoke tests |
+| Frontend | `pnpm run test:smoke:routes` | Critical route smoke tests |
+| Frontend | `pnpm run test:e2e` | Full Playwright E2E suite |
 | CI / docs | `pnpm run check:terms` | Legacy product name and import guard |
 | Contracts | `cargo test` (in `contracts/`) | Soroban contract tests |
 | Contracts | `cargo fmt --check && cargo clippy -- -D warnings` | Format + lint |
 | Security | `pnpm audit` | Dependency vulnerabilities |
 | Security | `trufflehog filesystem .` | Secret scanning |
 | Docs | manual preview | Markdown renders correctly on GitHub |
+
+### Auto-fixing lint errors locally
+
+Before pushing, you can auto-fix most lint errors:
+
+```bash
+# Fix ESLint errors in the frontend app
+pnpm run lint --fix
+
+# Fix ESLint errors in the backend
+cd backend && npm run lint --fix
+
+# Fix ESLint errors in the stellar-wallet-connect module
+cd stellar-wallet-connect && npm run lint --fix
+
+# Format Rust code in contracts
+cd contracts && cargo fmt
+
+# Format with Prettier (if configured)
+npx prettier --write "app/**/*.{js,jsx}" "components/**/*.{js,jsx}" "hooks/**/*.{js,ts}" "lib/**/*.{js,ts}"
+```
+
+The CI pipeline runs these same checks and fails if any lint errors remain.
 
 If you skip a check, **say so explicitly in the PR description and why** —
 that's far more useful than silent gaps.

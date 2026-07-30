@@ -240,7 +240,7 @@ export default function SupportWidget() {
                     ))}
                   </div>
                   <div className="mt-8 rounded-xl bg-vault-surface p-4 text-center border border-vault-border">
-                    <p className="text-sm text-vault-muted mb-3">Didn't find what you need?</p>
+                    <p className="text-sm text-vault-muted mb-3">Didn&apos;t find what you need?</p>
                     <button 
                       onClick={() => setView("ticket")}
                       className="vq-btn-primary w-full py-2"
@@ -341,7 +341,7 @@ export default function SupportWidget() {
                   <div>
                     <h4 className="text-xl font-bold text-vault-text">Ticket Submitted!</h4>
                     <p className="text-sm text-vault-muted mt-2">
-                      We've received your request. Our support team will respond via email within 24 hours.
+                      We&apos;ve received your request. Our support team will respond via email within 24 hours.
                     </p>
                   </div>
                   <button 

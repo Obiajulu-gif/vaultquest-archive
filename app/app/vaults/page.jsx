@@ -2,10 +2,24 @@
 
 import { useState, useMemo } from "react";
 import Link from "next/link";
+import { useTranslation } from "next-i18next";
 import GasPrioritySelector from "@/components/app/GasPrioritySelector";
 import DepositModal from "@/components/app/DepositModal";
 import VaultFilters from "@/components/app/VaultFilters";
 import VaultList, { MOCK_VAULTS } from "@/components/app/VaultList";
+import VaultComparisonTable from "@/components/app/VaultComparisonTable";
+import VaultDataRefresh from "@/components/app/VaultDataRefresh";
+import VaultDataWarnings from "@/components/app/VaultDataWarnings";
+import VaultFaqSection from "@/components/app/VaultFaqSection";
+import VaultRiskExplainer from "@/components/app/VaultRiskExplainer";
+import VaultHealthStatusPanel from "@/components/app/VaultHealthStatusPanel";
+import VaultRewardsExplanationModal from "@/components/app/VaultRewardsExplanationModal";
+import MobileVaultActions from "@/components/app/MobileVaultActions";
+import VaultRetryQueue from "@/components/app/VaultRetryQueue";
+import PoolComparisonDrawer from "@/components/app/PoolComparisonDrawer";
+import { useVaultDataReview } from "@/hooks/useVaultDataReview";
+import { usePoolComparison } from "@/components/hooks/usePoolComparison";
+import { Archive, LayoutGrid, Table, GitCompare, CalendarDays } from "lucide-react";
 
 const INITIAL_FILTERS = {
   search: "",
@@ -13,27 +27,49 @@ const INITIAL_FILTERS = {
   minApy: 0,
   minTvl: 0,
   lockups: [],
+  statuses: [],
+  strategies: [],
+  sortBy: "apy",
 };
 
 export default function VaultsPage() {
+  const { t } = useTranslation("common");
   const [isDepositModalOpen, setIsDepositModalOpen] = useState(false);
   const [filters, setFilters] = useState(INITIAL_FILTERS);
+  const [viewMode, setViewMode] = useState("table");
+  const [comparisonOpen, setComparisonOpen] = useState(false);
+
+  const {
+    selectedPools,
+    addPool,
+    removePool,
+    clearAll,
+    isSelected,
+    canAddMore,
+  } = usePoolComparison();
+
+  const { vaults: reviewedVaults, warnings: dataWarnings } =
+    useVaultDataReview(MOCK_VAULTS);
 
   const filteredVaults = useMemo(() => {
-    return MOCK_VAULTS.filter((vault) => {
-      // Search
+    return reviewedVaults.filter((vault) => {
+      // Search (by name, asset, or strategy)
       if (filters.search) {
         const search = filters.search.toLowerCase();
         if (
           !vault.name.toLowerCase().includes(search) &&
-          !vault.asset.toLowerCase().includes(search)
+          !vault.asset.toLowerCase().includes(search) &&
+          !vault.strategy.toLowerCase().includes(search)
         ) {
           return false;
         }
       }
 
       // Networks
-      if (filters.networks.length > 0 && !filters.networks.includes(vault.network)) {
+      if (
+        filters.networks.length > 0 &&
+        !filters.networks.includes(vault.network)
+      ) {
         return false;
       }
 
@@ -59,20 +95,88 @@ export default function VaultsPage() {
         if (!isMatch) return false;
       }
 
+      // Status
+      if (filters.statuses && filters.statuses.length > 0) {
+        if (!filters.statuses.includes(vault.status)) {
+          return false;
+        }
+      }
+
+      // Strategy
+      if (filters.strategies && filters.strategies.length > 0) {
+        if (!filters.strategies.includes(vault.strategy)) {
+          return false;
+        }
+      }
+
       return true;
     });
   }, [filters]);
 
   const clearFilters = () => setFilters(INITIAL_FILTERS);
 
+  const generateSuggestions = () => {
+    if (filteredVaults.length > 0 || !filters.search) {
+      return null;
+    }
+
+    const search = filters.search.toLowerCase();
+    const allNames = MOCK_VAULTS.map((v) => v.name);
+    const allAssets = MOCK_VAULTS.map((v) => v.asset);
+    const allStrategies = MOCK_VAULTS.map((v) => v.strategy);
+
+    const suggestions = new Set();
+
+    [...allNames, ...allAssets, ...allStrategies].forEach((item) => {
+      if (item.toLowerCase().includes(search) && suggestions.size < 3) {
+        suggestions.add(item);
+      }
+    });
+
+    return Array.from(suggestions);
+  };
+
+  const handleSuggestionClick = (suggestion) => {
+    setFilters({ ...filters, search: suggestion });
+  };
+
   return (
     <div className="space-y-6">
       <section className="space-y-3">
-        <h1 className="text-3xl font-bold text-vault-text">Vaults</h1>
-        <p className="max-w-2xl text-vault-muted">
-          Manage your pool positions and drip deposits. Review live fee tiers before you submit a transaction.
-        </p>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-vault-text">{t("routes.vaults.title")}</h1>
+            <p className="mt-3 max-w-2xl text-vault-muted">
+              {t("routes.vaults.subtitle")}{" "}
+              <Link
+                href="/app/vaults/strategies"
+                className="text-vault-accent underline hover:text-vault-accent/80 font-medium"
+              >
+                {t("routes.vaults.strategies")}
+              </Link>
+              .
+            </p>
+          </div>
+          <div className="flex gap-2 self-start">
+            <Link href="/app/vaults/calendar" className="vq-btn-ghost">
+              <CalendarDays className="h-4 w-4" aria-hidden="true" />
+              Calendar
+            </Link>
+            <Link href="/app/vaults/archive" className="vq-btn-ghost">
+              <Archive className="h-4 w-4" aria-hidden="true" />
+              {t("routes.vaults.roundArchive")}
+            </Link>
+          </div>
+        </div>
       </section>
+
+      <VaultRiskExplainer />
+
+      <VaultRetryQueue />
+
+      <div className="flex justify-end">
+        <VaultRewardsExplanationModal />
+      </div>
 
       <div className="flex flex-col gap-8 lg:flex-row">
         <VaultFilters
@@ -82,47 +186,120 @@ export default function VaultsPage() {
         />
 
         <div className="flex-1 space-y-6">
+          <VaultDataRefresh />
+
+          <VaultDataWarnings warnings={dataWarnings} />
+
+          <VaultHealthStatusPanel />
+
+          <MobileVaultActions
+            vaultName="Selected Vault"
+            onAction={(action) => console.log(`Action: ${action}`)}
+          />
+
           <div className="grid gap-6 xl:grid-cols-2">
             <GasPrioritySelector nativeBalance={0.0018} />
 
             <section className="vq-glass-hover flex flex-col justify-between p-6">
               <div>
                 <p className="text-xs font-medium uppercase tracking-[0.24em] text-vault-muted">
-                  Deposit review
+                  {t("routes.vaults.depositReview")}
                 </p>
                 <h2 className="mt-1 text-xl font-semibold text-vault-text">
-                  Quick Deposit Flow
+                  {t("routes.vaults.quickDepositTitle")}
                 </h2>
                 <p className="mt-2 text-sm text-vault-muted">
-                  Select a vault below to begin your deposit. Live network estimates will be calculated automatically.
+                  {t("routes.vaults.quickDepositBody")}
                 </p>
               </div>
 
-              <button
-                type="button"
-                onClick={() => setIsDepositModalOpen(true)}
-                className="vq-btn-primary mt-6 self-start"
-              >
-                Open deposit modal
-              </button>
+              <div className="mt-6 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsDepositModalOpen(true)}
+                  className="vq-btn-primary"
+                >
+                  {t("routes.vaults.openDepositModal")}
+                </button>
+                <Link
+                  href="/app/vaults/planner"
+                  className="vq-btn-ghost"
+                >
+                  {t("routes.vaults.recurringPlanner")}
+                </Link>
+              </div>
             </section>
           </div>
 
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-xl font-bold text-vault-text">Available Pools</h3>
-              <p className="text-sm text-vault-muted">
-                Showing {filteredVaults.length} of {MOCK_VAULTS.length} vaults
-              </p>
+              <div>
+                <h3 className="text-xl font-bold text-vault-text">
+                  {t("routes.vaults.availablePools")}
+                </h3>
+                <p className="text-sm text-vault-muted">
+                  Showing {filteredVaults.length} of {MOCK_VAULTS.length} vaults
+                </p>
+              </div>
+              <div className="flex items-center gap-3">
+                {selectedPools.length >= 2 && (
+                  <button
+                    onClick={() => setComparisonOpen(true)}
+                    className="vq-btn-primary text-sm flex items-center gap-2"
+                  >
+                    <GitCompare size={16} aria-hidden="true" />
+                    Compare ({selectedPools.length})
+                  </button>
+                )}
+                <div className="flex gap-2 rounded-lg border border-vault-border p-1 bg-vault-surface">
+                  <button
+                    onClick={() => setViewMode("table")}
+                    className={`p-1.5 rounded-md transition-colors ${viewMode === "table" ? "bg-vault-accent/20 text-vault-accent" : "text-vault-muted hover:text-vault-text"}`}
+                  >
+                    <Table size={18} />
+                  </button>
+                  <button
+                    onClick={() => setViewMode("grid")}
+                    className={`p-1.5 rounded-md transition-colors ${viewMode === "grid" ? "bg-vault-accent/20 text-vault-accent" : "text-vault-muted hover:text-vault-text"}`}
+                  >
+                    <LayoutGrid size={18} />
+                  </button>
+                </div>
+              </div>
             </div>
-            <VaultList vaults={filteredVaults} />
+            {viewMode === "table" ? (
+              <VaultComparisonTable
+                vaults={filteredVaults}
+                sortBy={filters.sortBy}
+                suggestions={generateSuggestions()}
+                onSuggestionClick={handleSuggestionClick}
+                onClearFilters={clearFilters}
+                comparisonMode={{ isSelected, addPool, removePool, canAddMore }}
+              />
+            ) : (
+              <VaultList
+                vaults={filteredVaults}
+                suggestions={generateSuggestions()}
+                onSuggestionClick={handleSuggestionClick}
+                comparisonMode={{ isSelected, addPool, removePool, canAddMore }}
+              />
+            )}
           </div>
+
+          <VaultFaqSection />
         </div>
       </div>
 
       <DepositModal
         isOpen={isDepositModalOpen}
         onClose={() => setIsDepositModalOpen(false)}
+      />
+
+      <PoolComparisonDrawer
+        pools={selectedPools}
+        onRemove={removePool}
+        onClearAll={clearAll}
+        onClose={() => setComparisonOpen(false)}
       />
 
       <Link href="/app" className="vq-btn-ghost inline-flex">

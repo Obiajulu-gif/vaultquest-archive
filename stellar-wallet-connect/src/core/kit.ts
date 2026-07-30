@@ -8,7 +8,7 @@ import {
   LobstrModule,
   WalletNetwork,
 } from "@creit.tech/stellar-wallets-kit";
-import { LedgerModule } from "@creit.tech/stellar-wallets-kit/modules/ledger.module";
+import { LedgerModule } from "@creit.tech/stellar-wallets-kit/modules/ledger";
 import { getFrontendEnv } from "./env.js";
 
 // Re-exported for the wallet layer (#rate-limits): the Horizon connection pool

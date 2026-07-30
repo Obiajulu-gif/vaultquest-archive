@@ -10,14 +10,19 @@ function Stat({ label, value }) {
   );
 }
 
-export default function PublicStatsBar() {
+export default function PublicStatsBar({ layout = "horizontal" }) {
+  const locale = typeof navigator !== "undefined" ? navigator.language : "en";
+  const containerClass = layout === "vertical"
+    ? "flex flex-col gap-3 w-full"
+    : "grid grid-cols-2 gap-3 lg:grid-cols-4 w-full";
+
   return (
-    <section aria-label="Protocol statistics" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-      <Stat label="Total value locked" value={formatUsd(PUBLIC_STATS.tvl)} />
-      <Stat label="Prize pool" value={formatUsd(PUBLIC_STATS.prizePool)} />
+    <section aria-label="Protocol statistics" className={containerClass}>
+      <Stat label="Total value locked" value={formatUsd(PUBLIC_STATS.tvl, locale)} />
+      <Stat label="Prize pool" value={formatUsd(PUBLIC_STATS.prizePool, locale)} />
       <Stat
         label="Active savers"
-        value={PUBLIC_STATS.activeSavers.toLocaleString()}
+        value={PUBLIC_STATS.activeSavers.toLocaleString(locale)}
       />
       <Stat label="Current round" value={`#${PUBLIC_STATS.currentRound}`} />
     </section>

@@ -1,9 +1,10 @@
 import type { FC, ReactNode } from "react";
-import { useCallback, useMemo } from "react";
+import { useMemo } from "react";
 import { Columns, Plus, X } from "lucide-react";
 import { EmptyState, LoadingState, StaleIndicator } from "../../components/FallbackStates";
 import type { PoolStatus, PoolSummary } from "../contract/types";
 import { formatAmount, formatDate } from "../lib/format";
+import PoolStatusBadge from "./PoolStatusBadge";
 
 export interface PoolComparisonViewProps {
   pools: PoolSummary[];
@@ -15,13 +16,6 @@ export interface PoolComparisonViewProps {
   onClear: () => void;
 }
 
-const STATUS_BADGE: Record<PoolStatus, { label: string; className: string }> = {
-  open: { label: "Open", className: "bg-emerald-500/15 text-emerald-300" },
-  locked: { label: "Locked", className: "bg-sky-500/15 text-sky-300" },
-  drawing: { label: "Drawing", className: "bg-amber-500/15 text-amber-300" },
-  settled: { label: "Settled", className: "bg-gray-500/15 text-gray-300" },
-};
-
 interface ComparisonRow {
   label: string;
   render: (pool: PoolSummary) => ReactNode;
@@ -29,11 +23,8 @@ interface ComparisonRow {
 
 const ROWS: ComparisonRow[] = [
   { label: "Status", render: (p) => {
-    const badge = STATUS_BADGE[p.status];
     return (
-      <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${badge.className}`}>
-        {badge.label}
-      </span>
+      <PoolStatusBadge status={p.status} />
     );
   }},
   { label: "TVL", render: (p) => formatAmount(p.tvl, p.asset) },

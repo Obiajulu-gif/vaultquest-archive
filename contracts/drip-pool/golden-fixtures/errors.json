@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "description": "Golden fixtures for contract error codes.",
+  "contract_errors": {
+    "AlreadyInitialized": {
+      "code": 1,
+      "backend_error": "INVALID_PAYLOAD",
+      "wallet_error_kind": "contract_error"
+    },
+    "NotInitialized": {
+      "code": 2,
+      "backend_error": "INVALID_PAYLOAD",
+      "wallet_error_kind": "contract_error"
+    },
+    "AlreadyJoined": {
+      "code": 3,
+      "backend_error": "INVALID_PAYLOAD",
+      "wallet_error_kind": "contract_error"
+    },
+    "NotJoined": {
+      "code": 4,
+      "backend_error": "NOT_FOUND",
+      "wallet_error_kind": "contract_error"
+    },
+    "InvalidAmount": {
+      "code": 5,
+      "backend_error": "INVALID_PAYLOAD",
+      "wallet_error_kind": "contract_error"
+    },
+    "Locked": {
+      "code": 6,
+      "backend_error": "REVERTED_ON_CHAIN",
+      "wallet_error_kind": "contract_error"
+    },
+    "LockupActive": {
+      "code": 7,
+      "backend_error": "REVERTED_ON_CHAIN",
+      "wallet_error_kind": "contract_error"
+    },
+    "Unauthorized": {
+      "code": 8,
+      "backend_error": "UNAUTHORIZED",
+      "wallet_error_kind": "signature_rejected"
+    },
+    "ThresholdNotMet": {
+      "code": 9,
+      "backend_error": "FORBIDDEN",
+      "wallet_error_kind": "contract_error"
+    },
+    "AlreadySigned": {
+      "code": 10,
+      "backend_error": "INVALID_PAYLOAD",
+      "wallet_error_kind": "contract_error"
+    },
+    "ProposalNotFound": {
+      "code": 11,
+      "backend_error": "NOT_FOUND",
+      "wallet_error_kind": "contract_error"
+    },
+    "ProposalExpired": {
+      "code": 12,
+      "backend_error": "INVALID_PAYLOAD",
+      "wallet_error_kind": "contract_error"
+    },
+    "InvalidAction": {
+      "code": 13,
+      "backend_error": "INVALID_PAYLOAD",
+      "wallet_error_kind": "contract_error"
+    }
+  }
+}

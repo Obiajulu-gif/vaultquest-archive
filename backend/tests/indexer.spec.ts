@@ -105,4 +105,54 @@ describe("StellarIndexer", () => {
     const refreshed = await db.prisma.actionLedger.findUnique({ where: { id: action.id } });
     expect(refreshed?.status).toBe("reverted");
   });
+
+  it("resumes from the persisted processed-event cursor after downtime", async () => {
+    await db.prisma.indexerCheckpoint.upsert({
+      where: { id: "singleton" },
+      create: {
+        id: "singleton",
+        latestLedger: 102,
+        lastProcessedEventId: "2",
+        lastSyncTime: new Date("2026-06-23T00:00:00Z"),
+        lastError: null,
+        lastSuccessSyncTime: new Date("2026-06-23T00:00:00Z")
+      },
+      update: {
+        latestLedger: 102,
+        lastProcessedEventId: "2",
+        lastSyncTime: new Date("2026-06-23T00:00:00Z"),
+        lastError: null,
+        lastSuccessSyncTime: new Date("2026-06-23T00:00:00Z")
+      }
+    });
+
+    let seenCursor: string | null = null;
+    const indexer = new StellarIndexer({
+      ledger,
+      source: {
+        async fetchEvents({ cursor, limit }) {
+          seenCursor = cursor;
+          expect(limit).toBe(200);
+          return cursor === "2"
+            ? [makeEvent({ id: "3", ledger: 103, txHash: "tx_resume" })]
+            : [];
+        }
+      },
+      decoder: defaultXdrDecoder
+    });
+
+    const result = await indexer.tick();
+
+    expect(seenCursor).toBe("2");
+    expect(result.cursor).toBe("3");
+    expect(result.processed).toBe(1);
+    expect(result.imported).toBe(1);
+
+    const checkpoint = await db.prisma.indexerCheckpoint.findUnique({ where: { id: "singleton" } });
+    expect(checkpoint?.lastProcessedEventId).toBe("3");
+    expect(checkpoint?.latestLedger).toBe(103);
+
+    const parked = await db.prisma.pendingEvent.findUnique({ where: { txHash: "tx_resume" } });
+    expect(parked).not.toBeNull();
+  });
 });

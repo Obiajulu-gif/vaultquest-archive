@@ -7,6 +7,19 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model User {
+  id            String   @id @default(uuid()) @db.Uuid
+  walletAddress String?  @unique @map("wallet_address")
+  email         String?  @unique
+  name          String?
+  bio           String?
+  passwordHash  String?  @map("password_hash")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
 enum ActionType {
   deposit
   withdraw
@@ -45,6 +58,8 @@ model ActionLedger {
 
   @@index([walletAddress, createdAt(sort: Desc)])
   @@index([status, updatedAt])
+  @@index([walletAddress, actionType])
+  @@index([status, createdAt(sort: Desc)])
   @@map("action_ledger")
 }
 
@@ -56,17 +71,63 @@ model PendingEvent {
   receivedAt      DateTime  @default(now()) @map("received_at")
   consumedAt      DateTime? @map("consumed_at")
 
+  @@index([statusHint, receivedAt])
   @@map("pending_events")
+}
+
+model ActionLease {
+  actionId   String    @id @map("action_id") @db.Uuid
+  workerId   String    @map("worker_id")
+  acquiredAt DateTime  @default(now()) @map("acquired_at")
+  expiresAt  DateTime  @map("expires_at")
+
+  @@index([expiresAt])
+  @@map("action_leases")
+}
+
+// #506 — generic named-job distributed lease with a fencing token, for
+// coordinating cron/indexer/reconciler workers across replicas. Same CAS
+// (compare-and-swap) shape as ActionLease above, but keyed by a stable
+// jobName instead of a per-action id, and carries a fencingToken that
+// increments on every successful acquisition (including takeovers) so
+// writes guarded by a lease can detect and reject a stale holder that
+// resumed after its lease already expired and was taken over.
+model JobLease {
+  jobName      String   @id @map("job_name")
+  workerId     String   @map("worker_id")
+  fencingToken BigInt   @default(1) @map("fencing_token")
+  acquiredAt   DateTime @default(now()) @map("acquired_at")
+  expiresAt    DateTime @map("expires_at")
+
+  @@index([expiresAt])
+  @@map("job_leases")
 }
 
 model IndexerCheckpoint {
   id                  String   @id @default("singleton")
   latestLedger        Int      @map("latest_ledger")
+  lastProcessedEventId String?  @map("last_processed_event_id")
+  lastLedgerHash      String?  @map("last_ledger_hash")
   lastSyncTime        DateTime @map("last_sync_time")
   lastError           String?  @map("last_error")
   lastSuccessSyncTime DateTime @default(now()) @map("last_success_sync_time")
 
   @@map("indexer_checkpoints")
+}
+
+model PoisonEvent {
+  id             String    @id @default(uuid()) @db.Uuid
+  sorobanEventId String    @unique @map("soroban_event_id")
+  ledger         Int
+  contractId     String    @map("contract_id")
+  txHash         String    @map("tx_hash")
+  rawEvent       Json      @map("raw_event")
+  reason         String
+  detectedAt     DateTime  @default(now()) @map("detected_at")
+  resolvedAt     DateTime? @map("resolved_at")
+
+  @@index([resolvedAt, detectedAt])
+  @@map("poison_events")
 }
 
 model VaultSettlement {
@@ -86,6 +147,7 @@ model VaultSettlement {
   updatedAt      DateTime  @updatedAt @map("updated_at")
 
   @@index([state, updatedAt])
+  @@index([recipient, state])
   @@map("vault_settlements")
 }
 
@@ -108,6 +170,113 @@ model UserQuest {
   @@map("user_quests")
 }
 
+// #505 — exactly-once reward-grant intent, created atomically alongside
+// the UserQuest transition that completed a quest. idempotencyKey is
+// deterministic (sha256(walletAddress + questId)) so replaying
+// evaluateRecent over an already-processed window (backfill) or
+// re-running after a crash mid-sweep can never create a duplicate grant
+// — the unique constraint on idempotencyKey is the actual double-grant
+// guard, independent of (and a safety net beyond) the JobLease held
+// during the sweep that created it.
+model RewardGrant {
+  id             String    @id @default(uuid()) @db.Uuid
+  walletAddress  String    @map("wallet_address")
+  questId        String    @map("quest_id")
+  idempotencyKey String    @unique @map("idempotency_key")
+  status         String    @default("pending") // pending | granted | failed | needs_review
+  attempts       Int       @default(0)
+  lastError      String?   @map("last_error")
+  grantedAt      DateTime? @map("granted_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@index([status, createdAt])
+  @@index([walletAddress])
+  @@map("reward_grants")
+}
+
+// Off-chain mirror of the vault-factory contract's on-chain pool registry
+// (#507). `salt` is the deterministic pool id used as the factory's deploy
+// salt; `poolAddress` is derived from (factory address, salt) so it never
+// changes for a given salt. Populated by the indexer from `pool`/`deployed`
+// events and used to feed `INDEXER_CONTRACT_IDS`-style contract discovery
+// without requiring a manual env var update per new pool.
+model PoolRegistry {
+  id             String    @id @default(uuid()) @db.Uuid
+  salt           String    @unique @map("salt")
+  poolAddress    String    @unique @map("pool_address")
+  factoryAddress String    @map("factory_address")
+  admin          String
+  asset          String
+  wasmHash       String    @map("wasm_hash")
+  active         Boolean   @default(true)
+  deployedLedger Int       @map("deployed_ledger")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@index([factoryAddress])
+  @@index([active])
+  @@map("pool_registry")
+}
+
+model RepairAudit {
+  id          String   @id @default(uuid()) @db.Uuid
+  planJson    Json     @map("plan_json")
+  appliedJson Json?    @map("applied_json")
+  operatorId  String?  @map("operator_id")
+  appliedAt   DateTime @default(now()) @map("applied_at")
+
+  @@map("repair_audits")
+}
+
+model WalletChallenge {
+  challengeId   String    @id @map("challenge_id") @db.Uuid
+  walletAddress String    @map("wallet_address")
+  publicKey     String    @map("public_key")
+  network       String
+  nonce         String
+  domain        String
+  expiresAt     DateTime  @map("expires_at")
+  consumedAt    DateTime? @map("consumed_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  @@index([walletAddress, consumedAt])
+  @@index([expiresAt])
+  @@map("wallet_challenges")
+}
+
+model WalletSession {
+  id              String    @id @default(uuid()) @db.Uuid
+  walletAddress   String    @map("wallet_address")
+  publicKey       String    @map("public_key")
+  network         String
+  token           String    @unique
+  refreshToken    String?   @map("refresh_token")
+  expiresAt       DateTime  @map("expires_at")
+  lastUsedAt      DateTime  @default(now()) @map("last_used_at")
+  revokedAt       DateTime? @map("revoked_at")
+  prevSessionId   String?   @map("prev_session_id") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@index([walletAddress, revokedAt])
+  @@index([token])
+  @@map("wallet_sessions")
+}
+
+model RepairQuarantine {
+  id          String   @id @default(uuid()) @db.Uuid
+  recordType  String   @map("record_type")
+  recordId    String   @map("record_id")
+  driftType   String   @map("drift_type")
+  details     Json     @map("details")
+  detectedAt  DateTime @default(now()) @map("detected_at")
+  resolvedAt  DateTime? @map("resolved_at")
+
+  @@index([recordType, recordId])
+  @@index([driftType, detectedAt])
+  @@map("repair_quarantine")
+}
+
 model SavedPool {
   id               String   @id @default(uuid()) @db.Uuid
   walletAddress    String   @map("wallet_address")
@@ -127,5 +296,98 @@ model SavedPool {
 
   @@unique([walletAddress, poolId])
   @@index([walletAddress, createdAt(sort: Desc)])
+  @@index([poolId])
   @@map("saved_pools")
+}
+
+model User {
+  id        String   @id @default(uuid()) @db.Uuid
+  email     String   @unique
+  googleId  String?  @unique
+  createdAt DateTime @default(now())
+}
+
+model Product {
+  id         String   @id @default(uuid()) @db.Uuid
+  name       String
+  categoryId String   @map("category_id")
+  price      Float
+  images     ProductImage[]
+  createdAt  DateTime @default(now())
+
+  @@index([categoryId])
+  @@index([price])
+}
+
+model ProductImage {
+  id        String   @id @default(uuid()) @db.Uuid
+  url       String
+  productId String   @map("product_id") @db.Uuid
+  product   Product  @relation(fields: [productId], references: [id])
+model DrawProof {
+  id                String    @id @default(uuid()) @db.Uuid
+  drawId            String    @unique @map("draw_id")
+  roundId           Int       @map("round_id")
+  contractId        String    @map("contract_id")
+  proofJson         Json      @map("proof_json")
+  proofHash         String    @unique @map("proof_hash")
+  signature         String?
+  verified          Boolean   @default(false)
+  verifiedAt        DateTime? @map("verified_at")
+  verificationError String?   @map("verification_error")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  @@index([roundId])
+  @@index([contractId, createdAt(sort: Desc)])
+  @@map("draw_proofs")
+}
+
+model Category {
+  id          String   @id @default(uuid()) @db.Uuid
+  slug        String   @unique
+  name        String
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("categories")
+}
+
+model Notification {
+  id             String    @id @default(uuid()) @db.Uuid
+  walletAddress  String    @map("wallet_address")
+  type           String
+  positionId     String    @map("position_id")
+  title          String
+  message        String
+  dismissedAt    DateTime? @map("dismissed_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  @@unique([walletAddress, positionId, type])
+  @@index([walletAddress, dismissedAt])
+  @@map("notifications")
+}
+
+model NotificationPreference {
+  walletAddress String   @id @map("wallet_address")
+  disabledTypes String[] @default([]) @map("disabled_types")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("notification_preferences")
+}
+
+model TransactionMetric {
+  id            String    @id @default(uuid()) @db.Uuid
+  actionId      String    @unique @map("action_id")
+  actionType    String    @map("action_type")
+  network       String
+  walletAddress String    @map("wallet_address")
+  submittedAt   DateTime  @map("submitted_at")
+  confirmedAt   DateTime? @map("confirmed_at")
+  indexedAt     DateTime? @map("indexed_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  @@index([actionType, network])
+  @@index([submittedAt])
+  @@map("transaction_metrics")
 }

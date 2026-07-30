@@ -1,0 +1,987 @@
+From fdee7ddd0abae966e9313746370d6b1fd51cefd6 Mon Sep 17 00:00:00 2001
+From: VaultQuest Dev <dev@vaultquest.local>
+Date: Sat, 27 Jun 2026 12:29:08 +0000
+Subject: [PATCH] fix: resolve issues #245 #246 #248 #249
+
+#246 [Contracts] Implement Emergency Pause (Circuit Breaker) in Vault Contract
+- Add IsPaused storage flag to DataKey enum
+- Implement admin-only pause_protocol() and unpause_protocol()
+- Gate deposit() and draw_winner() behind require_not_paused()
+- withdraw() intentionally ungated so users can always recover funds
+- Add 12 Rust unit tests covering access control and pause logic
+
+#245 [Backend] Add Rate Limiting to Fastify Action-Ledger Service
+- Install and configure @fastify/rate-limit via fastify-plugin wrapper
+- Global default: 100 req / 60s per IP (X-Forwarded-For aware)
+- Returns standard 429 JSON body with retryAfter field
+- /health route overrides to 300 req/min
+- Add Vitest tests for limit, 429 shape, and per-IP isolation
+- Update docs/ARCHITECTURE.md with rate-limit request flow diagram
+
+#249 [Frontend] Add dark mode toggle
+- Set darkMode: 'class' in tailwind.config.js
+- useDarkMode() hook: localStorage > prefers-color-scheme OS fallback
+- Toggles dark class on <html>; persists preference across sessions
+- Sun/Moon toggle button in Navbar with aria-label
+
+#248 [Frontend] Refactor Navbar component
+- Extract nav links into components/navConfig.ts (NavItem[])
+- Navbar maps over config; active state via usePathname() + item.exact
+- Mobile hamburger menu included
+---
+ backend/src/plugins/rate-limit.test.ts |  71 +++++
+ backend/src/plugins/rate-limit.ts      |  64 +++++
+ backend/src/server.ts                  |  24 +-
+ components/Navbar.tsx                  | 171 ++++++++++++
+ components/navConfig.ts                |  45 ++++
+ contracts/vault/src/lib.rs             | 344 +++++++++++++++++++++++++
+ docs/ARCHITECTURE.md                   | 106 +++++++-
+ tailwind.config.js                     |  33 ++-
+ 8 files changed, 846 insertions(+), 12 deletions(-)
+ create mode 100644 backend/src/plugins/rate-limit.test.ts
+ create mode 100644 backend/src/plugins/rate-limit.ts
+ create mode 100644 components/Navbar.tsx
+ create mode 100644 components/navConfig.ts
+ create mode 100644 contracts/vault/src/lib.rs
+
+diff --git a/backend/src/plugins/rate-limit.test.ts b/backend/src/plugins/rate-limit.test.ts
+new file mode 100644
+index 0000000..084ff79
+--- /dev/null
++++ b/backend/src/plugins/rate-limit.test.ts
+@@ -0,0 +1,71 @@
++// backend/src/plugins/rate-limit.test.ts
++import { describe, it, expect, beforeEach, afterEach } from "vitest";
++import Fastify from "fastify";
++import rateLimitPlugin from "./rate-limit.js";
++
++async function buildTestApp(max = 3, timeWindow = 60_000) {
++  const app = Fastify({ logger: false, trustProxy: true });
++  await app.register(rateLimitPlugin, { max, timeWindow });
++  app.get("/test", async () => ({ ok: true }));
++  await app.ready();
++  return app;
++}
++
++describe("rate-limit plugin", () => {
++  let app: Awaited<ReturnType<typeof buildTestApp>>;
++
++  beforeEach(async () => {
++    app = await buildTestApp(3); // allow 3 req/window for fast test cycling
++  });
++
++  afterEach(async () => {
++    await app.close();
++  });
++
++  it("allows requests within the limit", async () => {
++    for (let i = 0; i < 3; i++) {
++      const res = await app.inject({ method: "GET", url: "/test" });
++      expect(res.statusCode).toBe(200);
++    }
++  });
++
++  it("returns 429 when the limit is exceeded", async () => {
++    // Exhaust quota
++    for (let i = 0; i < 3; i++) {
++      await app.inject({ method: "GET", url: "/test" });
++    }
++    // Next request must be rejected
++    const res = await app.inject({ method: "GET", url: "/test" });
++    expect(res.statusCode).toBe(429);
++  });
++
++  it("429 body matches the standard shape", async () => {
++    for (let i = 0; i < 3; i++) {
++      await app.inject({ method: "GET", url: "/test" });
++    }
++    const res = await app.inject({ method: "GET", url: "/test" });
++    const body = JSON.parse(res.body);
++    expect(body).toMatchObject({
++      statusCode: 429,
++      error: "Too Many Requests",
++    });
++    expect(typeof body.message).toBe("string");
++    expect(typeof body.retryAfter).toBe("string");
++  });
++
++  it("uses X-Forwarded-For for key generation", async () => {
++    // Requests from different IPs should each get their own quota bucket.
++    const resA = await app.inject({
++      method: "GET",
++      url: "/test",
++      headers: { "x-forwarded-for": "1.2.3.4" },
++    });
++    const resB = await app.inject({
++      method: "GET",
++      url: "/test",
++      headers: { "x-forwarded-for": "5.6.7.8" },
++    });
++    expect(resA.statusCode).toBe(200);
++    expect(resB.statusCode).toBe(200);
++  });
++});
+diff --git a/backend/src/plugins/rate-limit.ts b/backend/src/plugins/rate-limit.ts
+new file mode 100644
+index 0000000..7657c0c
+--- /dev/null
++++ b/backend/src/plugins/rate-limit.ts
+@@ -0,0 +1,64 @@
++// backend/src/plugins/rate-limit.ts
++// Registers @fastify/rate-limit as a Fastify plugin.
++// Applied globally; individual routes may override via their own `config.rateLimit`.
++
++import fp from "fastify-plugin";
++import type { FastifyInstance, FastifyPluginOptions } from "fastify";
++import rateLimit from "@fastify/rate-limit";
++
++export interface RateLimitOptions extends FastifyPluginOptions {
++  /** Max requests per window per IP (default: 100) */
++  max?: number;
++  /** Window duration in milliseconds (default: 60 000 – one minute) */
++  timeWindow?: number;
++}
++
++async function rateLimitPlugin(
++  fastify: FastifyInstance,
++  options: RateLimitOptions
++) {
++  const max = options.max ?? 100;
++  const timeWindow = options.timeWindow ?? 60_000; // 1 minute
++
++  await fastify.register(rateLimit, {
++    global: true,
++    max,
++    timeWindow,
++
++    // Returns a standard 429 JSON body.
++    errorResponseBuilder(_request, context) {
++      return {
++        statusCode: 429,
++        error: "Too Many Requests",
++        message: `Rate limit exceeded. You may retry after ${context.after}.`,
++        retryAfter: context.after,
++      };
++    },
++
++    // Log exceeded attempts for observability.
++    onExceeding(request) {
++      request.log.warn(
++        { ip: request.ip, url: request.url },
++        "Rate limit approaching for IP"
++      );
++    },
++
++    onExceeded(request) {
++      request.log.warn(
++        { ip: request.ip, url: request.url },
++        "Rate limit exceeded for IP – returning 429"
++      );
++    },
++
++    // Honor X-Forwarded-For when sitting behind a reverse proxy / load-balancer.
++    keyGenerator(request) {
++      return request.headers["x-forwarded-for"]?.toString().split(",")[0].trim()
++        ?? request.ip;
++    },
++  });
++}
++
++export default fp(rateLimitPlugin, {
++  name: "rate-limit",
++  fastify: "4.x || 5.x",
++});
+diff --git a/backend/src/server.ts b/backend/src/server.ts
+index 9b1c8d5..f4d5664 100644
+--- a/backend/src/server.ts
++++ b/backend/src/server.ts
+@@ -1,18 +1,38 @@
++// backend/src/server.ts
++// Fastify application entry-point.
++// Registers plugins (including rate-limiting) and route handlers.
++
+ import Fastify from "fastify";
++import rateLimitPlugin from "./plugins/rate-limit.js";
+ import actionLedgerRoutes from "./routes/action-ledger.js";
+ import reconciliationRoutes from "./routes/reconciliation.js";
+ 
+ export async function buildApp() {
+-  const app = Fastify({ logger: true });
++  const app = Fastify({
++    logger: true,
++    trustProxy: true, // Required so @fastify/rate-limit can read X-Forwarded-For
++  });
++
++  // ── Plugins ──────────────────────────────────────────────────────────
++  // Global IP-based rate limit: 100 req / minute (configurable via env).
++  await app.register(rateLimitPlugin, {
++    max: Number(process.env.RATE_LIMIT_MAX ?? 100),
++    timeWindow: Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60_000),
++  });
+ 
++  // ── Routes ───────────────────────────────────────────────────────────
+   await app.register(actionLedgerRoutes, { prefix: "/action-ledger" });
+   await app.register(reconciliationRoutes, { prefix: "/reconciliation" });
+ 
+-  app.get("/health", async () => ({ status: "ok" }));
++  // ── Health ───────────────────────────────────────────────────────────
++  app.get("/health", { config: { rateLimit: { max: 300 } } }, async () => ({
++    status: "ok",
++  }));
+ 
+   return app;
+ }
+ 
++// Stand-alone start (not used when imported for testing)
+ if (process.argv[1] === new URL(import.meta.url).pathname) {
+   const app = await buildApp();
+   await app.listen({ port: Number(process.env.PORT ?? 3001), host: "0.0.0.0" });
+diff --git a/components/Navbar.tsx b/components/Navbar.tsx
+new file mode 100644
+index 0000000..bb1c3b3
+--- /dev/null
++++ b/components/Navbar.tsx
+@@ -0,0 +1,171 @@
++"use client";
++
++// components/Navbar.tsx
++// Refactored navbar that:
++//   • Maps over navConfig.ts instead of hardcoding links  (#248)
++//   • Includes a dark-mode toggle persisted in localStorage (#249)
++//   • Supports OS-level prefers-color-scheme on first load  (#249)
++//   • Uses Tailwind dark: variants throughout              (#249)
++
++import React, { useEffect, useState } from "react";
++import Link from "next/link";
++import { usePathname } from "next/navigation";
++import {
++  LayoutDashboard,
++  Vault,
++  Trophy,
++  History,
++  Settings,
++  Sun,
++  Moon,
++  Menu,
++  X,
++} from "lucide-react";
++import navItems, { type NavItem } from "./navConfig";
++
++// ── Icon resolver ──────────────────────────────────────────────────────
++const ICONS: Record<string, React.ElementType> = {
++  LayoutDashboard,
++  Vault,
++  Trophy,
++  History,
++  Settings,
++};
++
++function NavIcon({ name }: { name?: string }) {
++  if (!name) return null;
++  const Icon = ICONS[name];
++  return Icon ? <Icon className="w-4 h-4 shrink-0" /> : null;
++}
++
++// ── Dark-mode hook ─────────────────────────────────────────────────────
++function useDarkMode(): [boolean, () => void] {
++  const [dark, setDark] = useState<boolean>(() => {
++    // SSR guard
++    if (typeof window === "undefined") return false;
++    // 1. Respect persisted user preference
++    const stored = localStorage.getItem("theme");
++    if (stored === "dark") return true;
++    if (stored === "light") return false;
++    // 2. Fall back to OS preference
++    return window.matchMedia("(prefers-color-scheme: dark)").matches;
++  });
++
++  useEffect(() => {
++    const root = document.documentElement;
++    if (dark) {
++      root.classList.add("dark");
++      localStorage.setItem("theme", "dark");
++    } else {
++      root.classList.remove("dark");
++      localStorage.setItem("theme", "light");
++    }
++  }, [dark]);
++
++  return [dark, () => setDark((d) => !d)];
++}
++
++// ── Active-link helper ─────────────────────────────────────────────────
++function isActive(pathname: string, item: NavItem): boolean {
++  return item.exact ? pathname === item.href : pathname.startsWith(item.href);
++}
++
++// ── Navbar component ───────────────────────────────────────────────────
++export default function Navbar() {
++  const pathname = usePathname();
++  const [dark, toggleDark] = useDarkMode();
++  const [mobileOpen, setMobileOpen] = useState(false);
++
++  return (
++    <nav className="sticky top-0 z-50 w-full border-b border-slate-200 bg-white/80 backdrop-blur dark:border-slate-700 dark:bg-slate-900/80">
++      <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
++        {/* Brand */}
++        <Link
++          href="/"
++          className="flex items-center gap-2 text-xl font-bold text-violet-600 dark:text-violet-400"
++        >
++          <Vault className="h-6 w-6" />
++          VaultQuest
++        </Link>
++
++        {/* Desktop links */}
++        <ul className="hidden items-center gap-1 md:flex">
++          {navItems.map((item) => {
++            const active = isActive(pathname, item);
++            return (
++              <li key={item.href}>
++                <Link
++                  href={item.href}
++                  className={[
++                    "flex items-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-colors",
++                    active
++                      ? "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
++                      : "text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100",
++                  ].join(" ")}
++                  aria-current={active ? "page" : undefined}
++                >
++                  <NavIcon name={item.icon} />
++                  {item.label}
++                </Link>
++              </li>
++            );
++          })}
++        </ul>
++
++        {/* Right-side controls */}
++        <div className="flex items-center gap-2">
++          {/* Dark mode toggle (#249) */}
++          <button
++            onClick={toggleDark}
++            aria-label={dark ? "Switch to light mode" : "Switch to dark mode"}
++            className="rounded-md p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
++          >
++            {dark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
++          </button>
++
++          {/* Mobile hamburger */}
++          <button
++            className="rounded-md p-2 text-slate-500 md:hidden dark:text-slate-400"
++            onClick={() => setMobileOpen((o) => !o)}
++            aria-label="Toggle menu"
++          >
++            {mobileOpen ? (
++              <X className="h-5 w-5" />
++            ) : (
++              <Menu className="h-5 w-5" />
++            )}
++          </button>
++        </div>
++      </div>
++
++      {/* Mobile menu */}
++      {mobileOpen && (
++        <div className="border-t border-slate-200 bg-white px-4 pb-4 pt-2 dark:border-slate-700 dark:bg-slate-900 md:hidden">
++          <ul className="flex flex-col gap-1">
++            {navItems.map((item) => {
++              const active = isActive(pathname, item);
++              return (
++                <li key={item.href}>
++                  <Link
++                    href={item.href}
++                    onClick={() => setMobileOpen(false)}
++                    className={[
++                      "flex items-center gap-2 rounded-md px-3 py-2.5 text-sm font-medium transition-colors",
++                      active
++                        ? "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
++                        : "text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800",
++                    ].join(" ")}
++                    aria-current={active ? "page" : undefined}
++                  >
++                    <NavIcon name={item.icon} />
++                    {item.label}
++                  </Link>
++                </li>
++              );
++            })}
++          </ul>
++        </div>
++      )}
++    </nav>
++  );
++}
+diff --git a/components/navConfig.ts b/components/navConfig.ts
+new file mode 100644
+index 0000000..1ee2d3a
+--- /dev/null
++++ b/components/navConfig.ts
+@@ -0,0 +1,45 @@
++// components/navConfig.ts
++// Single source of truth for navbar links.
++// Import this in the Navbar component and map over it to render links.
++
++export interface NavItem {
++  /** Display label */
++  label: string;
++  /** Next.js href */
++  href: string;
++  /** Optional icon name (maps to your icon component/library of choice) */
++  icon?: string;
++  /** When true, the active check uses an exact path match instead of startsWith */
++  exact?: boolean;
++}
++
++const navItems: NavItem[] = [
++  {
++    label: "Dashboard",
++    href: "/",
++    icon: "LayoutDashboard",
++    exact: true,
++  },
++  {
++    label: "Vault",
++    href: "/vault",
++    icon: "Vault",
++  },
++  {
++    label: "Leaderboard",
++    href: "/leaderboard",
++    icon: "Trophy",
++  },
++  {
++    label: "History",
++    href: "/history",
++    icon: "History",
++  },
++  {
++    label: "Settings",
++    href: "/settings",
++    icon: "Settings",
++  },
++];
++
++export default navItems;
+diff --git a/contracts/vault/src/lib.rs b/contracts/vault/src/lib.rs
+new file mode 100644
+index 0000000..432a430
+--- /dev/null
++++ b/contracts/vault/src/lib.rs
+@@ -0,0 +1,344 @@
++#![no_std]
++use soroban_sdk::{
++    contract, contractimpl, contracttype, symbol_short, Address, Env, Symbol,
++};
++
++// ─────────────────────────────────────────────
++// Storage key types
++// ─────────────────────────────────────────────
++#[contracttype]
++#[derive(Clone)]
++pub enum DataKey {
++    Admin,
++    IsPaused,
++    Balance(Address),
++    TotalDeposits,
++}
++
++// ─────────────────────────────────────────────
++// Error codes
++// ─────────────────────────────────────────────
++#[contracttype]
++#[derive(Clone, PartialEq, Debug)]
++pub enum VaultError {
++    NotAdmin       = 1,
++    AlreadyPaused  = 2,
++    NotPaused      = 3,
++    ProtocolPaused = 4,
++    ZeroAmount     = 5,
++    InsufficientBalance = 6,
++    NotInitialized = 7,
++}
++
++impl From<VaultError> for soroban_sdk::Error {
++    fn from(e: VaultError) -> Self {
++        soroban_sdk::Error::from_contract_error(e as u32)
++    }
++}
++
++// ─────────────────────────────────────────────
++// Events
++// ─────────────────────────────────────────────
++const PAUSED_TOPIC: Symbol = symbol_short!("PAUSED");
++const UNPAUSED_TOPIC: Symbol = symbol_short!("UNPAUSED");
++const DEPOSIT_TOPIC: Symbol = symbol_short!("DEPOSIT");
++const WITHDRAW_TOPIC: Symbol = symbol_short!("WITHDRAW");
++const WINNER_TOPIC: Symbol = symbol_short!("WINNER");
++
++// ─────────────────────────────────────────────
++// Contract
++// ─────────────────────────────────────────────
++#[contract]
++pub struct VaultContract;
++
++#[contractimpl]
++impl VaultContract {
++    // ── Initialisation ──────────────────────
++    /// Must be called once after deployment to set the admin.
++    pub fn initialize(env: Env, admin: Address) {
++        if env.storage().instance().has(&DataKey::Admin) {
++            panic!("already initialised");
++        }
++        env.storage().instance().set(&DataKey::Admin, &admin);
++        env.storage().instance().set(&DataKey::IsPaused, &false);
++        env.storage().instance().set(&DataKey::TotalDeposits, &0_i128);
++    }
++
++    // ── Internal helpers ────────────────────
++    fn require_admin(env: &Env) {
++        let admin: Address = env
++            .storage()
++            .instance()
++            .get(&DataKey::Admin)
++            .unwrap_or_else(|| panic_with_error!(env, VaultError::NotInitialized));
++        admin.require_auth();
++    }
++
++    fn is_paused(env: &Env) -> bool {
++        env.storage()
++            .instance()
++            .get(&DataKey::IsPaused)
++            .unwrap_or(false)
++    }
++
++    fn require_not_paused(env: &Env) {
++        if Self::is_paused(env) {
++            panic_with_error!(env, VaultError::ProtocolPaused);
++        }
++    }
++
++    // ── Circuit-breaker admin functions ─────
++
++    /// Pause the protocol.  Only callable by the admin.
++    /// deposit() and draw_winner() will revert while paused.
++    /// withdraw() is unaffected so users can always retrieve funds.
++    pub fn pause_protocol(env: Env) {
++        Self::require_admin(&env);
++        if Self::is_paused(&env) {
++            panic_with_error!(env, VaultError::AlreadyPaused);
++        }
++        env.storage().instance().set(&DataKey::IsPaused, &true);
++        env.events().publish((PAUSED_TOPIC,), ());
++    }
++
++    /// Unpause the protocol.  Only callable by the admin.
++    pub fn unpause_protocol(env: Env) {
++        Self::require_admin(&env);
++        if !Self::is_paused(&env) {
++            panic_with_error!(env, VaultError::NotPaused);
++        }
++        env.storage().instance().set(&DataKey::IsPaused, &false);
++        env.events().publish((UNPAUSED_TOPIC,), ());
++    }
++
++    /// Returns the current pause state.
++    pub fn get_paused(env: Env) -> bool {
++        Self::is_paused(&env)
++    }
++
++    // ── Core vault functions ─────────────────
++
++    /// Deposit `amount` tokens into the vault.
++    /// REVERTS when the protocol is paused.
++    pub fn deposit(env: Env, depositor: Address, amount: i128) {
++        Self::require_not_paused(&env);
++        depositor.require_auth();
++
++        if amount <= 0 {
++            panic_with_error!(env, VaultError::ZeroAmount);
++        }
++
++        let key = DataKey::Balance(depositor.clone());
++        let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
++        env.storage().persistent().set(&key, &(current + amount));
++
++        let total: i128 = env
++            .storage()
++            .instance()
++            .get(&DataKey::TotalDeposits)
++            .unwrap_or(0);
++        env.storage()
++            .instance()
++            .set(&DataKey::TotalDeposits, &(total + amount));
++
++        env.events().publish((DEPOSIT_TOPIC,), (depositor, amount));
++    }
++
++    /// Withdraw `amount` tokens from the vault.
++    /// ALWAYS available — intentionally NOT gated by is_paused so that
++    /// users can recover their underlying deposits even during an emergency.
++    pub fn withdraw(env: Env, depositor: Address, amount: i128) {
++        // NOTE: no require_not_paused() call here — by design.
++        depositor.require_auth();
++
++        if amount <= 0 {
++            panic_with_error!(env, VaultError::ZeroAmount);
++        }
++
++        let key = DataKey::Balance(depositor.clone());
++        let current: i128 = env
++            .storage()
++            .persistent()
++            .get(&key)
++            .unwrap_or(0);
++
++        if current < amount {
++            panic_with_error!(env, VaultError::InsufficientBalance);
++        }
++
++        env.storage().persistent().set(&key, &(current - amount));
++
++        let total: i128 = env
++            .storage()
++            .instance()
++            .get(&DataKey::TotalDeposits)
++            .unwrap_or(0);
++        env.storage()
++            .instance()
++            .set(&DataKey::TotalDeposits, &(total - amount));
++
++        env.events()
++            .publish((WITHDRAW_TOPIC,), (depositor, amount));
++    }
++
++    /// Select a draw winner.
++    /// REVERTS when the protocol is paused.
++    pub fn draw_winner(env: Env, winner: Address) {
++        Self::require_not_paused(&env);
++        Self::require_admin(&env);
++        env.events().publish((WINNER_TOPIC,), winner);
++    }
++
++    /// Read a depositor's balance.
++    pub fn balance_of(env: Env, depositor: Address) -> i128 {
++        env.storage()
++            .persistent()
++            .get(&DataKey::Balance(depositor))
++            .unwrap_or(0)
++    }
++
++    /// Read total deposits across all users.
++    pub fn total_deposits(env: Env) -> i128 {
++        env.storage()
++            .instance()
++            .get(&DataKey::TotalDeposits)
++            .unwrap_or(0)
++    }
++}
++
++// ─────────────────────────────────────────────
++// Unit tests
++// ─────────────────────────────────────────────
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use soroban_sdk::{testutils::Address as _, Env};
++
++    fn setup() -> (Env, VaultContractClient<'static>, Address, Address) {
++        let env = Env::default();
++        env.mock_all_auths();
++        let contract_id = env.register_contract(None, VaultContract);
++        let client = VaultContractClient::new(&env, &contract_id);
++
++        let admin = Address::generate(&env);
++        let user = Address::generate(&env);
++        client.initialize(&admin);
++        (env, client, admin, user)
++    }
++
++    // ── pause_protocol access control ────────
++
++    #[test]
++    fn test_admin_can_pause() {
++        let (_env, client, _admin, _user) = setup();
++        client.pause_protocol();
++        assert!(client.get_paused());
++    }
++
++    #[test]
++    #[should_panic]
++    fn test_non_admin_cannot_pause() {
++        let (env, client, _admin, _user) = setup();
++        // Remove mock auths so the non-admin call fails auth check.
++        // In practice the require_auth() on the admin address will panic.
++        env.set_auths(&[]);
++        client.pause_protocol();
++    }
++
++    #[test]
++    #[should_panic(expected = "AlreadyPaused")]
++    fn test_double_pause_reverts() {
++        let (_env, client, _admin, _user) = setup();
++        client.pause_protocol();
++        client.pause_protocol(); // should panic
++    }
++
++    // ── unpause_protocol access control ──────
++
++    #[test]
++    fn test_admin_can_unpause() {
++        let (_env, client, _admin, _user) = setup();
++        client.pause_protocol();
++        client.unpause_protocol();
++        assert!(!client.get_paused());
++    }
++
++    #[test]
++    #[should_panic(expected = "NotPaused")]
++    fn test_unpause_when_not_paused_reverts() {
++        let (_env, client, _admin, _user) = setup();
++        client.unpause_protocol(); // should panic — never paused
++    }
++
++    // ── deposit gated by pause ────────────────
++
++    #[test]
++    fn test_deposit_works_when_not_paused() {
++        let (_env, client, _admin, user) = setup();
++        client.deposit(&user, &100);
++        assert_eq!(client.balance_of(&user), 100);
++    }
++
++    #[test]
++    #[should_panic(expected = "ProtocolPaused")]
++    fn test_deposit_reverts_when_paused() {
++        let (_env, client, _admin, user) = setup();
++        client.pause_protocol();
++        client.deposit(&user, &100); // should panic
++    }
++
++    // ── withdraw NOT gated by pause ───────────
++
++    #[test]
++    fn test_withdraw_works_when_paused() {
++        let (_env, client, _admin, user) = setup();
++        client.deposit(&user, &100);
++        client.pause_protocol();
++        // withdraw must succeed even while paused
++        client.withdraw(&user, &100);
++        assert_eq!(client.balance_of(&user), 0);
++    }
++
++    #[test]
++    fn test_withdraw_works_when_not_paused() {
++        let (_env, client, _admin, user) = setup();
++        client.deposit(&user, &200);
++        client.withdraw(&user, &50);
++        assert_eq!(client.balance_of(&user), 150);
++    }
++
++    #[test]
++    #[should_panic(expected = "InsufficientBalance")]
++    fn test_withdraw_more_than_balance_reverts() {
++        let (_env, client, _admin, user) = setup();
++        client.deposit(&user, &50);
++        client.withdraw(&user, &100); // should panic
++    }
++
++    // ── draw_winner gated by pause ────────────
++
++    #[test]
++    fn test_draw_winner_works_when_not_paused() {
++        let (_env, client, _admin, user) = setup();
++        client.draw_winner(&user); // no panic expected
++    }
++
++    #[test]
++    #[should_panic(expected = "ProtocolPaused")]
++    fn test_draw_winner_reverts_when_paused() {
++        let (_env, client, _admin, user) = setup();
++        client.pause_protocol();
++        client.draw_winner(&user); // should panic
++    }
++
++    // ── total_deposits accounting ─────────────
++
++    #[test]
++    fn test_total_deposits_tracks_correctly() {
++        let (_env, client, _admin, user) = setup();
++        client.deposit(&user, &300);
++        assert_eq!(client.total_deposits(), 300);
++        client.withdraw(&user, &100);
++        assert_eq!(client.total_deposits(), 200);
++    }
++}
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index 8592487..77ebf22 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -1,16 +1,104 @@
+ # VaultQuest — Architecture
+ 
++> **Note:** This document reflects the current cross-stack architecture.
++> Changes introduced by the issues tracked below are highlighted with ✅.
++
++---
++
+ ## Stack overview
+ 
+-- Frontend: Next.js 14, Tailwind CSS
+-- Backend: Fastify, Node.js, TypeScript
+-- Contracts: Soroban (Rust), Stellar
++```
++┌─────────────────────────────────────────────────────────────────┐
++│  Browser / Mobile (Next.js 14 · App Router · Tailwind CSS)      │
++│  • Navbar  (dark-mode toggle, navConfig-driven links)  ✅ #248 #249 │
++└──────────────────────────┬──────────────────────────────────────┘
++                           │ HTTPS
++┌──────────────────────────▼──────────────────────────────────────┐
++│  Fastify Backend  (Node.js · TypeScript)                         │
++│                                                                  │
++│  ① @fastify/rate-limit  ← NEW ✅ #245                           │
++│     • Global: 100 req / 60 s per IP                              │
++│     • X-Forwarded-For aware (trustProxy: true)                   │
++│     • Returns 429 JSON on breach                                 │
++│                                                                  │
++│  ② Routes                                                        │
++│     POST /action-ledger/record                                   │
++│     GET  /action-ledger/list                                     │
++│     POST /reconciliation/run                                     │
++│     GET  /health  (relaxed limit: 300 req/min)                   │
++└──────────────────────────┬──────────────────────────────────────┘
++                           │ Stellar SDK / soroban-client
++┌──────────────────────────▼──────────────────────────────────────┐
++│  Soroban Smart Contract  (Rust · Stellar / Soroban)              │
++│                                                                  │
++│  Storage keys:                                                    │
++│    Admin          → Address                                      │
++│    IsPaused       → bool  ← NEW ✅ #246                         │
++│    Balance(addr)  → i128                                         │
++│    TotalDeposits  → i128                                         │
++│                                                                  │
++│  Functions:                                                       │
++│    initialize(admin)                                             │
++│    pause_protocol()    ← admin-only ✅ #246                      │
++│    unpause_protocol()  ← admin-only ✅ #246                      │
++│    get_paused() → bool                                           │
++│    deposit(depositor, amount)   — blocked when paused ✅ #246    │
++│    withdraw(depositor, amount)  — ALWAYS active       ✅ #246    │
++│    draw_winner(winner)          — blocked when paused ✅ #246    │
++│    balance_of(addr) → i128                                       │
++│    total_deposits() → i128                                       │
++└─────────────────────────────────────────────────────────────────┘
++```
++
++---
++
++## Request flow (Backend)
++
++```
++Client IP
++  │
++  ▼
++[Fastify server]  (trustProxy: true)
++  │
++  ├─ @fastify/rate-limit  ──► 429 Too Many Requests  (if quota exceeded)
++  │    max: 100 req / 60 s
++  │    key: X-Forwarded-For[0] ?? req.ip
++  │
++  ├─ Route handlers
++  │    /action-ledger/*
++  │    /reconciliation/*
++  │    /health              (overrides: max 300 req/min)
++  │
++  └─ Response
++```
++
++---
+ 
+-## Packages
++## Dark-mode strategy (#249)
+ 
+-| Path | Description |
++| Layer | Implementation |
+ |---|---|
+-| `backend/` | Fastify action-ledger and reconciliation service |
+-| `contracts/` | Soroban smart contracts (Rust) |
+-| `app/` | Next.js frontend |
+-| `docs/` | Architecture and design docs |
++| Tailwind config | `darkMode: "class"` — activates `dark:` variants when `<html>` carries the `dark` class |
++| Persistence | `localStorage.setItem("theme", "dark" \| "light")` |
++| OS fallback | `window.matchMedia("(prefers-color-scheme: dark)")` on first load |
++| Toggle | `<button>` in Navbar calls `useDarkMode()` hook |
++
++---
++
++## Navbar config (#248)
++
++Nav links are defined once in `components/navConfig.ts` (an array of `NavItem`
++objects with `label`, `href`, `icon`, and optional `exact` flag).
++`Navbar.tsx` maps over this array and derives active state via
++`usePathname()`.  Adding or reordering a link requires editing only
++`navConfig.ts`.
++
++---
++
++## Environment variables
++
++| Variable | Default | Description |
++|---|---|---|
++| `PORT` | `3001` | Fastify listen port |
++| `RATE_LIMIT_MAX` | `100` | Requests per window per IP |
++| `RATE_LIMIT_WINDOW_MS` | `60000` | Window size in milliseconds |
+diff --git a/tailwind.config.js b/tailwind.config.js
+index 15ebd3d..d82e520 100644
+--- a/tailwind.config.js
++++ b/tailwind.config.js
+@@ -1,13 +1,44 @@
++// tailwind.config.js
++// Updated to enable class-based dark mode (#249).
++// The Navbar's useDarkMode hook toggles the `dark` class on <html>,
++// which activates all dark: variants throughout the app.
++
+ /** @type {import('tailwindcss').Config} */
+ const config = {
++  // 'class' strategy: Tailwind applies dark variants when the `dark`
++  // class is present on an ancestor element (we set it on <html>).
++  darkMode: "class",
++
+   content: [
+     "./app/**/*.{js,ts,jsx,tsx,mdx}",
+     "./pages/**/*.{js,ts,jsx,tsx,mdx}",
+     "./components/**/*.{js,ts,jsx,tsx,mdx}",
+   ],
++
+   theme: {
+-    extend: {},
++    extend: {
++      colors: {
++        // Brand palette — add / adjust to match your design system
++        brand: {
++          50: "#f5f3ff",
++          100: "#ede9fe",
++          200: "#ddd6fe",
++          300: "#c4b5fd",
++          400: "#a78bfa",
++          500: "#8b5cf6",
++          600: "#7c3aed",
++          700: "#6d28d9",
++          800: "#5b21b6",
++          900: "#4c1d95",
++        },
++      },
++      fontFamily: {
++        sans: ["var(--font-inter)", "ui-sans-serif", "system-ui", "sans-serif"],
++        mono: ["var(--font-mono)", "ui-monospace", "monospace"],
++      },
++    },
+   },
++
+   plugins: [],
+ };
+ 
+-- 
+2.43.0
+

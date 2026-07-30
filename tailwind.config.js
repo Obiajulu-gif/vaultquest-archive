@@ -32,8 +32,20 @@ module.exports = {
       transitionTimingFunction: {
         DEFAULT: "cubic-bezier(0.4, 0, 0.2, 1)",
       },
+      keyframes: {
+        "accordion-down": {
+          from: { height: "0" },
+          to: { height: "var(--radix-accordion-content-height)" },
+        },
+        "accordion-up": {
+          from: { height: "var(--radix-accordion-content-height)" },
+          to: { height: "0" },
+        },
+      },
       animation: {
         "spin-slow": "spin 3s linear infinite",
+        "accordion-down": "accordion-down 200ms cubic-bezier(0.4, 0, 0.2, 1)",
+        "accordion-up": "accordion-up 200ms cubic-bezier(0.4, 0, 0.2, 1)",
       },
     },
   },

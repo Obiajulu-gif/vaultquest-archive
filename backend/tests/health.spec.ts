@@ -13,11 +13,20 @@ describe("Indexer Health & Sync-Lag Tests", () => {
             return {
               id: "singleton",
               latestLedger: args.create.latestLedger,
+              lastProcessedEventId: args.create.lastProcessedEventId,
               lastSyncTime: args.create.lastSyncTime,
               lastError: args.create.lastError,
               lastSuccessSyncTime: args.create.lastSuccessSyncTime
             };
-          }
+          },
+          findUnique: async () => ({
+            id: "singleton",
+            latestLedger: 12345,
+            lastProcessedEventId: "evt-1",
+            lastSyncTime: new Date(),
+            lastError: null,
+            lastSuccessSyncTime: new Date()
+          })
         }
       } as any;
 
@@ -61,6 +70,7 @@ describe("Indexer Health & Sync-Lag Tests", () => {
           findUnique: async () => ({
             id: "singleton",
             latestLedger: 50000,
+            lastProcessedEventId: "evt-50000",
             lastSyncTime: lastSync,
             lastError: null,
             lastSuccessSyncTime: lastSync
@@ -87,6 +97,7 @@ describe("Indexer Health & Sync-Lag Tests", () => {
           findUnique: async () => ({
             id: "singleton",
             latestLedger: 50000,
+            lastProcessedEventId: "evt-50000",
             lastSyncTime: lastSync,
             lastError: "Horizon RPC 429 Rate Limit Exceeded",
             lastSuccessSyncTime: lastSync
@@ -112,6 +123,7 @@ describe("Indexer Health & Sync-Lag Tests", () => {
           findUnique: async () => ({
             id: "singleton",
             latestLedger: 50000,
+            lastProcessedEventId: "evt-50000",
             lastSyncTime: lastSync,
             lastError: null,
             lastSuccessSyncTime: lastSync
@@ -141,6 +153,7 @@ describe("Indexer Health & Sync-Lag Tests", () => {
           findUnique: async () => ({
             id: "singleton",
             latestLedger: 45000,
+            lastProcessedEventId: "evt-45000",
             lastSyncTime: lastSync,
             lastError: null,
             lastSuccessSyncTime: lastSync
@@ -182,9 +195,18 @@ describe("Indexer Health & Sync-Lag Tests", () => {
       let calledUpsert = false;
       const mockPrisma = {
         indexerCheckpoint: {
+          findUnique: async () => ({
+            id: "singleton",
+            latestLedger: 50000,
+            lastProcessedEventId: "evt_50000",
+            lastSyncTime: new Date(),
+            lastError: null,
+            lastSuccessSyncTime: new Date()
+          }),
           upsert: async (args: any) => {
             calledUpsert = true;
             expect(args.create.latestLedger).toBe(51000);
+            expect(args.create.lastProcessedEventId).toBe("evt_51000");
             expect(args.create.lastError).toBeNull();
             return { id: "singleton" };
           }
@@ -201,6 +223,7 @@ describe("Indexer Health & Sync-Lag Tests", () => {
         },
         payload: {
           latest_ledger: 51000,
+          last_processed_event_id: "evt_51000",
           success: true
         }
       });

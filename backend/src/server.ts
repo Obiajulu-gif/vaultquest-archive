@@ -110,13 +110,25 @@ const notificationCronTask = startNotificationReminderCron({
 // and at least one contract id are configured.
 let indexerCronTask: ScheduledTask | undefined;
 if (env.SOROBAN_RPC_URL && env.INDEXER_CONTRACT_IDS) {
-  const contractIds = env.INDEXER_CONTRACT_IDS.split(",").map((s) => s.trim()).filter(Boolean);
+  const staticContractIds = env.INDEXER_CONTRACT_IDS.split(",").map((s) => s.trim()).filter(Boolean);
   const indexerLedgerService = new LedgerService(prisma, cacheService);
   const indexer = new StellarIndexer({
     ledger: indexerLedgerService,
-    source: new SorobanRpcEventSource({ rpcUrl: env.SOROBAN_RPC_URL.split(",").map((s) => s.trim()), contractIds }),
+    source: new SorobanRpcEventSource({ rpcUrl: env.SOROBAN_RPC_URL.split(",").map((s) => s.trim()), contractIds: staticContractIds }),
     decoder: sorobanNativeXdrDecoder,
-    logger
+    logger,
+    // #507: widen the static env list with any pools the factory has
+    // registered on-chain, so a newly deployed pool starts being indexed
+    // on the next tick without an env var change + restart.
+    resolveContractIds: async () => {
+      const registryAddresses = await indexerLedgerService.getActivePoolAddresses();
+      return Array.from(new Set([...staticContractIds, ...registryAddresses]));
+    },
+    // #507: only a `fpooldep` event emitted by this exact contract is
+    // trusted into the pool registry — see stellarIndexer.ts's
+    // factoryAddress check ("spoofed pools" acceptance criterion). Left
+    // undefined (fail closed, events logged and skipped) if not configured.
+    factoryAddress: env.VAULT_FACTORY_ADDRESS
   });
 
   // Resume from the last persisted checkpoint instead of re-fetching from the
@@ -127,7 +139,7 @@ if (env.SOROBAN_RPC_URL && env.INDEXER_CONTRACT_IDS) {
   }
 
   indexerCronTask = startIndexerCron({ prisma, indexer, ledger: indexerLedgerService, logger });
-  logger.info({ contractIds, resumeCursor: checkpoint?.lastProcessedEventId ?? null }, "stellar indexer daemon started");
+  logger.info({ contractIds: staticContractIds, resumeCursor: checkpoint?.lastProcessedEventId ?? null }, "stellar indexer daemon started");
 }
 
 // Automated database backup cron (#275). Only started when BACKUP_DIR is set.
@@ -138,7 +150,8 @@ if (env.BACKUP_DIR) {
     databaseUrl: env.DATABASE_URL,
     retainDays: env.BACKUP_RETAIN_DAYS,
     schedule: env.BACKUP_SCHEDULE,
-    logger
+    logger,
+    prisma
   });
   logger.info(
     { backupDir: env.BACKUP_DIR, schedule: env.BACKUP_SCHEDULE },

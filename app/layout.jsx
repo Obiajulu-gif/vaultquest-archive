@@ -1,5 +1,6 @@
 import "@/styles/globals.css";
 import Providers from "@/components/providers/Providers";
+import { Toaster } from "sonner";
 import AttestationProvider from "@/components/AttestationProvider";
 import { Toaster } from "react-hot-toast";
 import { readFileSync } from "fs";
@@ -39,6 +40,9 @@ export default function RootLayout({ children }) {
         )}
       </head>
       <body>
+        <Providers>{children}</Providers>
+        {/* Global toast container */}
+        <Toaster position="top-right" richColors />
         <AttestationProvider>
           <Providers>{children}</Providers>
         </AttestationProvider>

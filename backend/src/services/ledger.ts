@@ -4,6 +4,21 @@ import { ERROR_CODES, canTransition, ActionStatus } from "../constants.js";
 import { AppError } from "../errors.js";
 import type { IntentInput, ActionRecord } from "../types.js";
 import type { CacheService } from "./cacheService.js";
+import { Amount, InvalidAmountError } from "../amount.js";
+
+// #504 — getPortfolioSummary previously read payload.token/asset with a
+// hardcoded "USDC" fallback whenever it was missing. Today there is
+// exactly one canonical, single-asset pool per deployment (see #507
+// findings), so a single configured default is still correct — but it's
+// now explicit and named, not an inline magic string repeated at each
+// call site. Decimals is 0 (not 7) because every existing caller/test
+// (tests/portfolio.spec.ts, tests/portfolio-unit.spec.ts) treats
+// payload.amount as an already-whole-unit integer (e.g. "100" -> 100),
+// matching this endpoint's existing external contract — this is purely
+// an internal-precision fix (bigint accumulation instead of float), not
+// a change to what unit amounts are expressed in.
+const DEFAULT_POOL_ASSET_CODE = "USDC";
+const DEFAULT_POOL_ASSET_DECIMALS = 0;
 
 export type ListActionsParams = {
   walletAddress: string;
@@ -395,6 +410,69 @@ export class LedgerService {
     });
   }
 
+  /**
+   * Upserts a `PoolRegistry` row from a decoded vault-factory `pool`/
+   * `deployed` event (#507). Keyed on `poolAddress` (unique, and derived
+   * deterministically from (factoryAddress, salt) on-chain, so a replayed
+   * or re-fetched event for the same pool is a no-op update rather than a
+   * duplicate row) — the same idempotency guarantee `reconcileEvent` gives
+   * action-ledger rows, applied here for registry entries instead.
+   */
+  async upsertPoolRegistryEntry(input: {
+    salt: string;
+    poolAddress: string;
+    factoryAddress: string;
+    admin: string;
+    asset: string;
+    wasmHash: string;
+    deployedLedger: number;
+  }): Promise<void> {
+    await this.prisma.poolRegistry.upsert({
+      where: { poolAddress: input.poolAddress },
+      create: {
+        salt: input.salt,
+        poolAddress: input.poolAddress,
+        factoryAddress: input.factoryAddress,
+        admin: input.admin,
+        asset: input.asset,
+        wasmHash: input.wasmHash,
+        deployedLedger: input.deployedLedger
+      },
+      update: {
+        admin: input.admin,
+        asset: input.asset,
+        wasmHash: input.wasmHash
+      }
+    });
+  }
+
+  /**
+   * Marks a registry entry inactive (mirrors the factory's own
+   * `deactivate_pool` — never touches the deployed pool contract itself,
+   * see vault-factory/src/lib.rs's doc comment on that method).
+   */
+  async deactivatePoolRegistryEntry(salt: string): Promise<void> {
+    await this.prisma.poolRegistry.updateMany({
+      where: { salt },
+      data: { active: false }
+    });
+  }
+
+  /**
+   * Active pool contract addresses known to the registry — an additional
+   * indexer contract-id source layered on top of the static
+   * `INDEXER_CONTRACT_IDS` env var (kept as a fallback so existing
+   * single-pool deployments keep working unchanged; see the #507 design
+   * proposal).
+   */
+  async getActivePoolAddresses(): Promise<string[]> {
+    const rows = await this.prisma.poolRegistry.findMany({
+      where: { active: true },
+      select: { poolAddress: true }
+    });
+    return rows.map((r: { poolAddress: string }) => r.poolAddress);
+  }
+
   async findByIdempotencyKey(key: string): Promise<ActionRecord | null> {
     const row = await this.prisma.actionLedger.findUnique({ where: { idempotencyKey: key } });
     return (row as unknown as ActionRecord) ?? null;
@@ -466,13 +544,15 @@ export class LedgerService {
     walletAddress: string;
     from?: Date;
     to?: Date;
+    actionType?: string;
     limit: number;
   }): Promise<ActionRecord[]> {
-    const { walletAddress, from, to, limit } = params;
+    const { walletAddress, from, to, actionType, limit } = params;
     const rows = await this.prisma.actionLedger.findMany({
       where: {
         walletAddress,
         redactedAt: null,
+        ...(actionType !== undefined ? { actionType: actionType as any } : {}),
         ...(from || to
           ? {
               createdAt: {
@@ -505,39 +585,103 @@ export class LedgerService {
       orderBy: { createdAt: "desc" }
     });
 
-    const poolBalances: Record<string, { balance: number; token: string }> = {};
-    let totalClaimed = 0;
-
-    const confirmedActions = actions.filter((a) => a.status === "confirmed");
-    for (const action of confirmedActions) {
-      const payload = action.actionPayload as Record<string, any> | null;
+    // #504 — balances are accumulated per (vaultId, assetCode) using
+    // bigint Amount arithmetic, never plain floats. A pool whose payloads
+    // report an asset that doesn't match its own running balance's asset
+    // is a genuine data inconsistency (two different assets claiming the
+    // same vaultId) rather than something to silently add together, so
+    // it's surfaced via invalidActionCount instead of merged.
+    //
+    // The vault's canonical asset is established from its EARLIEST
+    // confirmed action, not whichever action happens to be visited first.
+    // `actions` is fetched `orderBy: createdAt desc`, so without this a
+    // late-arriving action (e.g. a spoofed/malformed payload reporting the
+    // wrong token) would silently become the accepted baseline and cause
+    // every earlier, legitimate action for that vault to be flagged as the
+    // mismatch and dropped — inverting the intent of this guard.
+    const vaultCanonicalToken: Record<string, string> = {};
+    const confirmedActionsChronological = actions
+      .filter((a) => a.status === "confirmed")
+      .slice()
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    for (const action of confirmedActionsChronological) {
+      const payload = action.actionPayload as Record<string, unknown> | null;
       if (!payload) continue;
-
-      const vaultId = String(payload.vault_id || payload.pool_id || "default");
-      const amount = Number(payload.amount || 0);
-      const token = String(payload.token || payload.asset || "USDC");
-
-      if (!poolBalances[vaultId]) {
-        poolBalances[vaultId] = { balance: 0, token };
-      }
-
-      if (action.actionType === "deposit") {
-        poolBalances[vaultId].balance += amount;
-      } else if (action.actionType === "withdraw") {
-        poolBalances[vaultId].balance -= amount;
-      } else if (action.actionType === "claim") {
-        totalClaimed += amount;
+      const vaultId = String(payload.vault_id ?? payload.pool_id ?? "default");
+      if (!(vaultId in vaultCanonicalToken)) {
+        vaultCanonicalToken[vaultId] = String(payload.token ?? payload.asset ?? DEFAULT_POOL_ASSET_CODE);
       }
     }
 
-    let totalDeposits = 0;
+    const poolBalances: Record<string, { balance: Amount; token: string }> = {};
+    let totalClaimed: Amount | null = null;
+    let invalidActionCount = 0;
+
+    const confirmedActions = actions.filter((a) => a.status === "confirmed");
+    for (const action of confirmedActions) {
+      const payload = action.actionPayload as Record<string, unknown> | null;
+      if (!payload) continue;
+
+      const vaultId = String(payload.vault_id ?? payload.pool_id ?? "default");
+      const token = String(payload.token ?? payload.asset ?? DEFAULT_POOL_ASSET_CODE);
+      const canonicalToken = vaultCanonicalToken[vaultId] ?? token;
+
+      let amount: Amount;
+      try {
+        amount = Amount.fromPayload(payload, token, DEFAULT_POOL_ASSET_DECIMALS);
+      } catch (err) {
+        if (err instanceof InvalidAmountError) {
+          invalidActionCount++;
+          continue;
+        }
+        throw err;
+      }
+
+      if (token !== canonicalToken) {
+        // This action's asset doesn't match the vault's canonical asset
+        // (established from its earliest confirmed action) — a data
+        // inconsistency, not something to combine. Skip rather than
+        // silently mixing units into one balance.
+        invalidActionCount++;
+        continue;
+      }
+
+      if (!poolBalances[vaultId]) {
+        poolBalances[vaultId] = { balance: Amount.zero(canonicalToken, DEFAULT_POOL_ASSET_DECIMALS), token: canonicalToken };
+      }
+
+      if (action.actionType === "deposit") {
+        poolBalances[vaultId].balance = poolBalances[vaultId].balance.add(amount);
+      } else if (action.actionType === "withdraw") {
+        poolBalances[vaultId].balance = poolBalances[vaultId].balance.subtract(amount);
+      } else if (action.actionType === "claim") {
+        totalClaimed = totalClaimed ? totalClaimed.add(amount) : amount;
+      }
+    }
+
+    let totalDeposits: Amount | null = null;
     const activePositions = Object.entries(poolBalances)
-      .filter(([_, data]) => data.balance > 0)
+      .filter(([, data]) => data.balance.isPositive())
       .map(([vaultId, data]) => {
-        totalDeposits += data.balance;
+        // Only combine into the grand total when the asset matches every
+        // other position seen so far — otherwise leave totalDeposits as
+        // whichever single asset started the accumulation and surface the
+        // mismatch, rather than silently summing incompatible units.
+        if (!totalDeposits) {
+          totalDeposits = data.balance;
+        } else if (totalDeposits.assetCode === data.balance.assetCode) {
+          totalDeposits = totalDeposits.add(data.balance);
+        } else {
+          invalidActionCount++;
+        }
         return {
           vault_id: vaultId,
-          balance: data.balance,
+          // Converted back to Number at the response boundary to preserve
+          // this endpoint's existing external contract (tests assert
+          // plain numbers here) — the accumulation above happens entirely
+          // in bigint, so this conversion can't itself reintroduce the
+          // precision loss the float-based code had.
+          balance: Number(data.balance.raw),
           token: data.token
         };
       });
@@ -553,10 +697,11 @@ export class LedgerService {
 
     return {
       wallet_address: walletAddress,
-      total_deposits: totalDeposits,
+      total_deposits: Number((totalDeposits ?? Amount.zero(DEFAULT_POOL_ASSET_CODE, DEFAULT_POOL_ASSET_DECIMALS)).raw),
       active_positions: activePositions,
       pending_rewards: 0,
-      claimable_amount: totalClaimed,
+      claimable_amount: Number((totalClaimed ?? Amount.zero(DEFAULT_POOL_ASSET_CODE, DEFAULT_POOL_ASSET_DECIMALS)).raw),
+      invalid_action_count: invalidActionCount,
       recent_activity: recentActivity
     };
   }

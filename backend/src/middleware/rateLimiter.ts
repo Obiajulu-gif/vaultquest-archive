@@ -29,32 +29,9 @@ function parseCookies(cookieHeader: string | undefined): Record<string, string> 
 
 const plugin: FastifyPluginAsync = async (app) => {
   app.addHook("preHandler", async (req, reply) => {
-    // 1. Rate Limiting
-    const ip = req.ip || "127.0.0.1";
     const method = req.method;
 
-    // Sensitive state-changing routes: POST, PATCH, PUT, DELETE
-    const isSensitive = ["POST", "PATCH", "PUT", "DELETE"].includes(method);
-    const limit = isSensitive ? 10 : 100;
-    const store = isSensitive ? sensitiveStore : publicStore;
-
-    const now = Date.now();
-    let limitInfo = store.get(ip);
-
-    if (!limitInfo || now > limitInfo.resetTime) {
-      limitInfo = {
-        count: 1,
-        resetTime: now + WINDOW_MS
-      };
-      store.set(ip, limitInfo);
-    } else {
-      limitInfo.count++;
-      if (limitInfo.count > limit) {
-        throw new AppError(ERROR_CODES.RATE_LIMIT_EXCEEDED, 429, "Rate limit exceeded. Try again later.");
-      }
-    }
-
-    // 2. CSRF Protection
+    // CSRF Protection
     // Skip CSRF check for:
     // - GET, HEAD, OPTIONS requests
     // - Internal APIs (starts with /internal/)

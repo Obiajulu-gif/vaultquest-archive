@@ -123,6 +123,7 @@ export class HorizonPool {
     const now = this.opts.now();
     if (now < h.cooldownUntil) return Number.MAX_SAFE_INTEGER;
     if (!h.healthy) return Number.MAX_SAFE_INTEGER - 1;
+    return h.latencyMs === Infinity ? 999999 : h.latencyMs;
     return Number.isFinite(h.latencyMs) ? h.latencyMs : Number.MAX_SAFE_INTEGER / 2;
   }
 

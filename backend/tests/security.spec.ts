@@ -156,5 +156,44 @@ describe("Security Middleware Integration Tests (Rate Limiting & CSRF)", () => {
       expect(lastStatus).toBe(429);
       await app.close();
     });
+
+    it("blocks wallet auth challenge requests after 5 attempts", async () => {
+      const mockPrisma = getMockPrisma();
+      const app = buildApp({ prisma: mockPrisma, internalSecret });
+
+      // First get a CSRF token
+      const getRes = await app.inject({
+        method: "GET",
+        url: "/health"
+      });
+      const csrfToken = getRes.headers["x-csrf-token"] as string;
+      const setCookie = getRes.headers["set-cookie"] as string;
+
+      let lastStatus = 200;
+      for (let i = 0; i < 7; i++) {
+        const res = await app.inject({
+          method: "POST",
+          url: "/wallet-auth/challenge",
+          headers: {
+            "x-csrf-token": csrfToken,
+            cookie: setCookie
+          },
+          payload: {
+            wallet_address: "GBX7Q4DMXD66VFR7YJ3HYBFFW7Q5PNE7A5PXH5XN265LSL73GOHX4Y6A",
+            public_key: "GBX7Q4DMXD66VFR7YJ3HYBFFW7Q5PNE7A5PXH5XN265LSL73GOHX4Y6A",
+            network: "testnet"
+          }
+        });
+        lastStatus = res.statusCode;
+        if (lastStatus === 429) {
+          const body = res.json();
+          expect(body.error.code).toBe("RATE_LIMIT_EXCEEDED");
+          expect(res.headers["retry-after"]).toBeDefined();
+          break;
+        }
+      }
+      expect(lastStatus).toBe(429);
+      await app.close();
+    });
   });
 });

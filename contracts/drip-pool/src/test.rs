@@ -1467,3 +1467,74 @@ fn recapitalization_and_resume_normal() {
 
     assert!(!client.is_emergency());
 }
+
+// ── #441: Configuration version and migration guard tests ─────────────────
+
+#[test]
+fn test_config_version_initialization() {
+    let (_env, client, admin) = setup();
+    client.create(&admin);
+    assert_eq!(client.config_version(), 1);
+}
+
+#[test]
+fn test_update_config_version_success() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    
+    // Update config version from 1 to 2
+    let res = client.try_update_config_version(&admin, &1, &2);
+    assert!(res.is_ok());
+    assert_eq!(client.config_version(), 2);
+
+    // Verify event emission
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    assert_eq!(
+        last_event.1,
+        (symbol_short!("config"), symbol_short!("ver_chg")).into_val(&env)
+    );
+}
+
+#[test]
+fn test_update_config_version_invalid_expected() {
+    let (_env, client, admin) = setup();
+    client.create(&admin);
+    
+    // Update config version with wrong expected_version fails
+    let res = client.try_update_config_version(&admin, &2, &3);
+    assert_eq!(res, Err(Ok(Error::IncompatibleConfig)));
+    assert_eq!(client.config_version(), 1);
+}
+
+#[test]
+fn test_update_config_version_unauthorized() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    
+    let rando = Address::generate(&env);
+    let res = client.try_update_config_version(&rando, &1, &2);
+    assert_eq!(res, Err(Ok(Error::Unauthorized)));
+    assert_eq!(client.config_version(), 1);
+}
+
+#[test]
+fn test_incompatible_config_blocks_operations() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    
+    // Migrate config version to 2 (making it incompatible with logic version 1)
+    client.update_config_version(&admin, &1, &2);
+    
+    let alice = Address::generate(&env);
+    
+    // core mutations should fail
+    assert_eq!(client.try_join(&alice), Err(Ok(Error::IncompatibleConfig)));
+    assert_eq!(client.try_deposit(&alice, &100), Err(Ok(Error::IncompatibleConfig)));
+    assert_eq!(client.try_withdraw(&alice), Err(Ok(Error::IncompatibleConfig)));
+    assert_eq!(client.try_claim_reward(&alice), Err(Ok(Error::IncompatibleConfig)));
+    
+    // admin operations should fail
+    let token = Address::generate(&env);
+    assert_eq!(client.try_set_token(&admin, &token), Err(Ok(Error::IncompatibleConfig)));
+}

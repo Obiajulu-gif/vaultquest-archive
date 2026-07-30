@@ -2,8 +2,10 @@
 
 import { useState } from "react";
 import { AlertTriangle, Wifi, RefreshCw, X } from "lucide-react";
+import { useTranslation } from "next-i18next";
 
 export default function WalletReconnectGuidance({ isDisconnected, isNetworkMismatch, onRetry }) {
+  const { t } = useTranslation("common");
   const [isDismissed, setIsDismissed] = useState(false);
 
   if (isDismissed || (!isDisconnected && !isNetworkMismatch)) {
@@ -29,15 +31,11 @@ export default function WalletReconnectGuidance({ isDisconnected, isNetworkMisma
           <h3 className={`text-base font-semibold ${
             isNetworkMismatch ? "text-amber-100" : "text-red-100"
           }`}>
-            {isNetworkMismatch
-              ? "Network Mismatch Detected"
-              : "Wallet Connection Interrupted"}
+            {isNetworkMismatch ? t("wallet.reconnect.networkMismatchTitle") : t("wallet.reconnect.interruptedTitle")}
           </h3>
 
           <p className="mt-1 text-sm text-gray-300">
-            {isNetworkMismatch
-              ? "Your wallet is connected to a different blockchain network than VaultQuest expects. Please switch to the correct network (Stellar, Avalanche, or Solana) in your wallet settings to continue."
-              : "Your wallet connection was lost. This might happen due to a network issue or if you switched to another application. Click the button below to reconnect securely."}
+            {isNetworkMismatch ? t("wallet.reconnect.networkMismatchBody") : t("wallet.reconnect.interruptedBody")}
           </p>
 
           <div className="mt-3 flex flex-wrap gap-2">
@@ -47,14 +45,14 @@ export default function WalletReconnectGuidance({ isDisconnected, isNetworkMisma
                 className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-2 focus-visible:ring-offset-red-950/50"
               >
                 <RefreshCw className="h-4 w-4" aria-hidden="true" />
-                Reconnect Wallet
+                {t("wallet.reconnect.reconnect")}
               </button>
             )}
             <button
               onClick={() => setIsDismissed(true)}
               className="inline-flex items-center gap-2 rounded-lg border border-gray-400/30 px-4 py-2 text-sm font-semibold text-gray-300 transition-colors hover:border-gray-400/50 hover:text-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-2 focus-visible:ring-offset-red-950/50"
             >
-              Dismiss
+              {t("common.close")}
             </button>
           </div>
         </div>

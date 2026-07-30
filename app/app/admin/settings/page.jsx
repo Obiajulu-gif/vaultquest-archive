@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useTranslation } from "next-i18next";
 import {
   AlertTriangle,
   ArrowRight,
@@ -190,6 +191,7 @@ function MetricCard({ label, value, detail, icon: Icon }) {
 }
 
 export default function AdminSettingsPage() {
+  const { t } = useTranslation("common");
   const totals = {
     parameters: PROTOCOL_PARAMETERS.length,
     rounds: ACTIVE_ROUNDS.length,
@@ -207,12 +209,11 @@ export default function AdminSettingsPage() {
       >
         <div className="space-y-2">
           <p className="text-xs font-semibold uppercase tracking-[0.32em] text-red-300">
-            Admin console
+            {t("routes.admin.settings.kicker")}
           </p>
-          <h1 className="text-3xl font-bold text-vault-text">Settings Overview</h1>
+          <h1 className="text-3xl font-bold text-vault-text">{t("routes.admin.settings.title")}</h1>
           <p className="max-w-2xl text-sm text-vault-muted">
-            Review protocol parameters, active rounds, service status, and the
-            current operating notes before making a governance change.
+            {t("routes.admin.settings.subtitle")}
           </p>
           <div className="flex flex-wrap gap-2 pt-1 text-xs text-vault-muted">
             <span className="rounded-full border border-vault-border bg-vault-surface px-3 py-1.5">
@@ -226,11 +227,15 @@ export default function AdminSettingsPage() {
         <div className="flex flex-wrap gap-3">
           <Link href="/app/admin/proposals" className="vq-btn-ghost inline-flex items-center gap-2">
             <Shield className="h-4 w-4" aria-hidden="true" />
-            View proposals
+            {t("routes.admin.settings.viewProposals")}
           </Link>
-          <Link href="/app/prizes" className="vq-btn-primary inline-flex items-center gap-2">
+          <Link href="/app/admin/pools/create" className="vq-btn-primary inline-flex items-center gap-2">
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            Create pool
+          </Link>
+          <Link href="/app/prizes" className="vq-btn-ghost inline-flex items-center gap-2">
             <ArrowRight className="h-4 w-4" aria-hidden="true" />
-            Review public rounds
+            {t("routes.admin.settings.reviewRounds")}
           </Link>
         </div>
       </motion.header>

@@ -1,3 +1,14 @@
+# Builds contract artifacts and publishes a draft GitHub Release for a `v*`
+# tag (issue #424). The changelog body here is a raw commit list; the richer,
+# label-grouped changelog lives on the rolling draft release maintained by
+# .github/workflows/release-drafter.yml (see .github/release-drafter.yml).
+#
+# Maintainer steps before publishing a tagged release:
+#   1. Review this workflow's draft release (created below) for the build
+#      artifacts (contracts-wasm.zip, deployment-manifest.json).
+#   2. Copy/merge the grouped notes from the release-drafter draft (Releases
+#      page) into this release's body if a richer changelog is wanted.
+#   3. Edit as needed, then publish.
 name: Release on Tag
 
 on:
@@ -13,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -68,19 +79,34 @@ jobs:
           cat changelog.md >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Zip contract binaries
+      - name: Generate deployment manifest
+        env:
+          DEPLOYMENT_ENVIRONMENT: production
+          NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE: ${{ secrets.NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE }}
+          NEXT_PUBLIC_SOROBAN_RPC_URL: ${{ secrets.NEXT_PUBLIC_SOROBAN_RPC_URL }}
+          NEXT_PUBLIC_HORIZON_URL: ${{ secrets.NEXT_PUBLIC_HORIZON_URL }}
+          NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID: ${{ secrets.NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID }}
+          NEXT_PUBLIC_TRUSTLESS_WORK_ESCROW_CONTRACT_ID: ${{ secrets.NEXT_PUBLIC_TRUSTLESS_WORK_ESCROW_CONTRACT_ID }}
+          GIT_COMMIT_SHA: ${{ github.sha }}
+          MANIFEST_VERSION: ${{ github.ref_name }}
+        run: npx tsx scripts/generate-manifest.ts
+
+      - name: Zip contract binaries and manifest
         run: |
           cd ./release-artifacts
           zip -r contracts-wasm.zip contracts
+          cp ../deployment-manifest.json .
 
       - name: Draft GitHub Release and Upload Assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           body: ${{ steps.changelog.outputs.changelog }}
           draft: true
           prerelease: false
-          files: ./release-artifacts/contracts-wasm.zip
+          files: |
+            ./release-artifacts/contracts-wasm.zip
+            ./release-artifacts/deployment-manifest.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

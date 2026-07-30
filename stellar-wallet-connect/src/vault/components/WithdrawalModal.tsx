@@ -7,6 +7,8 @@ import { formatAmount } from "../lib/format";
 
 type Step = "input" | "review" | "broadcasting" | "success";
 
+const QUICK_AMOUNTS = [25, 50, 75] as const;
+
 export interface WithdrawalModalProps {
   pool: PoolSummary;
   position: UserPosition;
@@ -25,6 +27,12 @@ export const WithdrawalModal: FC<WithdrawalModalProps> = ({ pool, position, onWi
 
   const handleMax = useCallback(() => {
     setAmount(depositedNum.toFixed(2));
+    setError(null);
+  }, [depositedNum]);
+
+  const handleQuickAmount = useCallback((pct: number) => {
+    const raw = depositedNum * (pct / 100);
+    setAmount(raw.toFixed(2));
     setError(null);
   }, [depositedNum]);
 
@@ -94,6 +102,19 @@ export const WithdrawalModal: FC<WithdrawalModalProps> = ({ pool, position, onWi
                 <span>Amount exceeds your deposited position</span>
               </div>
             )}
+
+            <div className="flex gap-2">
+              {QUICK_AMOUNTS.map((pct) => (
+                <button
+                  key={pct}
+                  type="button"
+                  onClick={() => handleQuickAmount(pct)}
+                  className="flex-1 rounded-lg border border-red-900/30 px-3 py-2 text-sm font-medium text-gray-300 transition-colors hover:bg-red-900/20 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#1A0505]"
+                >
+                  {pct}%
+                </button>
+              ))}
+            </div>
 
             <button
               type="button"

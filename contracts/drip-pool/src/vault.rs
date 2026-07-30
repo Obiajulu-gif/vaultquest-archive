@@ -1,8 +1,9 @@
 #![no_std]
 
 //! #264 Time-locked withdrawals with yield multipliers.
-//! Adds an enhanced vault flow with duration-based lockups and APY multipliers.
-//! Existing DripPool behavior is untouched.
+//! #382 Multipliers are reward weights, not principal amplifiers.
+//! Existing DripPool behavior is untouched; vault functions expose the
+//! duration-aware deposit and withdrawal paths.
 
 use super::*;
 
@@ -12,12 +13,12 @@ const SHORT_MULTIPLIER: u32 = 110;
 const MEDIUM_MULTIPLIER: u32 = 125;
 const LONG_MULTIPLIER: u32 = 150;
 
-// Approximate ledger windows (5s/ledger). Exact values depend on network config.
+// Approximate ledger windows (5s/ledger).
 const SHORT_LEDGERS: u32 = 7 * 17_280;
 const MEDIUM_LEDGERS: u32 = 14 * 17_280;
 const LONG_LEDGERS: u32 = 90 * 17_280;
 
-fn multiplier_for(lockup_days: u32) -> Result<u32, Error> {
+pub(crate) fn multiplier_for(lockup_days: u32) -> Result<u32, Error> {
     match lockup_days {
         0 => Ok(FLEXIBLE_MULTIPLIER),
         1..=7 => Ok(SHORT_MULTIPLIER),
@@ -35,54 +36,47 @@ fn lockup_ledgers_for(lockup_days: u32) -> Result<u32, Error> {
     }
 }
 
-// Applies the selected duration multiplier to a deposit and stores the new lockup.
-// Caller must already be joined. Amount validated > 0.
-fn apply_time_locked_deposit(
+/// Record a duration-based deposit for an existing participant.
+/// Sets the lockup_multiplier as a reward *weight*, not a payout multiplier.
+/// Caller must already be joined.
+pub(crate) fn apply_time_locked_deposit(
     env: &Env,
     who: &Address,
     amount: i128,
     lockup_days: u32,
 ) -> Result<(), Error> {
-    let key = DataKey::Participant(who.clone());
-    let mut p: Participant = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .ok_or(Error::NotJoined)?;
-
+    let p: Participant = super::DripPool::load_participant(env, who)?;
+    let mut p = p;
     p.deposited += amount;
-    p.claimable += amount;
     p.lockup_multiplier = multiplier_for(lockup_days)?;
     let ledgers = lockup_ledgers_for(lockup_days)?;
     p.locked_until = env.ledger().sequence() + ledgers;
-    env.storage().persistent().set(&key, &p);
+    super::DripPool::save_participant(env, who, &p);
     Ok(())
 }
 
-// Computes yield-adjusted withdrawal amount and clears participant state.
-// Withdrawal only succeeds after lockup or for flexible deposits.
-fn apply_withdrawal(env: &Env, who: &Address) -> Result<i128, Error> {
-    let key = DataKey::Participant(who.clone());
-    let p: Participant = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .ok_or(Error::NotJoined)?;
+/// Clear a participant's state after the lockup expires.
+/// Returns principal only — rewards must be claimed separately via claim_reward (#377).
+/// The lockup_multiplier is a reward weight and is NOT applied to principal (#382).
+pub(crate) fn apply_withdrawal(env: &Env, who: &Address) -> Result<i128, Error> {
+    let p = super::DripPool::load_participant(env, who)?;
 
     if env.ledger().sequence() < p.locked_until {
         return Err(Error::LockupActive);
     }
 
-    let boosted = (p.deposited as u128)
-        .saturating_mul(p.lockup_multiplier as u128)
-        .saturating_div(100) as i128;
-
-    env.storage().persistent().remove(&key);
-    Ok(boosted)
+    let principal = p.deposited;
+    env.storage()
+        .persistent()
+        .remove(&DataKey::Participant(who.clone()));
+    env.storage()
+        .persistent()
+        .remove(&DataKey::ParticipantV1(who.clone()));
+    Ok(principal)
 }
 
-// Verifies caller is an admin and updates pool accounting.
-fn apply_admin_release(env: &Env, amount: i128) -> Result<(), Error> {
+/// Decrement pool accounting for an admin-initiated escrow release.
+pub(crate) fn apply_admin_release(env: &Env, amount: i128) -> Result<(), Error> {
     let mut pool: Pool = env
         .storage()
         .instance()
@@ -92,11 +86,3 @@ fn apply_admin_release(env: &Env, amount: i128) -> Result<(), Error> {
     env.storage().instance().set(&DataKey::Pool, &pool);
     Ok(())
 }
-
-// ── Audit checklist (#263 / #264) ────────────────────────────────────────
-// - All state changes occur before external token transfer (placeholder).
-// - Reentrancy guard set prior to state mutation in withdrawal path.
-// - Yield multiplier is a local arithmetic operation (no cross-contract call).
-// - Admin release is accounted in pool before any future transfer would occur.
-// - Participants on flexible deposits can withdraw immediately without lockup.
-// - Locked funds cannot be withdrawn early; contract reverts with LockupActive.

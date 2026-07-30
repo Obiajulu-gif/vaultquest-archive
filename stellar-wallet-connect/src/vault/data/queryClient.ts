@@ -21,7 +21,7 @@ export interface VaultQueryOptions<T> {
   enabled?: boolean;
   staleTimeMs?: number;
   refetchIntervalMs?: number;
-  fetcher: () => Promise<T>;
+  fetcher: (opts: { signal: AbortSignal }) => Promise<T>;
 }
 
 type Listener = () => void;
@@ -35,6 +35,7 @@ interface CacheEntry<T> {
   promise: Promise<T> | null;
   invalidated: boolean;
   listeners: Set<Listener>;
+  abortController?: AbortController;
 }
 
 function toError(err: unknown): Error {
@@ -58,6 +59,7 @@ export class VaultQueryClient {
       promise: null,
       invalidated: false,
       listeners: new Set(),
+      abortController: undefined,
     };
     this.entries.set(id, created as CacheEntry<unknown>);
     return created;
@@ -74,7 +76,11 @@ export class VaultQueryClient {
   }
 
   notify(key: readonly unknown[]): void {
-    this.getEntry(key).listeners.forEach((listener) => listener());
+    const id = serializeQueryKey(key);
+    const entry = this.entries.get(id);
+    if (entry) {
+      entry.listeners.forEach((listener) => listener());
+    }
   }
 
   isStale(key: readonly unknown[], staleTimeMs: number): boolean {
@@ -83,15 +89,18 @@ export class VaultQueryClient {
     return Date.now() - entry.updatedAt > staleTimeMs;
   }
 
-  fetchQuery<T>(key: readonly unknown[], fetcher: () => Promise<T>): Promise<T> {
+  fetchQuery<T>(key: readonly unknown[], fetcher: (opts: { signal: AbortSignal }) => Promise<T>): Promise<T> {
     const entry = this.getEntry<T>(key);
     if (entry.promise) return entry.promise;
+
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : undefined;
+    entry.abortController = controller;
 
     entry.error = null;
     entry.partialError = null;
     this.notify(key);
 
-    entry.promise = fetcher()
+    entry.promise = fetcher({ signal: controller?.signal as AbortSignal })
       .then((data) => {
         entry.data = data;
         entry.error = null;
@@ -138,6 +147,7 @@ export class VaultQueryClient {
   }
 
   clear(): void {
+    this.entries.forEach((entry) => entry.abortController?.abort());
     this.entries.clear();
   }
 }

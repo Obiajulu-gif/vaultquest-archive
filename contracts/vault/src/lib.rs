@@ -1,7 +1,27 @@
 #![no_std]
+
+//! # DEPRECATED — not the canonical contract (#495)
+//!
+//! This skeleton contract predates `contracts/drip-pool` and is kept only for
+//! reading balances from any legacy instance that may already be deployed. It
+//! is architecturally incompatible with the canonical contract: single-admin
+//! (no multisig/threshold), no round/draw state, no lockups or claim
+//! deadlines, and no real SAC token custody (`deposit`/`withdraw` only mutate
+//! internal bookkeeping).
+//!
+//! **Do not deploy this contract for new pools and do not wire new client
+//! code to it.** `contracts/drip-pool` is the single authoritative source for
+//! principal, rewards, round state, pause, and winner settlement — see
+//! `contracts/CONTRACT_BOUNDARY.md`. `lib/deployment-manifest.ts` has no slot
+//! for a `vault` contract id, so a compliant manifest cannot reference this
+//! contract at all; only `balance_of`/`total_deposits`/`get_paused` should
+//! ever be called against a pre-existing deployment, for read-only migration
+//! verification.
+
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Env, Symbol,
+    contract, contractimpl, contracttype, panic_with_error, symbol_short, Address, Env, Symbol,
 };
+use vaultquest_common::ContractError;
 
 // ─────────────────────────────────────────────
 // Storage key types
@@ -15,26 +35,7 @@ pub enum DataKey {
     TotalDeposits,
 }
 
-// ─────────────────────────────────────────────
-// Error codes
-// ─────────────────────────────────────────────
-#[contracttype]
-#[derive(Clone, PartialEq, Debug)]
-pub enum VaultError {
-    NotAdmin       = 1,
-    AlreadyPaused  = 2,
-    NotPaused      = 3,
-    ProtocolPaused = 4,
-    ZeroAmount     = 5,
-    InsufficientBalance = 6,
-    NotInitialized = 7,
-}
-
-impl From<VaultError> for soroban_sdk::Error {
-    fn from(e: VaultError) -> Self {
-        soroban_sdk::Error::from_contract_error(e as u32)
-    }
-}
+pub type VaultError = ContractError;
 
 // ─────────────────────────────────────────────
 // Events
@@ -57,11 +58,13 @@ impl VaultContract {
     /// Must be called once after deployment to set the admin.
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialised");
+            panic_with_error!(env, VaultError::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::IsPaused, &false);
-        env.storage().instance().set(&DataKey::TotalDeposits, &0_i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalDeposits, &0_i128);
     }
 
     // ── Internal helpers ────────────────────
@@ -125,7 +128,7 @@ impl VaultContract {
         depositor.require_auth();
 
         if amount <= 0 {
-            panic_with_error!(env, VaultError::ZeroAmount);
+            panic_with_error!(env, VaultError::InvalidAmount);
         }
 
         let key = DataKey::Balance(depositor.clone());
@@ -152,15 +155,11 @@ impl VaultContract {
         depositor.require_auth();
 
         if amount <= 0 {
-            panic_with_error!(env, VaultError::ZeroAmount);
+            panic_with_error!(env, VaultError::InvalidAmount);
         }
 
         let key = DataKey::Balance(depositor.clone());
-        let current: i128 = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(0);
+        let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
 
         if current < amount {
             panic_with_error!(env, VaultError::InsufficientBalance);
@@ -177,8 +176,7 @@ impl VaultContract {
             .instance()
             .set(&DataKey::TotalDeposits, &(total - amount));
 
-        env.events()
-            .publish((WITHDRAW_TOPIC,), (depositor, amount));
+        env.events().publish((WITHDRAW_TOPIC,), (depositor, amount));
     }
 
     /// Select a draw winner.
@@ -246,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "AlreadyPaused")]
+    #[should_panic(expected = "Error(Contract, #32)")]
     fn test_double_pause_reverts() {
         let (_env, client, _admin, _user) = setup();
         client.pause_protocol();
@@ -264,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "NotPaused")]
+    #[should_panic(expected = "Error(Contract, #33)")]
     fn test_unpause_when_not_paused_reverts() {
         let (_env, client, _admin, _user) = setup();
         client.unpause_protocol(); // should panic — never paused
@@ -280,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "ProtocolPaused")]
+    #[should_panic(expected = "Error(Contract, #34)")]
     fn test_deposit_reverts_when_paused() {
         let (_env, client, _admin, user) = setup();
         client.pause_protocol();
@@ -308,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "InsufficientBalance")]
+    #[should_panic(expected = "Error(Contract, #5)")]
     fn test_withdraw_more_than_balance_reverts() {
         let (_env, client, _admin, user) = setup();
         client.deposit(&user, &50);
@@ -324,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "ProtocolPaused")]
+    #[should_panic(expected = "Error(Contract, #34)")]
     fn test_draw_winner_reverts_when_paused() {
         let (_env, client, _admin, user) = setup();
         client.pause_protocol();

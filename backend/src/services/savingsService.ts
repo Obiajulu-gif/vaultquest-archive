@@ -1,85 +1,75 @@
 /**
- * Executes vault settlement operations including winner payouts and saver refunds.
+ * Orchestrates batch vault settlements across a concluded savings period.
  *
- * Coordinates with escrow submission and ledger updates.
+ * Delegates individual vault settlement to `EscrowService`, which handles
+ * retry logic and Horizon submission (issue #274).
  */
 
-export interface VaultPayout {
+import type { EscrowService } from "./escrowService.js";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface VaultSettleInput {
   vaultId: string;
-  winner: string;
-  amount: string;
-  asset: string;
+  settlementType: "release" | "distribute" | "refund";
+  recipient?: string;
+  amount?: string;
 }
 
 export interface SettlePeriodResult {
-  vaultId: string;
-  outcomes: SettlementOutcome[];
+  /** Total vaults attempted. */
+  total: number;
+  /** Vaults that reached the Resolved state (release / distribute). */
+  resolved: number;
+  /** Vaults that reached the Refunded state. */
+  refunded: number;
+  /** Vaults that failed after all retries. */
+  failed: number;
 }
 
-export interface SettlementOutcome {
-  txHash?: string;
-  status: "success" | "failed";
-  to: string;
-  amount: string;
-}
+// ─── SavingsService ───────────────────────────────────────────────────────────
 
 /**
- * Manages prize distribution and refund flows for concluded vault periods.
+ * Settles a batch of vaults for a concluded savings period.
+ *
+ * Each vault is settled independently; a failure on one vault does not abort
+ * the rest of the batch.
  */
 export class SavingsService {
-  /**
-   * @param escrow - Escrow submission dependency
-   */
-  constructor(private escrow: any) {}
+  constructor(private readonly escrow: EscrowService) {}
 
   /**
-   * Settles a concluded vault period by distributing prizes.
-   *
-   * @param payouts - Payout instructions
-   * @returns Settlement results per payout
+   * Iterates through `vaults`, calling `EscrowService.settleVault` for each,
+   * and returns aggregate counts.
    */
-  async settleConcludedPeriod(payouts: VaultPayout[]): Promise<SettlePeriodResult> {
-    const outcomes: SettlementOutcome[] = [];
-    for (const payout of payouts) {
-      // Placeholder: submit via escrow
-      outcomes.push({
-        status: "success",
-        to: payout.winner,
-        amount: payout.amount,
-      });
+  async settleConcludedPeriod(vaults: VaultSettleInput[]): Promise<SettlePeriodResult> {
+    let resolved = 0;
+    let refunded = 0;
+    let failed = 0;
+
+    for (const vault of vaults) {
+      try {
+        const outcome = await this.escrow.settleVault(vault);
+
+        if (outcome.state === "Resolved") {
+          if (vault.settlementType === "refund") {
+            refunded += 1;
+          } else {
+            resolved += 1;
+          }
+        } else {
+          failed += 1;
+        }
+      } catch {
+        failed += 1;
+      }
     }
-    return { vaultId: payouts[0]?.vaultId ?? "unknown", outcomes };
-  }
 
-  /**
-   * Releases a prize payout to the winner address.
-   *
-   * @param vaultId - Source vault
-   * @param winner - Winner address
-   * @param amount - Payout amount
-   * @returns Settlement outcome
-   */
-  async releaseToWinner(vaultId: string, winner: string, amount: string): Promise<SettlementOutcome> {
     return {
-      status: "success",
-      to: winner,
-      amount,
-    };
-  }
-
-  /**
-   * Refunds a saver when a vault period is canceled or fails.
-   *
-   * @param vaultId - Source vault
-   * @param saver - Saver address
-   * @param amount - Refund amount
-   * @returns Settlement outcome
-   */
-  async refundSaver(vaultId: string, saver: string, amount: string): Promise<SettlementOutcome> {
-    return {
-      status: "success",
-      to: saver,
-      amount,
+      total: vaults.length,
+      resolved,
+      refunded,
+      failed
     };
   }
 }

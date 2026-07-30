@@ -19,6 +19,7 @@ export interface VaultDataConfig {
   escrowContractId?: string;
   network: VaultNetworkConfig;
   featureFlags: VaultFeatureFlags;
+  manifestVersion?: string;
 }
 
 const TESTNET_PASSPHRASE = "Test SDF Network ; September 2015";
@@ -42,26 +43,49 @@ function inferNetworkName(passphrase: string): VaultNetworkConfig["name"] {
   return "custom";
 }
 
+type ManifestGetter = () => {
+  version: string;
+  network: { passphrase: string; name: string; horizonUrl: string; sorobanRpcUrl: string };
+  contracts: { dripPool: { contractId: string }; escrow?: { contractId: string } };
+} | null;
+
+let _manifestGetter: ManifestGetter | null = null;
+
+export function registerManifestGetter(getter: ManifestGetter): void {
+  _manifestGetter = getter;
+}
+
 export function createVaultDataConfig(
   source: Record<string, string | undefined> = typeof process === "undefined" ? {} : process.env,
 ): VaultDataConfig {
-  const passphrase = read(source, "NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE", read(source, "PUBLIC_SOROBAN_NETWORK_PASSPHRASE"));
+  const manifest = _manifestGetter?.();
+
+  const passphrase = manifest?.network?.passphrase
+    || read(source, "NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE", read(source, "PUBLIC_SOROBAN_NETWORK_PASSPHRASE"));
+
+  const networkName = manifest?.network?.name as VaultNetworkConfig["name"] | undefined
+    || inferNetworkName(passphrase);
 
   return {
     apiBaseUrl: read(source, "NEXT_PUBLIC_VAULTQUEST_API_BASE_URL", read(source, "PUBLIC_VAULTQUEST_API_BASE_URL", "/api")),
-    dripPoolContractId: read(source, "NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID"),
-    escrowContractId: read(source, "NEXT_PUBLIC_TRUSTLESS_WORK_ESCROW_CONTRACT_ID") || undefined,
+    dripPoolContractId: manifest?.contracts?.dripPool?.contractId
+      || read(source, "NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID"),
+    escrowContractId: manifest?.contracts?.escrow?.contractId
+      || read(source, "NEXT_PUBLIC_TRUSTLESS_WORK_ESCROW_CONTRACT_ID") || undefined,
     network: {
-      name: inferNetworkName(passphrase),
+      name: networkName,
       passphrase,
-      horizonUrl: read(source, "NEXT_PUBLIC_HORIZON_URL", read(source, "PUBLIC_HORIZON_URL")),
-      sorobanRpcUrl: read(source, "NEXT_PUBLIC_SOROBAN_RPC_URL"),
+      horizonUrl: manifest?.network?.horizonUrl
+        || read(source, "NEXT_PUBLIC_HORIZON_URL", read(source, "PUBLIC_HORIZON_URL")),
+      sorobanRpcUrl: manifest?.network?.sorobanRpcUrl
+        || read(source, "NEXT_PUBLIC_SOROBAN_RPC_URL"),
     },
     featureFlags: {
       backendReads: readBoolean(source, "NEXT_PUBLIC_VAULTQUEST_BACKEND_READS", true),
       contractFallbackReads: readBoolean(source, "NEXT_PUBLIC_VAULTQUEST_CONTRACT_FALLBACK_READS", true),
       transactionPolling: readBoolean(source, "NEXT_PUBLIC_VAULTQUEST_TRANSACTION_POLLING", true),
     },
+    manifestVersion: manifest?.version,
   };
 }
 

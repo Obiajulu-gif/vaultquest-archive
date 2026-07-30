@@ -4,9 +4,9 @@ import { Bookmark, Coins, Trophy, Users } from "lucide-react";
 import {
   ErrorState,
   LoadingState,
-  StaleIndicator,
   WalletDisconnectedState,
 } from "../../components/FallbackStates";
+import { DataRefreshControl } from "../../components/DataRefreshControl";
 import type { PoolActionType, PoolStatus, PoolSummary, UserPosition } from "../contract/types";
 import { formatAmount, formatDate, truncateAddress } from "../lib/format";
 import { OnboardingChecklist } from "./OnboardingChecklist";
@@ -14,6 +14,7 @@ import { isNetworkMismatch } from "../../core/store.js";
 import { NetworkDiagnostics } from "../../components/NetworkDiagnostics";
 import { TransactionTimeline } from "../../components/TransactionTimeline";
 import type { TxFlowResult } from "../lib/txStateMachine";
+import PoolStatusBadge from "./PoolStatusBadge";
 
 /**
  * Pool detail view (#73): overview, the connected user's position, and the
@@ -40,14 +41,11 @@ export interface PoolDetailProps {
   showOnboarding?: boolean;
   /** When provided, renders an inline transaction timeline below the action buttons. */
   txFlow?: TxFlowResult;
+  updatedAt?: number | null;
+  fetching?: boolean;
+  partialError?: Error | null;
+  refetch?: () => void;
 }
-
-const STATUS_BADGE: Record<PoolStatus, { label: string; className: string }> = {
-  open: { label: "Open", className: "bg-emerald-500/15 text-emerald-300" },
-  locked: { label: "Locked", className: "bg-sky-500/15 text-sky-300" },
-  drawing: { label: "Drawing", className: "bg-amber-500/15 text-amber-300" },
-  settled: { label: "Settled", className: "bg-gray-500/15 text-gray-300" },
-};
 
 const Stat: FC<{ icon: ReactNode; label: string; value: string }> = ({ icon, label, value }) => (
   <div className="rounded-xl border border-red-900/30 bg-[#1A0505]/60 p-3 sm:p-4">
@@ -98,6 +96,10 @@ export const PoolDetail: FC<PoolDetailProps> = ({
   savingSavedState = false,
   showOnboarding = true,
   txFlow,
+  updatedAt = null,
+  fetching = false,
+  partialError = null,
+  refetch = () => {},
 }) => {
   const mismatch = useStore(isNetworkMismatch);
 
@@ -111,7 +113,6 @@ export const PoolDetail: FC<PoolDetailProps> = ({
     return <ErrorState title="Pool unavailable" message="This pool could not be found." onRetry={onRetry} />;
   }
 
-  const badge = STATUS_BADGE[pool.status];
   const actions = walletConnected ? availableActions(pool, position) : [];
 
   return (
@@ -123,9 +124,7 @@ export const PoolDetail: FC<PoolDetailProps> = ({
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold text-white">{pool.name}</h1>
-          <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${badge.className}`}>
-            {badge.label}
-          </span>
+          <PoolStatusBadge status={pool.status} />
         </div>
         <div className="flex items-center gap-3">
           {walletConnected && onToggleSaved && (
@@ -139,7 +138,13 @@ export const PoolDetail: FC<PoolDetailProps> = ({
               {savingSavedState ? "Saving…" : saved ? "Unsave pool" : "Save pool"}
             </button>
           )}
-          {stale && <StaleIndicator />}
+          <DataRefreshControl
+            updatedAt={updatedAt}
+            stale={stale}
+            fetching={fetching}
+            partialError={partialError}
+            onRefresh={refetch}
+          />
         </div>
       </header>
 

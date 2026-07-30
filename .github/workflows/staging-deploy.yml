@@ -5,11 +5,50 @@ on:
     branches: [main]
 
 jobs:
+  generate-manifest:
+    name: Generate deployment manifest
+    runs-on: ubuntu-latest
+    outputs:
+      manifest-version: ${{ steps.manifest.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Generate manifest
+        id: manifest
+        env:
+          DEPLOYMENT_ENVIRONMENT: staging
+          NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE: ${{ secrets.NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE }}
+          NEXT_PUBLIC_SOROBAN_RPC_URL: ${{ secrets.NEXT_PUBLIC_SOROBAN_RPC_URL }}
+          NEXT_PUBLIC_HORIZON_URL: ${{ secrets.NEXT_PUBLIC_HORIZON_URL }}
+          NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID: ${{ secrets.NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID }}
+          NEXT_PUBLIC_TRUSTLESS_WORK_ESCROW_CONTRACT_ID: ${{ secrets.NEXT_PUBLIC_TRUSTLESS_WORK_ESCROW_CONTRACT_ID }}
+          GIT_COMMIT_SHA: ${{ github.sha }}
+          MANIFEST_VERSION: ${{ github.run_id }}.0.0
+        run: |
+          npx tsx scripts/generate-manifest.ts
+          VERSION=$(jq -r '.version' deployment-manifest.json)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          cp deployment-manifest.json public/deployment-manifest.json
+
+      - name: Upload manifest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-manifest
+          path: |
+            deployment-manifest.json
+            public/deployment-manifest.json
+
   deploy-frontend:
     name: Deploy frontend to Vercel staging
+    needs: generate-manifest
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+
+      - name: Download manifest artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: deployment-manifest
 
       - name: Install Vercel CLI
         run: npm install -g vercel@latest
@@ -22,19 +61,28 @@ jobs:
 
   deploy-backend:
     name: Build and push backend Docker image
+    needs: generate-manifest
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+
+      - name: Download manifest artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: deployment-manifest
+
+      - name: Copy manifest to backend context
+        run: cp deployment-manifest.json backend/deployment-manifest.json
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: ./backend
           push: true

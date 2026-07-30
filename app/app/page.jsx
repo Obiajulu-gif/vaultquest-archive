@@ -4,6 +4,7 @@ import { useState, useMemo, useEffect } from "react";
 import Link from "next/link";
 import { useConnectModal } from "@rainbow-me/rainbowkit";
 import { useAccount } from "wagmi";
+import { useTranslation } from "next-i18next";
 import { Sparkles } from "lucide-react";
 import OnboardingCards from "@/components/app/OnboardingCards";
 import PublicStatsBar from "@/components/app/PublicStatsBar";
@@ -89,6 +90,7 @@ function DashboardSkeleton() {
 }
 
 export default function AppDashboardPage() {
+  const { t } = useTranslation("common");
   const { isConnected, address, chain } = useAccount();
   const { openConnectModal } = useConnectModal();
   const [onboardingStep, setOnboardingStep] = useState(0);
@@ -137,14 +139,13 @@ export default function AppDashboardPage() {
         <div className="space-y-4 max-w-2xl">
           <div className="inline-flex items-center gap-2 rounded-full border border-vault-border bg-vault-surface px-3 py-1 text-xs font-medium text-vault-muted backdrop-blur-md transition-all duration-300">
             <Sparkles className="h-3.5 w-3.5 text-red-500" aria-hidden="true" />
-            Prize-linked savings · Principal protected
+            {t("routes.dashboard.tagline")}
           </div>
           <h1 className="text-3xl font-extrabold tracking-tight text-vault-text sm:text-4xl lg:text-5xl bg-gradient-to-r from-vault-text via-vault-text to-red-500 bg-clip-text text-transparent">
-            Save together. Win together.
+            {t("routes.dashboard.title")}
           </h1>
           <p className="text-base text-vault-muted leading-relaxed">
-            VaultQuest pools your deposits, routes yield to weekly prizes, and keeps every saver&apos;s
-            principal withdrawable in full—no-loss by design.
+            {t("routes.dashboard.subtitle")}
           </p>
         </div>
         <div className="w-full lg:max-w-md shrink-0">
@@ -202,26 +203,26 @@ export default function AppDashboardPage() {
 
           <section className="vq-glass p-6 text-center sm:p-8 relative overflow-hidden group">
             <div className="absolute -right-16 -top-16 w-32 h-32 rounded-full bg-red-500/10 blur-xl transition-all duration-300 group-hover:scale-125" />
-            <h2 className="text-xl font-bold text-vault-text">Ready to join a pool?</h2>
+            <h2 className="text-xl font-bold text-vault-text">{t("routes.dashboard.joinTitle")}</h2>
             <p className="mt-2 text-sm text-vault-muted">
               {isConnected
-                ? "Explore active prize savings pools and manage your yields."
-                : "Connect your wallet or follow the steps to start your savings journey."}
+                ? t("routes.dashboard.connectedBody")
+                : t("routes.dashboard.disconnectedBody")}
             </p>
             <div className="mt-6 flex flex-col gap-3">
               {onboardingStep === 0 ? (
                 <button type="button" onClick={handleStartSaving} className="vq-btn-primary w-full">
-                  Start Saving
+                  {t("routes.dashboard.startSaving")}
                 </button>
               ) : (
                 <>
-                  <Link href="/app/prizes" className="vq-btn-primary w-full">View All Prizes</Link>
-                  <Link href="/app/vaults" className="vq-btn-ghost w-full">Manage Vaults</Link>
+                  <Link href="/app/prizes" className="vq-btn-primary w-full">{t("routes.dashboard.viewAllPrizes")}</Link>
+                  <Link href="/app/vaults" className="vq-btn-ghost w-full">{t("routes.dashboard.manageVaults")}</Link>
                 </>
               )}
               {!isConnected && onboardingStep === 0 && (
                 <button type="button" onClick={() => openConnectModal?.()} className="vq-btn-ghost w-full">
-                  Connect wallet
+                  {t("routes.dashboard.connectWallet")}
                 </button>
               )}
             </div>

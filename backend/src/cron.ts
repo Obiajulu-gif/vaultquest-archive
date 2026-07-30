@@ -3,8 +3,11 @@ import type { PrismaClient } from "@prisma/client";
 import type { Logger } from "pino";
 import { sweepOrphans } from "./services/reconciler.js";
 import { QuestService } from "./services/questService.js";
+import { BackupService } from "./services/backupService.js";
+import { NotificationService } from "./services/notificationService.js";
 import type { StellarIndexer } from "./services/stellarIndexer.js";
 import { pingDatabase } from "./db.js";
+import { LedgerService } from "./services/ledger.js";
 
 export function startReconcilerCron(opts: {
   prisma: PrismaClient;
@@ -60,6 +63,7 @@ export function startQuestCron(opts: {
 export function startIndexerCron(opts: {
   prisma: PrismaClient;
   indexer: StellarIndexer;
+  ledger: LedgerService;
   logger: Logger;
   schedule?: string;
 }): cron.ScheduledTask {
@@ -72,8 +76,89 @@ export function startIndexerCron(opts: {
       }
       const result = await opts.indexer.tick();
       opts.logger.info({ result }, "indexer tick complete");
+
+      // Persist cursor/ledger progress so a restart resumes exactly where the
+      // last successful tick left off instead of replaying or skipping events.
+      if (result.latestLedger !== null) {
+        await opts.ledger.updateIndexerCheckpoint({
+          latestLedger: result.latestLedger,
+          lastProcessedEventId: result.cursor,
+          success: true
+        });
+      }
     } catch (err) {
       opts.logger.error({ err }, "indexer tick failed");
+      try {
+        const existing = await opts.ledger.getIndexerCheckpoint();
+        await opts.ledger.updateIndexerCheckpoint({
+          latestLedger: existing?.latestLedger ?? 0,
+          success: false,
+          lastError: err instanceof Error ? err.message : String(err)
+        });
+      } catch {
+        // best-effort; don't let checkpoint persistence mask the original error
+      }
+    }
+  });
+  return task;
+}
+
+/**
+ * Runs automated PostgreSQL backups on a schedule (issue #275).
+ *
+ * Each tick calls `BackupService.run()` which shells out to `pg_dump` and
+ * prunes files older than `retainDays`. The cron is only started when
+ * `BACKUP_DIR` is set in the environment.
+ */
+export function startBackupCron(opts: {
+  backupDir: string;
+  databaseUrl: string;
+  retainDays?: number;
+  pgDumpPath?: string;
+  logger: Logger;
+  schedule?: string;
+}): cron.ScheduledTask {
+  const schedule = opts.schedule ?? "0 2 * * *"; // default: daily at 02:00
+  const svc = new BackupService({
+    backupDir: opts.backupDir,
+    databaseUrl: opts.databaseUrl,
+    retainDays: opts.retainDays,
+    pgDumpPath: opts.pgDumpPath,
+    logger: opts.logger
+  });
+
+  const task = cron.schedule(schedule, async () => {
+    try {
+      const result = await svc.run();
+      opts.logger.info({ result }, "backup: completed");
+    } catch (err) {
+      opts.logger.error({ err }, "backup: failed");
+    }
+  });
+  return task;
+}
+
+/**
+ * Periodically generates maturity / claim-window reminder notifications
+ * (issue #446). `leadHours` controls how far ahead of a position's lock/draw
+ * date a reminder is created; generation is idempotent so re-running never
+ * duplicates notifications.
+ */
+export function startNotificationReminderCron(opts: {
+  prisma: PrismaClient;
+  leadHours: number;
+  logger: Logger;
+  schedule?: string;
+}): cron.ScheduledTask {
+  const schedule = opts.schedule ?? "*/5 * * * *";
+  const notificationService = new NotificationService(opts.prisma, opts.leadHours);
+
+  const task = cron.schedule(schedule, async () => {
+    try {
+      const created = await notificationService.generateReminders();
+      opts.logger.info({ created }, "notification reminder sweep complete");
+    } catch (err) {
+      opts.logger.error({ err }, "notification reminder sweep failed");
     }
   });
   return task;

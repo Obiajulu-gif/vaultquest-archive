@@ -25,4 +25,16 @@ export const VAULT_ABI = [
   },
 ] as const;
 
-export const VAULT_ADDRESS = "0x1234567890123456789012345678901234567890";
+const PLACEHOLDER_ADDRESS = "0x1234567890123456789012345678901234567890";
+
+let _manifestAddress: string | undefined;
+
+export function setVaultAddressFromManifest(address: string): void {
+  _manifestAddress = address;
+}
+
+export function getVaultAddress(): string {
+  return _manifestAddress || PLACEHOLDER_ADDRESS;
+}
+
+export const VAULT_ADDRESS = PLACEHOLDER_ADDRESS;

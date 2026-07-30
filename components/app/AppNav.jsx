@@ -10,7 +10,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import ThemeToggle from "./ThemeToggle";
 import BalanceAutoRefresh from "./BalanceAutoRefresh";
 import CustomRpcModal from "./CustomRpcModal";
-import HeaderWalletStatus from "./HeaderWalletStatus";
+import { ConnectButton } from "@rainbow-me/rainbowkit";
+import { StellarWalletIndicator } from "@vaultquest/stellar-wallet-connect";
 
 const HIGH_CONTRAST_KEY = "vaultquest-high-contrast";
 
@@ -108,7 +109,10 @@ export default function AppNav() {
               <ThemeToggle />
             </div>
             <div className="hidden sm:block">
-              <HeaderWalletStatus variant="desktop" />
+              <StellarWalletIndicator />
+            </div>
+            <div className="hidden sm:block">
+              <ConnectButton chainStatus="icon" showBalance={false} />
             </div>
             <button
               type="button"
@@ -170,7 +174,7 @@ export default function AppNav() {
                   </div>
                 </div>
                 <div className="mt-3">
-                  <HeaderWalletStatus variant="mobile" />
+                  <StellarWalletIndicator />
                 </div>
               </nav>
             </motion.div>

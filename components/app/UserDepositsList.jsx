@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Filter } from "lucide-react";
+import { formatDateTime, formatCurrency } from "@/lib/formatting";
 
 const PAGE_SIZE = 5;
 
@@ -26,6 +27,7 @@ const getAssetForTx = (tx) => {
 export default function UserDepositsList({ transactions = [], selectedAsset = "all", onClearAsset }) {
   const [filter, setFilter] = useState("all");
   const [page, setPage] = useState(0);
+  const locale = typeof navigator !== "undefined" ? navigator.language : "en";
 
   const filtered = useMemo(() => {
     let result = transactions;
@@ -101,7 +103,7 @@ export default function UserDepositsList({ transactions = [], selectedAsset = "a
                   <span className="text-vault-muted"> · {tx.pool}</span>
                 </p>
                 <p className="text-xs text-vault-muted">
-                  {new Date(tx.date).toLocaleString()}
+                  {formatDateTime(tx.date, { locale })}
                 </p>
               </div>
               <div className="text-right">
@@ -110,8 +112,8 @@ export default function UserDepositsList({ transactions = [], selectedAsset = "a
                     tx.type === "withdraw" ? "text-vault-muted" : "text-emerald-600 dark:text-emerald-400"
                   }`}
                 >
-                  {tx.type === "withdraw" ? "−" : "+"}$
-                  {tx.amount.toLocaleString()}
+                  {tx.type === "withdraw" ? "−" : "+"}
+                  {formatCurrency(tx.amount, "USD", { locale, minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                 </p>
                 <p className="text-xs capitalize text-vault-muted">{tx.status}</p>
               </div>

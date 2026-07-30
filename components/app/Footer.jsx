@@ -1,7 +1,7 @@
 "use client";
 
 import { useTranslation } from "next-i18next";
-import { useRouter } from "next/navigation";
+import { setStoredLocale } from "@/lib/locale";
 
 const LOCALES = [
   { code: "en", label: "English" },
@@ -11,8 +11,8 @@ const LOCALES = [
 ];
 
 export default function Footer() {
-  const { t } = useTranslation("common");
-  const router = useRouter();
+  const { t, i18n } = useTranslation("common");
+  const currentLocale = i18n.resolvedLanguage || i18n.language || "en";
 
   return (
     <footer className="border-t border-vault-border/60 bg-vault-surface/60">
@@ -25,10 +25,12 @@ export default function Footer() {
           <span className="text-vault-muted">{t("footer.language")}:</span>
           <select
             className="rounded-md border border-vault-border bg-vault-bg px-2 py-1 text-vault-text"
-            defaultValue="en"
+            value={currentLocale}
             onChange={(e) => {
               const code = e.target.value;
-              router.push(`/${code}`);
+              setStoredLocale(window.localStorage, code);
+              void i18n.changeLanguage(code);
+              document.documentElement.lang = code;
             }}
           >
             {LOCALES.map(({ code, label }) => (

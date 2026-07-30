@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from "react";
 import Link from "next/link";
+import { useTranslation } from "next-i18next";
 import GasPrioritySelector from "@/components/app/GasPrioritySelector";
 import DepositModal from "@/components/app/DepositModal";
 import VaultFilters from "@/components/app/VaultFilters";
@@ -15,8 +16,10 @@ import VaultHealthStatusPanel from "@/components/app/VaultHealthStatusPanel";
 import VaultRewardsExplanationModal from "@/components/app/VaultRewardsExplanationModal";
 import MobileVaultActions from "@/components/app/MobileVaultActions";
 import VaultRetryQueue from "@/components/app/VaultRetryQueue";
+import PoolComparisonDrawer from "@/components/app/PoolComparisonDrawer";
 import { useVaultDataReview } from "@/hooks/useVaultDataReview";
-import { Archive, LayoutGrid, Table } from "lucide-react";
+import { usePoolComparison } from "@/components/hooks/usePoolComparison";
+import { Archive, LayoutGrid, Table, GitCompare, CalendarDays } from "lucide-react";
 
 const INITIAL_FILTERS = {
   search: "",
@@ -30,9 +33,20 @@ const INITIAL_FILTERS = {
 };
 
 export default function VaultsPage() {
+  const { t } = useTranslation("common");
   const [isDepositModalOpen, setIsDepositModalOpen] = useState(false);
   const [filters, setFilters] = useState(INITIAL_FILTERS);
   const [viewMode, setViewMode] = useState("table");
+  const [comparisonOpen, setComparisonOpen] = useState(false);
+
+  const {
+    selectedPools,
+    addPool,
+    removePool,
+    clearAll,
+    isSelected,
+    canAddMore,
+  } = usePoolComparison();
 
   const { vaults: reviewedVaults, warnings: dataWarnings } =
     useVaultDataReview(MOCK_VAULTS);
@@ -131,16 +145,28 @@ export default function VaultsPage() {
       <section className="space-y-3">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h1 className="text-3xl font-bold text-vault-text">Vaults</h1>
+            <h1 className="text-3xl font-bold text-vault-text">{t("routes.vaults.title")}</h1>
             <p className="mt-3 max-w-2xl text-vault-muted">
-              Manage your pool positions and drip deposits. Review live fee tiers
-              before you submit a transaction.
+              {t("routes.vaults.subtitle")}{" "}
+              <Link
+                href="/app/vaults/strategies"
+                className="text-vault-accent underline hover:text-vault-accent/80 font-medium"
+              >
+                {t("routes.vaults.strategies")}
+              </Link>
+              .
             </p>
           </div>
-          <Link href="/app/vaults/archive" className="vq-btn-ghost self-start">
-            <Archive className="h-4 w-4" aria-hidden="true" />
-            Round archive
-          </Link>
+          <div className="flex gap-2 self-start">
+            <Link href="/app/vaults/calendar" className="vq-btn-ghost">
+              <CalendarDays className="h-4 w-4" aria-hidden="true" />
+              Calendar
+            </Link>
+            <Link href="/app/vaults/archive" className="vq-btn-ghost">
+              <Archive className="h-4 w-4" aria-hidden="true" />
+              {t("routes.vaults.roundArchive")}
+            </Link>
+          </div>
         </div>
       </section>
 
@@ -177,14 +203,13 @@ export default function VaultsPage() {
             <section className="vq-glass-hover flex flex-col justify-between p-6">
               <div>
                 <p className="text-xs font-medium uppercase tracking-[0.24em] text-vault-muted">
-                  Deposit review
+                  {t("routes.vaults.depositReview")}
                 </p>
                 <h2 className="mt-1 text-xl font-semibold text-vault-text">
-                  Quick Deposit Flow
+                  {t("routes.vaults.quickDepositTitle")}
                 </h2>
                 <p className="mt-2 text-sm text-vault-muted">
-                  Select a vault below to begin your deposit. Live network
-                  estimates will be calculated automatically.
+                  {t("routes.vaults.quickDepositBody")}
                 </p>
               </div>
 
@@ -194,13 +219,13 @@ export default function VaultsPage() {
                   onClick={() => setIsDepositModalOpen(true)}
                   className="vq-btn-primary"
                 >
-                  Open deposit modal
+                  {t("routes.vaults.openDepositModal")}
                 </button>
                 <Link
                   href="/app/vaults/planner"
                   className="vq-btn-ghost"
                 >
-                  Recurring Planner
+                  {t("routes.vaults.recurringPlanner")}
                 </Link>
               </div>
             </section>
@@ -210,25 +235,36 @@ export default function VaultsPage() {
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-xl font-bold text-vault-text">
-                  Available Pools
+                  {t("routes.vaults.availablePools")}
                 </h3>
                 <p className="text-sm text-vault-muted">
                   Showing {filteredVaults.length} of {MOCK_VAULTS.length} vaults
                 </p>
               </div>
-              <div className="flex gap-2 rounded-lg border border-vault-border p-1 bg-vault-surface">
-                <button
-                  onClick={() => setViewMode("table")}
-                  className={`p-1.5 rounded-md transition-colors ${viewMode === "table" ? "bg-vault-accent/20 text-vault-accent" : "text-vault-muted hover:text-vault-text"}`}
-                >
-                  <Table size={18} />
-                </button>
-                <button
-                  onClick={() => setViewMode("grid")}
-                  className={`p-1.5 rounded-md transition-colors ${viewMode === "grid" ? "bg-vault-accent/20 text-vault-accent" : "text-vault-muted hover:text-vault-text"}`}
-                >
-                  <LayoutGrid size={18} />
-                </button>
+              <div className="flex items-center gap-3">
+                {selectedPools.length >= 2 && (
+                  <button
+                    onClick={() => setComparisonOpen(true)}
+                    className="vq-btn-primary text-sm flex items-center gap-2"
+                  >
+                    <GitCompare size={16} aria-hidden="true" />
+                    Compare ({selectedPools.length})
+                  </button>
+                )}
+                <div className="flex gap-2 rounded-lg border border-vault-border p-1 bg-vault-surface">
+                  <button
+                    onClick={() => setViewMode("table")}
+                    className={`p-1.5 rounded-md transition-colors ${viewMode === "table" ? "bg-vault-accent/20 text-vault-accent" : "text-vault-muted hover:text-vault-text"}`}
+                  >
+                    <Table size={18} />
+                  </button>
+                  <button
+                    onClick={() => setViewMode("grid")}
+                    className={`p-1.5 rounded-md transition-colors ${viewMode === "grid" ? "bg-vault-accent/20 text-vault-accent" : "text-vault-muted hover:text-vault-text"}`}
+                  >
+                    <LayoutGrid size={18} />
+                  </button>
+                </div>
               </div>
             </div>
             {viewMode === "table" ? (
@@ -238,12 +274,14 @@ export default function VaultsPage() {
                 suggestions={generateSuggestions()}
                 onSuggestionClick={handleSuggestionClick}
                 onClearFilters={clearFilters}
+                comparisonMode={{ isSelected, addPool, removePool, canAddMore }}
               />
             ) : (
               <VaultList
                 vaults={filteredVaults}
                 suggestions={generateSuggestions()}
                 onSuggestionClick={handleSuggestionClick}
+                comparisonMode={{ isSelected, addPool, removePool, canAddMore }}
               />
             )}
           </div>
@@ -255,6 +293,13 @@ export default function VaultsPage() {
       <DepositModal
         isOpen={isDepositModalOpen}
         onClose={() => setIsDepositModalOpen(false)}
+      />
+
+      <PoolComparisonDrawer
+        pools={selectedPools}
+        onRemove={removePool}
+        onClearAll={clearAll}
+        onClose={() => setComparisonOpen(false)}
       />
 
       <Link href="/app" className="vq-btn-ghost inline-flex">

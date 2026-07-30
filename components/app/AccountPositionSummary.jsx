@@ -48,6 +48,7 @@ function EmptyPositions() {
 }
 
 export default function AccountPositionSummary({ transactions = DEMO_TRANSACTIONS }) {
+  const locale = typeof navigator !== "undefined" ? navigator.language : "en";
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -85,7 +86,7 @@ export default function AccountPositionSummary({ transactions = DEMO_TRANSACTION
         <SummaryCard
           icon={Wallet}
           label="Current balance"
-          value={formatUsd(totalBalance)}
+          value={formatUsd(totalBalance, locale)}
           sub="Across all joined vaults"
         />
         <SummaryCard
@@ -108,7 +109,7 @@ export default function AccountPositionSummary({ transactions = DEMO_TRANSACTION
               <p className="text-xs text-vault-muted">{position.asset}</p>
             </div>
             <div className="text-right">
-              <p className="font-semibold text-vault-text">{formatUsd(position.balance)}</p>
+              <p className="font-semibold text-vault-text">{formatUsd(position.balance, locale)}</p>
               {position.pendingCount > 0 && (
                 <p className="text-xs text-amber-500">
                   {position.pendingCount} pending

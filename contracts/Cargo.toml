@@ -1,7 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
+    "common",
     "drip-pool",
+    "mock-yield",
+    "vault",
 ]
 
 [workspace.package]
@@ -9,7 +12,7 @@ version = "0.0.0"
 edition = "2021"
 
 [workspace.dependencies]
-soroban-sdk = "21"
+soroban-sdk = "27"
 
 [profile.release]
 opt-level = "z"

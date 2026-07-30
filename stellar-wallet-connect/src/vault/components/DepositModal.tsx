@@ -1,6 +1,6 @@
 import type { FC } from "react";
-import { useState, useCallback } from "react";
-import { AlertTriangle, Check, Loader2 } from "lucide-react";
+import { useState, useCallback, useMemo } from "react";
+import { AlertTriangle, Check, Loader2, RefreshCw } from "lucide-react";
 import Modal from "../../components/Modal";
 import type { PoolSummary } from "../contract/types";
 import { formatAmount } from "../lib/format";
@@ -11,6 +11,7 @@ export interface DepositModalProps {
   pool: PoolSummary;
   walletBalance: string;
   onDeposit: (amount: string) => Promise<void>;
+  onRefreshBalance?: () => Promise<void>;
   onClose: () => void;
 }
 
@@ -25,15 +26,27 @@ function estimateWinChanceChange(currentTvl: bigint, depositAmount: bigint, part
   return `${(Number(change) / 100).toFixed(2)}%`;
 }
 
-export const DepositModal: FC<DepositModalProps> = ({ pool, walletBalance, onDeposit, onClose }) => {
+export const DepositModal: FC<DepositModalProps> = ({ pool, walletBalance, onDeposit, onRefreshBalance, onClose }) => {
   const [step, setStep] = useState<Step>("input");
   const [amount, setAmount] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const balanceNum = parseFloat(walletBalance);
   const amountNum = parseFloat(amount) || 0;
   const exceedsBalance = amountNum > balanceNum - GAS_BUFFER;
+  const remainingBalance = useMemo(() => Math.max(0, balanceNum - amountNum - GAS_BUFFER), [balanceNum, amountNum]);
   const isValid = amountNum > 0 && !exceedsBalance;
+
+  const handleRefresh = useCallback(async () => {
+    if (!onRefreshBalance) return;
+    setRefreshing(true);
+    try {
+      await onRefreshBalance();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [onRefreshBalance]);
 
   const handleQuickAmount = useCallback((pct: number) => {
     const raw = (balanceNum - GAS_BUFFER) * (pct / 100);
@@ -83,9 +96,23 @@ export const DepositModal: FC<DepositModalProps> = ({ pool, walletBalance, onDep
         {step === "input" && (
           <div className="space-y-4">
             <div>
-              <label htmlFor="deposit-amount" className="block text-sm font-medium text-gray-300">
-                Amount
-              </label>
+              <div className="flex items-center justify-between">
+                <label htmlFor="deposit-amount" className="block text-sm font-medium text-gray-300">
+                  Amount
+                </label>
+                {onRefreshBalance && (
+                  <button
+                    type="button"
+                    onClick={handleRefresh}
+                    disabled={refreshing}
+                    className="flex items-center gap-1 text-xs text-gray-400 hover:text-white transition-colors"
+                    aria-label="Refresh wallet balance"
+                  >
+                    <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
+                    Refresh
+                  </button>
+                )}
+              </div>
               <div className="relative mt-1">
                 <input
                   id="deposit-amount"
@@ -101,10 +128,30 @@ export const DepositModal: FC<DepositModalProps> = ({ pool, walletBalance, onDep
                   {pool.asset}
                 </span>
               </div>
-              <p className="mt-1 text-xs text-gray-500">
-                Balance: {formatAmount(walletBalance, pool.asset)}
-              </p>
             </div>
+
+            {/* Balance impact preview */}
+            <div className="rounded-xl border border-red-900/20 bg-[#1A0505]/40 p-3 space-y-1.5">
+              <p className="text-xs font-medium text-gray-400">Balance impact</p>
+              <div className="flex justify-between text-xs">
+                <span className="text-gray-500">Current balance</span>
+                <span className="text-gray-300">{formatAmount(walletBalance, pool.asset)}</span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-gray-500">Deposit amount</span>
+                <span className="text-red-400">-{amountNum > 0 ? formatAmount(String(amountNum), pool.asset) : `0.00 ${pool.asset}`}</span>
+              </div>
+              <div className="flex justify-between text-xs border-t border-red-900/20 pt-1.5">
+                <span className="font-medium text-gray-300">Remaining after deposit</span>
+                <span className={`font-semibold ${remainingBalance < 0 ? "text-red-400" : "text-emerald-400"}`}>
+                  {formatAmount(String(remainingBalance), pool.asset)}
+                </span>
+              </div>
+            </div>
+
+            <p className="text-xs text-gray-500">
+              Balance: {formatAmount(walletBalance, pool.asset)} · ~{GAS_BUFFER} {pool.asset} reserved for gas
+            </p>
 
             {exceedsBalance && (
               <div className="flex items-start gap-2 rounded-lg border border-amber-900/40 bg-amber-900/10 p-3 text-sm text-amber-300">

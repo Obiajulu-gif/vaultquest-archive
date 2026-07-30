@@ -125,11 +125,12 @@ export function usePoolDiscovery(
   const query = useVaultQuery({
     key: vaultQueryKeys.pools(backendReads ? "backend-first" : "contract-only"),
     staleTimeMs: 30_000,
-    fetcher: async () => {
+    fetcher: async (opts) => {
       if (backendReads) {
         try {
-          return await api.listPools();
+          return await api.listPools({ signal: opts.signal });
         } catch (err) {
+          if (opts.signal?.aborted) throw err;
           if (!contractFallbackReads || !client.listPools) throw err;
         }
       }
@@ -158,11 +159,12 @@ export function usePrizeViews(
   const query = useVaultQuery({
     key: vaultQueryKeys.prizes(options.walletAddress),
     staleTimeMs: 60_000,
-    fetcher: async () => {
+    fetcher: async (opts) => {
       if (backendReads) {
         try {
-          return await api.listPrizeViews(options.walletAddress);
+          return await api.listPrizeViews(options.walletAddress, { signal: opts.signal });
         } catch (err) {
+          if (opts.signal?.aborted) throw err;
           if (!contractFallbackReads) throw err;
         }
       }
@@ -197,10 +199,10 @@ export function useAccountView(
     key: vaultQueryKeys.account(walletAddress),
     enabled: Boolean(walletAddress),
     staleTimeMs: 30_000,
-    fetcher: async () => {
+    fetcher: async (opts) => {
       if (!walletAddress) throw new Error("Connect a wallet to load account data.");
       const [savedPools, rewards, positions] = await Promise.all([
-        api.listSavedPools(walletAddress),
+        api.listSavedPools(walletAddress, { signal: opts.signal }),
         client.listRewardHistory(walletAddress),
         Promise.all(poolIds.map((poolId) => client.getUserPosition(poolId, walletAddress))),
       ]);
@@ -235,7 +237,7 @@ export function useSavedPools(
     key: vaultQueryKeys.savedPools(walletAddress),
     enabled: Boolean(walletAddress),
     staleTimeMs: 30_000,
-    fetcher: async () => (walletAddress ? api.listSavedPools(walletAddress) : []),
+    fetcher: async (opts) => (walletAddress ? api.listSavedPools(walletAddress, { signal: opts.signal }) : []),
   });
 
   const invalidateSavedPools = useCallback(() => {
@@ -303,9 +305,9 @@ export function useTransactionStatus(
     enabled: Boolean(actionId),
     staleTimeMs: polling ? 0 : 15_000,
     refetchIntervalMs: polling ? (options.pollMs ?? 5_000) : undefined,
-    fetcher: async () => {
+    fetcher: async (opts) => {
       if (!actionId) throw new Error("Transaction id is required.");
-      const status = await api.getTransactionStatus(actionId);
+      const status = await api.getTransactionStatus(actionId, { signal: opts.signal });
       if (isTerminalTransaction(status.status)) {
         if (status.poolId) {
           vaultQueryClient.invalidateQueries(vaultQueryKeys.pool(status.poolId));
@@ -406,3 +408,64 @@ export function useActivityExport(): ActivityExportResult {
 
   return { state, trigger, reset };
 }
+
+// --- Issue #390: Persistent transaction state across reloads ---
+
+export interface PersistedTxState {
+  network: string;
+  walletAddress: string;
+  contract: string;
+  action: string;
+  idempotencyKey: string;
+  stage: TimelineStage;
+  txHash?: string;
+  failedAtStage?: "preparing" | "awaiting-signature" | "submitting" | "confirming" | "indexing";
+  errorMessage?: string;
+}
+
+const TX_STATE_STORAGE_KEY = "vaultquest_pending_tx_state";
+
+export function usePersistedTxState(): {
+  state: PersistedTxState | null;
+  save: (state: PersistedTxState) => void;
+  clear: () => void;
+  canResume: (network: string, walletAddress: string, contract: string) => boolean;
+} {
+  const [state, setState] = useState<PersistedTxState | null>(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      const raw = localStorage.getItem(TX_STATE_STORAGE_KEY);
+      if (!raw) return null;
+      return JSON.parse(raw) as PersistedTxState;
+    } catch {
+      return null;
+    }
+  });
+
+  const save = useCallback((next: PersistedTxState) => {
+    try {
+      localStorage.setItem(TX_STATE_STORAGE_KEY, JSON.stringify(next));
+      setState(next);
+    } catch {
+      // Storage full or disabled; continue without persistence.
+    }
+  }, []);
+
+  const clear = useCallback(() => {
+    try {
+      localStorage.removeItem(TX_STATE_STORAGE_KEY);
+    } catch {}
+    setState(null);
+  }, []);
+
+  const canResume = useCallback(
+    (network: string, walletAddress: string, contract: string) => {
+      if (!state) return false;
+      return state.network === network && state.walletAddress === walletAddress && state.contract === contract;
+    },
+    [state],
+  );
+
+  return { state, save, clear, canResume };
+}
+

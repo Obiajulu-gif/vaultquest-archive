@@ -3,11 +3,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "next-i18next";
 import { X } from "lucide-react";
+import { formatDateTime } from "@/lib/formatting";
 
 const PAGE_SIZE = 10;
 
 export default function TransactionHistoryModal({ open, onClose, walletAddress }) {
   const { t } = useTranslation("common");
+  const locale = typeof navigator !== "undefined" ? navigator.language : "en";
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -121,9 +123,7 @@ export default function TransactionHistoryModal({ open, onClose, walletAddress }
                   {items.map((row) => {
                     const payload = row.action_payload || {};
                     const amount = Number(payload.amount ?? 0);
-                    const created = row.created_at
-                      ? new Date(row.created_at).toLocaleString()
-                      : "";
+                    const created = formatDateTime(row.created_at, { locale });
                     return (
                       <tr
                         key={row.id}
@@ -139,7 +139,7 @@ export default function TransactionHistoryModal({ open, onClose, walletAddress }
                           </span>
                         </td>
                         <td className="py-3 pr-4 text-right text-vault-text">
-                          {Number.isFinite(amount) ? amount.toLocaleString() : ""}
+                          {Number.isFinite(amount) ? amount.toLocaleString(locale) : ""}
                         </td>
                         <td className="py-3 pr-4 font-mono text-xs text-vault-muted">
                           {row.tx_hash ? (

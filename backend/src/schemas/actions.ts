@@ -61,8 +61,8 @@ export const exportQuery = z.object({
 });
 
 export const actionHistoryQuery = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(10),
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
   type: z.enum(ACTION_TYPES).optional(),
   status: z.enum(ACTION_STATUSES).optional(),
 });

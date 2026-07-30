@@ -2,6 +2,7 @@
 
 import { Activity, DollarSign, Hash, Trophy, Users } from "lucide-react";
 import { PUBLIC_STATS, DEMO_TRANSACTIONS } from "@/lib/demo-portfolio";
+import { formatUsd } from "@/lib/yield-counter";
 
 function MetricCardSkeleton() {
   return (
@@ -37,6 +38,7 @@ function MetricCard({ icon: Icon, label, value, accent }) {
 }
 
 export default function VaultMetricsCards({ loading = false }) {
+  const locale = typeof navigator !== "undefined" ? navigator.language : "en";
   if (loading) {
     return (
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
@@ -53,13 +55,13 @@ export default function VaultMetricsCards({ loading = false }) {
     {
       icon: DollarSign,
       label: "Total Value Locked",
-      value: `$${(PUBLIC_STATS.tvl / 1_000_000).toFixed(2)}M`,
+      value: formatUsd(PUBLIC_STATS.tvl, locale),
       accent: "#22c55e",
     },
     {
       icon: Users,
       label: "Active Participants",
-      value: PUBLIC_STATS.activeSavers.toLocaleString(),
+      value: PUBLIC_STATS.activeSavers.toLocaleString(locale),
       accent: "#6366f1",
     },
     {
@@ -71,7 +73,7 @@ export default function VaultMetricsCards({ loading = false }) {
     {
       icon: Trophy,
       label: "Prize Estimate",
-      value: `$${((PUBLIC_STATS.prizeEstimate ?? PUBLIC_STATS.prizePool) / 1_000).toFixed(1)}K`,
+      value: formatUsd(PUBLIC_STATS.prizeEstimate ?? PUBLIC_STATS.prizePool, locale),
       accent: "#f59e0b",
     },
     {

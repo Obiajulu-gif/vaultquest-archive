@@ -96,6 +96,10 @@ pub enum DataKey {
     Proposal(u32),          // pending admin proposal
     Token,                  // Address — accepted Stellar Asset Contract address (#376)
     ConfigVersion,          // u32 — configuration schema version (#441)
+    ProposedStrategy,       // Option<Address> — candidate strategy proposed for rotation (#532)
+    StrategyExposureCap,    // i128 — maximum allowable deposit for active strategy (#532)
+    ProposedExposureCap,    // i128 — exposure cap for candidate strategy (#532)
+    StrategyRotationPhase,  // StrategyRotationPhase — phase of current rotation (#532)
 }
 
 // ── Errors ─────────────────────────────────────────────────────────────────
@@ -127,6 +131,16 @@ pub enum Error {
     NotInEmergency = 22,          // emergency exit blocked while not in emergency mode (#512)
     Insolvent = 23,               // principal coverage below policy (#512)
     IncompatibleConfig = 24,      // configuration schema version mismatch (#441)
+    StrategyNotSet = 51,
+    StrategyVersionUnsupported = 52,
+    StrategyPaused = 53,
+    RedeemFailed = 54,
+    DepositFailed = 55,
+    StrategyRotationPending = 56,
+    StrategyRotationNotInProgress = 57,
+    StrategyUnreconciledPrincipal = 58,
+    ExposureCapExceeded = 59,
+    StrategyAssetMismatch = 60,
 }
 
 // ── Structs ────────────────────────────────────────────────────────────────
@@ -144,6 +158,8 @@ pub struct Pool {
     pub unclaimed_swept: bool,     // true once an unclaimed-reward sweep has executed (#440)
     pub is_emergency: bool,        // true when loss circuit breaker triggered (#512)
     pub emergency_assets: i128,    // available assets recorded for pro-rata exit (#512)
+    pub strategy: Option<Address>, // active yield strategy address (#496)
+    pub principal_in_strategy: i128, // principal currently deployed in strategy (#496)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -381,6 +397,8 @@ impl DripPool {
             unclaimed_swept: false,
             is_emergency: false,
             emergency_assets: 0,
+            strategy: None,
+            principal_in_strategy: 0,
         };
         let admins: Vec<Address> = vec![&env, admin.clone()];
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -670,11 +688,12 @@ impl DripPool {
                 if amount <= 0 {
                     return Err(Error::InvalidAmount);
                 }
-                // Transfer tokens from the caller (funder) into the contract.
+                // Transfer tokens from the proposal creator (funder) into the contract.
+                let funder = proposal.approvals.get(0).unwrap();
                 let contract_addr = env.current_contract_address();
                 Self::atomic_transfer_and(
                     &env,
-                    &caller,
+                    &funder,
                     &contract_addr,
                     amount,
                     || {
@@ -1132,6 +1151,47 @@ impl DripPool {
     pub fn set_strategy(env: Env, caller: Address, strategy: Address) -> Result<(), Error> {
         Self::require_compatible_config(&env)?;
         strategy_adapter::set_strategy(&env, &caller, &strategy)
+    }
+
+    /// Governed: propose a new strategy candidate for rotation (#532).
+    pub fn propose_strategy(
+        env: Env,
+        caller: Address,
+        strategy: Address,
+        exposure_cap: i128,
+    ) -> Result<(), Error> {
+        Self::require_compatible_config(&env)?;
+        strategy_adapter::propose_strategy(&env, &caller, &strategy, exposure_cap)
+    }
+
+    /// Governed: validate the proposed strategy (#532).
+    pub fn validate_strategy(env: Env, caller: Address) -> Result<(), Error> {
+        Self::require_compatible_config(&env)?;
+        strategy_adapter::validate_strategy(&env, &caller)
+    }
+
+    /// Governed: drain principal from active strategy during rotation (#532).
+    pub fn drain_strategy(env: Env, caller: Address, amount: i128) -> Result<i128, Error> {
+        Self::require_compatible_config(&env)?;
+        strategy_adapter::drain_strategy(&env, &caller, amount)
+    }
+
+    /// Governed: reconcile active strategy principal to 0 during rotation (#532).
+    pub fn reconcile_strategy(env: Env, caller: Address) -> Result<(), Error> {
+        Self::require_compatible_config(&env)?;
+        strategy_adapter::reconcile_strategy(&env, &caller)
+    }
+
+    /// Governed: activate proposed strategy after full reconciliation (#532).
+    pub fn activate_strategy(env: Env, caller: Address) -> Result<(), Error> {
+        Self::require_compatible_config(&env)?;
+        strategy_adapter::activate_strategy(&env, &caller)
+    }
+
+    /// Governed: cancel pending strategy rotation (#532).
+    pub fn cancel_strategy_rotation(env: Env, caller: Address) -> Result<(), Error> {
+        Self::require_compatible_config(&env)?;
+        strategy_adapter::cancel_strategy_rotation(&env, &caller)
     }
 
     /// Governed: deploy idle principal into the configured strategy.

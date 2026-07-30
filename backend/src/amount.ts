@@ -1,12 +1,8 @@
 /**
- * Validated, asset-aware amount handling for quest accounting (#504).
+ * Provides validated, asset-aware amount handling for quest accounting.
  *
- * Replaces parseInt()/Number() + float accumulation on raw action payloads
- * (which silently truncates fractional stroop values and risks precision
- * loss above Number.MAX_SAFE_INTEGER) with a bigint-backed value object
- * that carries its asset identity everywhere it goes, so amounts from
- * different assets can never be summed without the caller explicitly
- * grouping by asset first.
+ * Uses bigint-backed values to avoid precision loss and ensures amounts
+ * belonging to different assets are never combined unintentionally.
  */
 
 export class InvalidAmountError extends Error {
@@ -24,14 +20,13 @@ export class MixedAssetSumError extends Error {
     super(
       `Cannot sum amounts across different assets without an explicit conversion policy: ${assetCodes.join(", ")}`,
     );
+
     this.name = "MixedAssetSumError";
   }
 }
 
 /**
- * A raw integer amount in an asset's smallest unit (e.g. stroops for a
- * 7-decimal Stellar asset), tagged with the asset it belongs to. Never
- * constructed directly — use Amount.fromPayload / Amount.zero.
+ * Represents an amount stored in an asset's smallest unit.
  */
 export class Amount {
   private constructor(
@@ -45,19 +40,7 @@ export class Amount {
   }
 
   /**
-   * Parses an action payload's amount field into a validated Amount.
-   *
-   * Rejects (throws InvalidAmountError) rather than silently defaulting to
-   * zero when:
-   * - `amount` is missing, not a string/number, or not parseable as an integer.
-   * - `amount` contains a fractional component (e.g. "12.5") — on-chain
-   *   amounts are always integer minor units; a fractional value indicates
-   *   either a unit-conversion bug upstream or a malformed/partial payload,
-   *   never a legitimate value to round or truncate.
-   * - `assetCode` is missing. Callers must supply the pool's configured
-   *   asset explicitly (via poolAssetCode) rather than relying on this
-   *   function to invent a default — there is no safe universal default
-   *   across pools.
+   * Creates an Amount instance from an action payload.
    */
   static fromPayload(
     payload: Record<string, unknown> | null | undefined,
@@ -68,39 +51,44 @@ export class Amount {
       throw new InvalidAmountError("Missing action payload", payload);
     }
 
-    const rawValue = payload.amount;
-    if (typeof rawValue !== "string" && typeof rawValue !== "number") {
+    const amount = payload.amount;
+
+    if (typeof amount !== "string" && typeof amount !== "number") {
       throw new InvalidAmountError(
-        `amount must be a string or number, got ${typeof rawValue}`,
+        `amount must be a string or number, got ${typeof amount}`,
         payload,
       );
     }
 
-    const asString = String(rawValue).trim();
-    if (asString.length === 0) {
+    const normalizedAmount = String(amount).trim();
+
+    if (!normalizedAmount) {
       throw new InvalidAmountError("amount is an empty string", payload);
     }
 
-    // Reject anything that isn't a plain (optionally signed) base-10
-    // integer literal — no decimals, no exponents, no whitespace-internal
-    // characters, no partial parses (parseInt("12.5abc") silently returns
-    // 12; BigInt("12.5") throws, which is what we want here).
-    if (!/^-?\d+$/.test(asString)) {
+    if (!/^-?\d+$/.test(normalizedAmount)) {
       throw new InvalidAmountError(
-        `amount must be an integer minor-unit value with no fractional component, got "${asString}"`,
+        `amount must be an integer minor-unit value with no fractional component, got "${normalizedAmount}"`,
         payload,
       );
     }
 
-    let raw: bigint;
+    let parsedAmount: bigint;
+
     try {
-      raw = BigInt(asString);
+      parsedAmount = BigInt(normalizedAmount);
     } catch {
-      throw new InvalidAmountError(`amount could not be parsed as a bigint: "${asString}"`, payload);
+      throw new InvalidAmountError(
+        `amount could not be parsed as a bigint: "${normalizedAmount}"`,
+        payload,
+      );
     }
 
-    if (raw < 0n) {
-      throw new InvalidAmountError(`amount must not be negative, got "${asString}"`, payload);
+    if (parsedAmount < 0n) {
+      throw new InvalidAmountError(
+        `amount must not be negative, got "${normalizedAmount}"`,
+        payload,
+      );
     }
 
     if (!poolAssetCode) {
@@ -110,57 +98,103 @@ export class Amount {
       );
     }
 
-    return new Amount(raw, poolAssetCode, decimals);
+    return new Amount(parsedAmount, poolAssetCode, decimals);
   }
 
   add(other: Amount): Amount {
-    if (other.assetCode !== this.assetCode) {
-      throw new MixedAssetSumError([this.assetCode, other.assetCode]);
-    }
-    return new Amount(this.raw + other.raw, this.assetCode, this.decimals);
+    this.validateMatchingAsset(other);
+
+    return new Amount(
+      this.raw + other.raw,
+      this.assetCode,
+      this.decimals,
+    );
   }
 
   subtract(other: Amount): Amount {
-    if (other.assetCode !== this.assetCode) {
-      throw new MixedAssetSumError([this.assetCode, other.assetCode]);
-    }
-    return new Amount(this.raw - other.raw, this.assetCode, this.decimals);
+    this.validateMatchingAsset(other);
+
+    return new Amount(
+      this.raw - other.raw,
+      this.assetCode,
+      this.decimals,
+    );
+  }
+
+  compare(other: Amount): -1 | 0 | 1 {
+    this.validateMatchingAsset(other);
+
+    if (this.raw < other.raw) return -1;
+    if (this.raw > other.raw) return 1;
+
+    return 0;
   }
 
   isPositive(): boolean {
     return this.raw > 0n;
   }
 
-  compare(other: Amount): -1 | 0 | 1 {
-    if (other.assetCode !== this.assetCode) {
-      throw new MixedAssetSumError([this.assetCode, other.assetCode]);
-    }
-    if (this.raw < other.raw) return -1;
-    if (this.raw > other.raw) return 1;
-    return 0;
-  }
-
-  /** Human-readable decimal string, e.g. 12345678n @ 7 decimals -> "1.2345678". Formatting only — never used in arithmetic. */
+  /**
+   * Converts the amount into a human-readable decimal string.
+   */
   toDisplayString(): string {
-    const negative = this.raw < 0n;
-    const abs = negative ? -this.raw : this.raw;
-    const s = abs.toString().padStart(this.decimals + 1, "0");
-    const whole = s.slice(0, s.length - this.decimals) || "0";
-    const frac = this.decimals > 0 ? s.slice(s.length - this.decimals) : "";
-    const sign = negative ? "-" : "";
-    return frac ? `${sign}${whole}.${frac}` : `${sign}${whole}`;
+    const isNegative = this.raw < 0n;
+    const absoluteValue = isNegative ? -this.raw : this.raw;
+
+    const padded = absoluteValue
+      .toString()
+      .padStart(this.decimals + 1, "0");
+
+    const wholePart =
+      padded.slice(0, padded.length - this.decimals) || "0";
+
+    const fractionalPart =
+      this.decimals > 0
+        ? padded.slice(padded.length - this.decimals)
+        : "";
+
+    const sign = isNegative ? "-" : "";
+
+    return fractionalPart
+      ? `${sign}${wholePart}.${fractionalPart}`
+      : `${sign}${wholePart}`;
   }
 
-  toJSON(): { raw: string; assetCode: string; decimals: number } {
-    return { raw: this.raw.toString(), assetCode: this.assetCode, decimals: this.decimals };
+  toJSON(): {
+    raw: string;
+    assetCode: string;
+    decimals: number;
+  } {
+    return {
+      raw: this.raw.toString(),
+      assetCode: this.assetCode,
+      decimals: this.decimals,
+    };
   }
 
   /**
-   * Sums a list of amounts. Throws MixedAssetSumError if they don't all
-   * share the same assetCode — callers must group by (poolId, assetCode)
-   * before calling this, never sum across pools/assets implicitly.
+   * Sums a collection of amounts belonging to the same asset.
    */
-  static sum(amounts: Amount[], assetCode: string, decimals: number): Amount {
-    return amounts.reduce((acc, a) => acc.add(a), Amount.zero(assetCode, decimals));
+  static sum(
+    amounts: Amount[],
+    assetCode: string,
+    decimals: number,
+  ): Amount {
+    return amounts.reduce(
+      (total, amount) => total.add(amount),
+      Amount.zero(assetCode, decimals),
+    );
+  }
+
+  /**
+   * Ensures two amounts belong to the same asset.
+   */
+  private validateMatchingAsset(other: Amount): void {
+    if (this.assetCode !== other.assetCode) {
+      throw new MixedAssetSumError([
+        this.assetCode,
+        other.assetCode,
+      ]);
+    }
   }
 }

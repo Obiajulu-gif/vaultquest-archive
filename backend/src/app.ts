@@ -5,9 +5,11 @@ import prometheusPlugin from "./middleware/prometheusPlugin.js";
 import { LedgerService } from "./services/ledger.js";
 import { SavedPoolsService } from "./services/savedPools.js";
 import { SchemaVersionService } from "./services/schemaVersionService.js";
+import { AuditService } from "./services/auditService.js";
 import { actionsRoutes } from "./routes/actions.js";
 import { savedPoolsRoutes } from "./routes/savedPools.js";
 import { schemaVersionRoutes } from "./routes/schemaVersion.js";
+import { auditRoutes } from "./routes/audit.js";
 import { internalRoutes } from "./routes/internal.js";
 import { metricsRoutes } from "./routes/metrics.js";
 import { usersRoutes } from "./routes/users.js";
@@ -99,6 +101,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   const metricsSvc = new MetricsService(deps.prisma);
   const drawProofSvc = new DrawProofService(deps.prisma, null, deps.logger);
   const schemaVersionSvc = new SchemaVersionService(deps.prisma);
+  const auditSvc = new AuditService(deps.prisma);
 
   svc.onActionConfirmed((actionId, actionType) => {
     if (actionType === "select_winner") {
@@ -136,6 +139,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.register(transactionMetricsRoutes(deps.prisma, apiKeyGuard));
   app.register(categoriesRoutes(categorySvc, apiKeyGuard));
   app.register(notificationsRoutes(notificationSvc));
+  app.register(auditRoutes(auditSvc));
 
   // Central Error Handler Middleware
   app.setErrorHandler(errorHandler);

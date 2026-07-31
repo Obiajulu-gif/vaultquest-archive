@@ -22,5 +22,17 @@
   {
     "path": "components/app/VaultRetryQueue.jsx",
     "reason": "#510: pre-existing — retry queue seeds useState from MOCK_FAILED_ACTIONS pending a real failed-actions endpoint. Tracked as a known exception; not fixed here to keep this gate change focused."
+  },
+  {
+    "path": "app/app/vaults/calendar/page.jsx",
+    "reason": "#510: introduced by upstream commits merged into this branch after the gate was first written. Same MOCK_VAULTS/vault-mock-data dependency as the other vaults pages; tracked as a known exception rather than fixed here."
+  },
+  {
+    "path": "components/app/PoolApprovalQueue.jsx",
+    "reason": "#510: introduced by upstream commits merged into this branch after the gate was first written. Seeds from MOCK_PENDING_POOLS pending a real pool-approval-queue endpoint; tracked as a known exception rather than fixed here."
+  },
+  {
+    "path": "components/app/RecentWinners.jsx",
+    "reason": "#510: introduced by upstream commits merged into this branch after the gate was first written. Seeds from MOCK_WINNERS pending a real recent-winners endpoint; tracked as a known exception rather than fixed here."
   }
 ]

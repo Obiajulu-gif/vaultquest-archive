@@ -5,7 +5,7 @@ import { useAccount } from "wagmi";
 import { useConnectModal } from "@rainbow-me/rainbowkit";
 import {
   ArrowDownRight, ArrowUpRight, Gift, RefreshCw, Wallet,
-  ChevronLeft, ChevronRight, Filter, Clock, History
+  ChevronLeft, ChevronRight, Filter, Clock, History, AlertCircle
 } from "lucide-react";
 import { DEMO_TRANSACTIONS } from "@/lib/demo-portfolio";
 import { ActivityExport } from "@vaultquest/stellar-wallet-connect/src/vault/components/ActivityExport";
@@ -16,6 +16,10 @@ const ACTIVITY_TYPES = {
   withdraw: { label: "Withdrawal", icon: ArrowUpRight, color: "text-vault-muted" },
   reward: { label: "Prize Claimed", icon: Gift, color: "text-amber-600 dark:text-amber-400" },
   status: { label: "Status Change", icon: RefreshCw, color: "text-blue-600 dark:text-blue-400" },
+  vault_action: { label: "Vault Action", icon: RefreshCw, color: "text-blue-600 dark:text-blue-400" },
+  round_update: { label: "Round Update", icon: Clock, color: "text-vault-muted" },
+  account_action: { label: "Account Action", icon: Wallet, color: "text-vault-muted" },
+  system_message: { label: "System Message", icon: AlertCircle, color: "text-amber-600 dark:text-amber-400" },
 };
 
 const STATUS_LABELS = {
@@ -46,16 +50,32 @@ function ActivityFeed({ transactions }) {
           <h2 className="text-lg font-semibold text-vault-text">Activity History</h2>
           <p className="text-sm text-vault-muted">Deposits, withdrawals, claims, and status changes</p>
         </div>
-        <div className="flex items-center gap-2">
-          <Filter className="h-4 w-4 text-vault-muted" />
-          <select value={filter} onChange={(e) => { setFilter(e.target.value); setPage(0); }}
-            className="rounded-xl border border-vault-border bg-vault-surface px-3 py-2 text-sm text-vault-text focus:outline-none focus:ring-2 focus:ring-red-400"
-            aria-label="Filter activity type">
-            <option value="all">All Activity</option>
-            <option value="deposit">Deposits</option>
-            <option value="withdraw">Withdrawals</option>
-            <option value="reward">Claims</option>
-          </select>
+        <div className="flex items-center gap-2 overflow-x-auto pb-2 sm:pb-0 hide-scrollbar max-w-full">
+          <Filter className="h-4 w-4 text-vault-muted shrink-0 hidden sm:block" />
+          <div className="flex gap-2">
+            {[
+              { id: "all", label: "All Activity" },
+              { id: "deposit", label: "Deposits" },
+              { id: "withdraw", label: "Withdrawals" },
+              { id: "reward", label: "Claims" },
+              { id: "vault_action", label: "Vault Actions" },
+              { id: "round_update", label: "Round Updates" },
+              { id: "account_action", label: "Account" },
+              { id: "system_message", label: "System" },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => { setFilter(tab.id); setPage(0); }}
+                className={`whitespace-nowrap rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
+                  filter === tab.id
+                    ? "bg-red-500/10 text-red-500 dark:text-red-400"
+                    : "text-vault-muted hover:bg-vault-surface hover:text-vault-text"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -80,17 +100,21 @@ function ActivityFeed({ transactions }) {
                     <p className="font-medium text-vault-text">{typeInfo.label}</p>
                     <span className={`text-xs font-medium ${statusInfo.class}`}>{statusInfo.label}</span>
                   </div>
-                  <p className="text-xs text-vault-muted">{tx.pool}</p>
+                  <p className="text-xs text-vault-muted">
+                    {tx.message || tx.pool}
+                  </p>
                   <p className="mt-0.5 text-xs text-vault-muted">
                     {new Date(tx.date).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })}
                   </p>
                 </div>
-                <div className="shrink-0 text-right">
-                  <p className={`font-semibold ${tx.type === "withdraw" ? "text-vault-muted" : "text-emerald-600 dark:text-emerald-400"}`}>
-                    {tx.type === "withdraw" ? "−" : "+"}${tx.amount.toLocaleString()}
-                  </p>
-                  <p className="text-xs text-vault-muted">{tx.asset || "USDC"}</p>
-                </div>
+                {tx.amount !== undefined ? (
+                  <div className="text-right shrink-0">
+                    <p className={`font-semibold ${tx.type === "withdraw" ? "text-vault-muted" : "text-emerald-600 dark:text-emerald-400"}`}>
+                      {tx.type === "withdraw" ? "\u2212" : "+"}${tx.amount.toLocaleString()}
+                    </p>
+                    <p className="text-xs text-vault-muted">{tx.asset || "USDC"}</p>
+                  </div>
+                ) : null}
               </li>
             );
           })}
@@ -193,7 +217,7 @@ export default function ActivityPage() {
           <ActivitySummary transactions={enrichedTx} />
           <ActivityFeed transactions={enrichedTx} />
           <ActivityExport
-            walletAddress={null}
+            walletAddress={address || null}
             walletConnected={isConnected}
             summary={summary}
           />

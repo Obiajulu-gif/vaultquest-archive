@@ -1,15 +1,19 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import type { PrismaClient } from "@prisma/client";
+import rateLimit from "@fastify/rate-limit";
 import correlation from "./middleware/correlation.js";
 import prometheusPlugin from "./middleware/prometheusPlugin.js";
 import { LedgerService } from "./services/ledger.js";
 import { SavedPoolsService } from "./services/savedPools.js";
 import { SchemaVersionService } from "./services/schemaVersionService.js";
+import { AuditService } from "./services/auditService.js";
 import { actionsRoutes } from "./routes/actions.js";
 import { savedPoolsRoutes } from "./routes/savedPools.js";
 import { schemaVersionRoutes } from "./routes/schemaVersion.js";
+import { auditRoutes } from "./routes/audit.js";
 import { internalRoutes } from "./routes/internal.js";
 import { metricsRoutes } from "./routes/metrics.js";
+import { usersRoutes } from "./routes/users.js";
 import { prometheusRoutes } from "./routes/prometheus.js";
 import { healthRoutes } from "./routes/health.js";
 import { MetricsService } from "./services/metricsService.js";
@@ -51,6 +55,21 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     logger: loggerInstance as any,
     disableRequestLogging: true,
   });
+
+  // Register global rate limiting with Redis store if available
+  const rateLimitOptions: any = {
+    global: true,
+    max: 100,
+    timeWindow: 60_000, // 1 minute
+    keyGenerator(req: FastifyRequest) {
+      return req.headers["x-forwarded-for"]?.toString().split(",")[0].trim() || req.ip;
+    },
+  };
+  const redisClient = deps.cacheService?.redisClient;
+  if (redisClient) {
+    rateLimitOptions.redis = redisClient;
+  }
+  app.register(rateLimit, rateLimitOptions);
 
   // Register rate limiting and CSRF protection
   app.register(rateLimiter);
@@ -98,6 +117,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   const metricsSvc = new MetricsService(deps.prisma);
   const drawProofSvc = new DrawProofService(deps.prisma, null, deps.logger);
   const schemaVersionSvc = new SchemaVersionService(deps.prisma);
+  const auditSvc = new AuditService(deps.prisma);
 
   svc.onActionConfirmed((actionId, actionType) => {
     if (actionType === "select_winner") {
@@ -127,12 +147,15 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.register(savedPoolsRoutes(savedPoolsSvc));
   app.register(schemaVersionRoutes(schemaVersionSvc));
   app.register(internalRoutes(svc, deps.internalSecret));
+  app.register(metricsRoutes(metricsSvc));
+  app.register(usersRoutes, { prefix: "/api/users", prisma: deps.prisma });
   app.register(metricsRoutes(metricsSvc, apiKeyGuard));
   app.register(prometheusRoutes);
   app.register(drawProofRoutes(drawProofSvc));
   app.register(transactionMetricsRoutes(deps.prisma, apiKeyGuard));
   app.register(categoriesRoutes(categorySvc, apiKeyGuard));
   app.register(notificationsRoutes(notificationSvc));
+  app.register(auditRoutes(auditSvc));
 
   // Central Error Handler Middleware
   app.setErrorHandler(errorHandler);

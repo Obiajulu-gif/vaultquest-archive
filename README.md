@@ -15,6 +15,7 @@ remains withdrawable in full.
 | [`e2e/`](./e2e) | Playwright end-to-end tests |
 | [`docs/`](./docs) | Architecture, state model, testing notes |
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | Cross-stack architecture diagram and action/event flow |
+| [`docs/data-fetching.md`](./docs/data-fetching.md) | Client-side data fetching and hooks conventions |
 
 ## Quick start
 

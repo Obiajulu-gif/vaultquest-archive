@@ -1,63 +1,3 @@
-/**
- * Schema version tracking for deployment validation
- */
-export const SCHEMA_VERSIONS = {
-  // Current database schema version (from latest migration)
-  DATABASE: "20260725000002",
-
-  // Current indexer checkpoint schema version
-  INDEXER: "1.2.0",
-
-  // Supported version ranges for this release
-  SUPPORTED_DATABASE_VERSIONS: [
-    "20260725000002",
-    "20260725000001",
-    "20260725000000",
-  ],
-
-  SUPPORTED_INDEXER_VERSIONS: ["1.2.0", "1.1.0"],
-};
-
-/**
- * Version compatibility check
- */
-export function isVersionSupported(
-  current: string,
-  supported: string[]
-): boolean {
-  return supported.includes(current);
-}
-
-/**
- * Get version mismatch details
- */
-export function getVersionMismatch(
-  currentDb: string,
-  currentIndexer: string
-): {
-  compatible: boolean;
-  issues: string[];
-} {
-  const issues: string[] = [];
-
-  if (!isVersionSupported(currentDb, SCHEMA_VERSIONS.SUPPORTED_DATABASE_VERSIONS)) {
-    issues.push(
-      `Database schema version ${currentDb} is not supported. Expected one of: ${SCHEMA_VERSIONS.SUPPORTED_DATABASE_VERSIONS.join(", ")}`
-    );
-  }
-
-  if (!isVersionSupported(currentIndexer, SCHEMA_VERSIONS.SUPPORTED_INDEXER_VERSIONS)) {
-    issues.push(
-      `Indexer schema version ${currentIndexer} is not supported. Expected one of: ${SCHEMA_VERSIONS.SUPPORTED_INDEXER_VERSIONS.join(", ")}`
-    );
-  }
-
-  return {
-    compatible: issues.length === 0,
-    issues,
-  };
-}
-
 export const ACTION_TYPES = ["deposit", "withdraw", "create_vault", "claim", "select_winner"] as const;
 export type ActionType = (typeof ACTION_TYPES)[number];
 
@@ -68,15 +8,15 @@ export const TERMINAL_STATUSES: readonly ActionStatus[] = ["confirmed", "failed"
 
 const TRANSITIONS: Record<ActionStatus, readonly ActionStatus[]> = {
   pending: ["submitted", "failed"],
-  submitted: ["confirmed", "reverted", "orphaned"],
+  submitted: ["confirmed", "reverted", "orphaned", "failed"],
   confirmed: [],
   failed: [],
   reverted: [],
-  orphaned: []
+  orphaned: ["submitted"]
 };
 
-export function canTransition(from: ActionStatus, to: ActionStatus): boolean {
-  return TRANSITIONS[from].includes(to);
+export function canTransition(from: ActionStatus, to: string): boolean {
+  return (TRANSITIONS[from] ?? []).includes(to as ActionStatus);
 }
 
 export const ERROR_CODES = {
@@ -91,6 +31,10 @@ export const ERROR_CODES = {
   ILLEGAL_TRANSITION: "ILLEGAL_TRANSITION",
   NOT_FOUND: "NOT_FOUND",
   UNAUTHORIZED: "UNAUTHORIZED",
+  FORBIDDEN: "FORBIDDEN",
+  RATE_LIMIT_EXCEEDED: "RATE_LIMIT_EXCEEDED",
+  INVALID_CURSOR: "INVALID_CURSOR",
+  EXPIRED_CURSOR: "EXPIRED_CURSOR",
   // Escrow settlement pipeline (#settlement)
   SETTLEMENT_SUBMIT_FAILED: "SETTLEMENT_SUBMIT_FAILED",
   SETTLEMENT_RETRIES_EXHAUSTED: "SETTLEMENT_RETRIES_EXHAUSTED",
@@ -140,6 +84,8 @@ export type SettlementType = (typeof SETTLEMENT_TYPES)[number];
 export const RETRYABLE_RESULT_CODES: readonly string[] = [
   "tx_bad_seq",
   "tx_too_late",
+  "tx_no_source_account",
+  "tx_internal_error",
   "timeout",
   "ETIMEDOUT",
   "ECONNRESET",
@@ -153,3 +99,63 @@ export const SETTLEMENT_RETRY = {
   baseDelayMs: 250,
   maxDelayMs: 8000
 } as const;
+
+/**
+ * Schema version tracking for deployment validation
+ */
+export const SCHEMA_VERSIONS = {
+  // Current database schema version (from latest migration)
+  DATABASE: "20260725000002",
+
+  // Current indexer checkpoint schema version
+  INDEXER: "1.2.0",
+
+  // Supported version ranges for this release
+  SUPPORTED_DATABASE_VERSIONS: [
+    "20260725000002",
+    "20260725000001",
+    "20260725000000"
+  ],
+
+  SUPPORTED_INDEXER_VERSIONS: ["1.2.0", "1.1.0"]
+};
+
+/**
+ * Version compatibility check
+ */
+export function isVersionSupported(
+  current: string,
+  supported: string[]
+): boolean {
+  return supported.includes(current);
+}
+
+/**
+ * Get version mismatch details
+ */
+export function getVersionMismatch(
+  currentDb: string,
+  currentIndexer: string
+): {
+  compatible: boolean;
+  issues: string[];
+} {
+  const issues: string[] = [];
+
+  if (!isVersionSupported(currentDb, SCHEMA_VERSIONS.SUPPORTED_DATABASE_VERSIONS)) {
+    issues.push(
+      `Database schema version ${currentDb} is not supported. Expected one of: ${SCHEMA_VERSIONS.SUPPORTED_DATABASE_VERSIONS.join(", ")}`
+    );
+  }
+
+  if (!isVersionSupported(currentIndexer, SCHEMA_VERSIONS.SUPPORTED_INDEXER_VERSIONS)) {
+    issues.push(
+      `Indexer schema version ${currentIndexer} is not supported. Expected one of: ${SCHEMA_VERSIONS.SUPPORTED_INDEXER_VERSIONS.join(", ")}`
+    );
+  }
+
+  return {
+    compatible: issues.length === 0,
+    issues
+  };
+}

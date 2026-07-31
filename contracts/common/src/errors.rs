@@ -53,6 +53,11 @@ pub enum ContractError {
     StrategyPaused = 53,
     RedeemFailed = 54,
     DepositFailed = 55,
+    StrategyRotationPending = 56,
+    StrategyRotationNotInProgress = 57,
+    StrategyUnreconciledPrincipal = 58,
+    ExposureCapExceeded = 59,
+    StrategyAssetMismatch = 60,
 }
 
 impl ContractError {
@@ -81,6 +86,11 @@ impl ContractError {
             ContractError::StrategyPaused => "strategy is paused",
             ContractError::RedeemFailed => "strategy redeem returned less than the caller-verifiable balance",
             ContractError::DepositFailed => "strategy deposit failed",
+            ContractError::StrategyRotationPending => "strategy rotation is pending",
+            ContractError::StrategyRotationNotInProgress => "no strategy rotation in progress",
+            ContractError::StrategyUnreconciledPrincipal => "active strategy has unreconciled principal",
+            ContractError::ExposureCapExceeded => "deployment amount exceeds strategy exposure cap",
+            ContractError::StrategyAssetMismatch => "strategy asset does not match pool asset",
         }
     }
 

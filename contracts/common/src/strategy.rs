@@ -37,6 +37,27 @@ pub struct StrategyReport {
     pub total_assets: i128,
 }
 
+/// Rotation phase for strategy migration (#532).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum StrategyRotationPhase {
+    Idle = 0,
+    Proposed = 1,
+    Draining = 2,
+    Reconciled = 3,
+}
+
+/// Metadata and constraints for a strategy deployment (#532).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StrategyConfig {
+    pub strategy: Address,
+    pub exposure_cap: i128,
+    pub interface_version: u32,
+    pub pool_asset: Address,
+}
+
 #[contractclient(name = "YieldStrategyClient")]
 pub trait YieldStrategy {
     /// Capability/version check — callers must reject anything but the

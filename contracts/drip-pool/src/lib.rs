@@ -81,6 +81,8 @@ const PROPOSAL_EXPIRY_LEDGERS: u32 = 17_280 * 30;
 // ── Default multi-sig threshold ────────────────────────────────────────────
 const DEFAULT_THRESHOLD: u32 = 2;
 
+const CONFIG_SCHEMA_VERSION: u32 = 1;
+
 // ── Storage keys ──────────────────────────────────────────────────────────
 #[derive(Clone)]
 #[contracttype]
@@ -93,6 +95,11 @@ pub enum DataKey {
     ParticipantV1(Address), // legacy V1 participant storage (migration source)
     Proposal(u32),          // pending admin proposal
     Token,                  // Address — accepted Stellar Asset Contract address (#376)
+    ConfigVersion,          // u32 — configuration schema version (#441)
+    ProposedStrategy,       // Option<Address> — candidate strategy proposed for rotation (#532)
+    StrategyExposureCap,    // i128 — maximum allowable deposit for active strategy (#532)
+    ProposedExposureCap,    // i128 — exposure cap for candidate strategy (#532)
+    StrategyRotationPhase,  // StrategyRotationPhase — phase of current rotation (#532)
 }
 
 // ── Errors ─────────────────────────────────────────────────────────────────
@@ -123,6 +130,17 @@ pub enum Error {
     InEmergency = 21,             // action blocked while in emergency mode (#512)
     NotInEmergency = 22,          // emergency exit blocked while not in emergency mode (#512)
     Insolvent = 23,               // principal coverage below policy (#512)
+    IncompatibleConfig = 24,      // configuration schema version mismatch (#441)
+    StrategyNotSet = 51,
+    StrategyVersionUnsupported = 52,
+    StrategyPaused = 53,
+    RedeemFailed = 54,
+    DepositFailed = 55,
+    StrategyRotationPending = 56,
+    StrategyRotationNotInProgress = 57,
+    StrategyUnreconciledPrincipal = 58,
+    ExposureCapExceeded = 59,
+    StrategyAssetMismatch = 60,
 }
 
 // ── Structs ────────────────────────────────────────────────────────────────
@@ -140,6 +158,8 @@ pub struct Pool {
     pub unclaimed_swept: bool,     // true once an unclaimed-reward sweep has executed (#440)
     pub is_emergency: bool,        // true when loss circuit breaker triggered (#512)
     pub emergency_assets: i128,    // available assets recorded for pro-rata exit (#512)
+    pub strategy: Option<Address>, // active yield strategy address (#496)
+    pub principal_in_strategy: i128, // principal currently deployed in strategy (#496)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -239,6 +259,18 @@ impl DripPool {
             .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND);
     }
 
+    fn require_compatible_config(env: &Env) -> Result<(), Error> {
+        let version: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ConfigVersion)
+            .unwrap_or(1);
+        if version != CONFIG_SCHEMA_VERSION {
+            return Err(Error::IncompatibleConfig);
+        }
+        Ok(())
+    }
+
     fn bump_participant(env: &Env, key: &DataKey) {
         env.storage()
             .persistent()
@@ -336,6 +368,16 @@ impl DripPool {
 
         Ok(())
     }
+    // Atomic helper that performs a token transfer and then runs a closure to update accounting.
+    fn atomic_transfer_and<F>(env: &Env, from: &Address, to: &Address, amount: i128, accounting_update: F) -> Result<(), Error>
+    where
+        F: FnOnce() -> Result<(), Error>,
+    {
+        // Perform token transfer first.
+        Self::transfer_tokens(env, from, to, &amount)?;
+        // Apply accounting changes.
+        accounting_update()
+    }
 
     // ── Initialise ─────────────────────────────────────────────────────────
     pub fn create(env: Env, admin: Address) -> Result<(), Error> {
@@ -355,6 +397,8 @@ impl DripPool {
             unclaimed_swept: false,
             is_emergency: false,
             emergency_assets: 0,
+            strategy: None,
+            principal_in_strategy: 0,
         };
         let admins: Vec<Address> = vec![&env, admin.clone()];
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -363,9 +407,40 @@ impl DripPool {
             .instance()
             .set(&DataKey::Threshold, &DEFAULT_THRESHOLD);
         env.storage().instance().set(&DataKey::Pool, &pool);
+        env.storage().instance().set(&DataKey::ConfigVersion, &CONFIG_SCHEMA_VERSION);
         Self::bump_instance(&env);
         env.events()
             .publish((symbol_short!("pool"), symbol_short!("created")), admin);
+        Ok(())
+    }
+
+    /// Admin-only: migrate the configuration version to a new schema version.
+    pub fn update_config_version(
+        env: Env,
+        caller: Address,
+        expected_version: u32,
+        new_version: u32,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+        Self::require_signer(&env, &caller)?;
+
+        let current = env
+            .storage()
+            .instance()
+            .get(&DataKey::ConfigVersion)
+            .unwrap_or(1);
+        if current != expected_version {
+            return Err(Error::IncompatibleConfig);
+        }
+
+        env.storage().instance().set(&DataKey::ConfigVersion, &new_version);
+        Self::bump_instance(&env);
+
+        env.events().publish(
+            (symbol_short!("config"), symbol_short!("ver_chg")),
+            (expected_version, new_version),
+        );
+
         Ok(())
     }
 
@@ -374,6 +449,7 @@ impl DripPool {
     pub fn set_token(env: Env, caller: Address, token: Address) -> Result<(), Error> {
         caller.require_auth();
         Self::require_signer(&env, &caller)?;
+        Self::require_compatible_config(&env)?;
         env.storage().instance().set(&DataKey::Token, &token);
         Self::bump_instance(&env);
         env.events()
@@ -386,6 +462,7 @@ impl DripPool {
     pub fn seed_admin(env: Env, caller: Address, new_admin: Address) -> Result<(), Error> {
         caller.require_auth();
         Self::require_signer(&env, &caller)?;
+        Self::require_compatible_config(&env)?;
         let mut admins = Self::get_admins(&env);
         let threshold = Self::get_threshold(&env);
         // Prevent direct bypass once threshold is reachable
@@ -404,6 +481,7 @@ impl DripPool {
     pub fn propose(env: Env, signer: Address, action: ProposalAction) -> Result<u32, Error> {
         signer.require_auth();
         Self::require_signer(&env, &signer)?;
+        Self::require_compatible_config(&env)?;
 
         // Validate action payload before creating the proposal (#384)
         let pool: Pool = env
@@ -470,6 +548,7 @@ impl DripPool {
     pub fn approve(env: Env, signer: Address, proposal_id: u32) -> Result<bool, Error> {
         signer.require_auth();
         Self::require_signer(&env, &signer)?;
+        Self::require_compatible_config(&env)?;
 
         let mut proposal: Proposal = env
             .storage()
@@ -515,6 +594,7 @@ impl DripPool {
     pub fn cancel_proposal(env: Env, signer: Address, proposal_id: u32) -> Result<(), Error> {
         signer.require_auth();
         Self::require_signer(&env, &signer)?;
+        Self::require_compatible_config(&env)?;
 
         let proposal: Proposal = env
             .storage()
@@ -557,7 +637,7 @@ impl DripPool {
                 }
                 env.storage().instance().set(&DataKey::Admins, &new_admins);
             }
-            ProposalAction::ReleaseEscrow(_recipient, amount) => {
+            ProposalAction::ReleaseEscrow(recipient, amount) => {
                 let mut pool: Pool = env
                     .storage()
                     .instance()
@@ -567,8 +647,21 @@ impl DripPool {
                 if amount > pool.total_deposited {
                     return Err(Error::InvalidAction);
                 }
-                pool.total_deposited = pool.total_deposited.saturating_sub(amount);
-                env.storage().instance().set(&DataKey::Pool, &pool);
+                // Perform atomic token transfer from contract to the bound recipient.
+                let contract_addr = env.current_contract_address();
+                Self::atomic_transfer_and(
+                    &env,
+                    &contract_addr,
+                    &recipient,
+                    amount,
+                    || {
+                        // Update free-reserve bucket only (total_deposited reflects locked principal).
+                        // We decrement total_deposited to reflect the escrow payout.
+                        pool.total_deposited = pool.total_deposited.saturating_sub(amount);
+                        env.storage().instance().set(&DataKey::Pool, &pool);
+                        Ok(())
+                    },
+                )?;
             }
             ProposalAction::SetThreshold(t) => {
                 let admins = Self::get_admins(env);
@@ -595,17 +688,29 @@ impl DripPool {
                 if amount <= 0 {
                     return Err(Error::InvalidAmount);
                 }
-                let mut pool: Pool = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::Pool)
-                    .ok_or(Error::NotInitialized)?;
-                pool.emergency_assets = pool.emergency_assets.saturating_add(amount);
-                env.storage().instance().set(&DataKey::Pool, &pool);
-                env.events().publish(
-                    (symbol_short!("emergency"), symbol_short!("recap")),
+                // Transfer tokens from the proposal creator (funder) into the contract.
+                let funder = proposal.approvals.get(0).unwrap();
+                let contract_addr = env.current_contract_address();
+                Self::atomic_transfer_and(
+                    &env,
+                    &funder,
+                    &contract_addr,
                     amount,
-                );
+                    || {
+                        let mut pool: Pool = env
+                            .storage()
+                            .instance()
+                            .get(&DataKey::Pool)
+                            .ok_or(Error::NotInitialized)?;
+                        pool.emergency_assets = pool.emergency_assets.saturating_add(amount);
+                        env.storage().instance().set(&DataKey::Pool, &pool);
+                        env.events().publish(
+                            (symbol_short!("emergency"), symbol_short!("recap")),
+                            amount,
+                        );
+                        Ok(())
+                    },
+                )?;
             }
             ProposalAction::ResumeNormal => {
                 let mut pool: Pool = env
@@ -630,6 +735,7 @@ impl DripPool {
     // ── Join ───────────────────────────────────────────────────────────────
     pub fn join(env: Env, who: Address) -> Result<(), Error> {
         who.require_auth();
+        Self::require_compatible_config(&env)?;
         let pool: Pool = env
             .storage()
             .instance()
@@ -665,6 +771,7 @@ impl DripPool {
 
     pub fn deposit(env: Env, who: Address, amount: i128) -> Result<(), Error> {
         who.require_auth();
+        Self::require_compatible_config(&env)?;
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -725,6 +832,7 @@ impl DripPool {
         lockup_days: u32,
     ) -> Result<(), Error> {
         who.require_auth();
+        Self::require_compatible_config(&env)?;
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -753,6 +861,7 @@ impl DripPool {
     /// Withdraw a time-locked deposit. Returns principal + accrued yield.
     pub fn withdraw_locked(env: Env, who: Address) -> Result<i128, Error> {
         who.require_auth();
+        Self::require_compatible_config(&env)?;
 
         let mut pool: Pool = env
             .storage()
@@ -810,6 +919,7 @@ impl DripPool {
 
     pub fn claim_reward(env: Env, who: Address) -> Result<i128, Error> {
         who.require_auth();
+        Self::require_compatible_config(&env)?;
 
         let pool: Pool = env
             .storage()
@@ -844,6 +954,7 @@ impl DripPool {
     pub fn set_claim_deadline(env: Env, caller: Address, deadline: u64) -> Result<(), Error> {
         caller.require_auth();
         Self::require_signer(&env, &caller)?;
+        Self::require_compatible_config(&env)?;
         if deadline <= env.ledger().timestamp() {
             return Err(Error::InvalidDeadline);
         }
@@ -871,6 +982,7 @@ impl DripPool {
     pub fn sweep_unclaimed(env: Env, caller: Address, who: Address) -> Result<i128, Error> {
         caller.require_auth();
         Self::require_signer(&env, &caller)?;
+        Self::require_compatible_config(&env)?;
 
         let mut pool: Pool = env
             .storage()
@@ -915,6 +1027,7 @@ impl DripPool {
     // ── Withdraw (#376: real token custody) ────────────────────────────────
     pub fn withdraw(env: Env, who: Address) -> Result<i128, Error> {
         who.require_auth();
+        Self::require_compatible_config(&env)?;
 
         let mut p = Self::load_participant(&env, &who)?;
 
@@ -973,21 +1086,26 @@ impl DripPool {
     pub fn add_yield(env: Env, caller: Address, amount: i128) -> Result<(), Error> {
         caller.require_auth();
         Self::require_signer(&env, &caller)?;
+        Self::require_compatible_config(&env)?;
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
-        let mut pool: Pool = env
-            .storage()
-            .instance()
-            .get(&DataKey::Pool)
-            .ok_or(Error::NotInitialized)?;
-        if pool.is_emergency {
-            return Err(Error::InEmergency);
-        }
-        pool.distributable_yield += amount;
-        env.storage().instance().set(&DataKey::Pool, &pool);
-        Self::bump_instance(&env);
-        Ok(())
+        // Transfer tokens from caller to this contract, then update accounting atomically.
+        let self_addr = env.current_contract_address();
+        Self::atomic_transfer_and(&env, &caller, &self_addr, amount, || {
+            let mut pool: Pool = env
+                .storage()
+                .instance()
+                .get(&DataKey::Pool)
+                .ok_or(Error::NotInitialized)?;
+            if pool.is_emergency {
+                return Err(Error::InEmergency);
+            }
+            pool.distributable_yield += amount;
+            env.storage().instance().set(&DataKey::Pool, &pool);
+            Self::bump_instance(&env);
+            Ok(())
+        })
     }
 
     /// Admin credits yield from the distributable pool to a specific participant.
@@ -1000,6 +1118,7 @@ impl DripPool {
     ) -> Result<(), Error> {
         caller.require_auth();
         Self::require_signer(&env, &caller)?;
+        Self::require_compatible_config(&env)?;
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -1030,17 +1149,61 @@ impl DripPool {
 
     /// Governed: bind a yield strategy after a capability/version check.
     pub fn set_strategy(env: Env, caller: Address, strategy: Address) -> Result<(), Error> {
+        Self::require_compatible_config(&env)?;
         strategy_adapter::set_strategy(&env, &caller, &strategy)
+    }
+
+    /// Governed: propose a new strategy candidate for rotation (#532).
+    pub fn propose_strategy(
+        env: Env,
+        caller: Address,
+        strategy: Address,
+        exposure_cap: i128,
+    ) -> Result<(), Error> {
+        Self::require_compatible_config(&env)?;
+        strategy_adapter::propose_strategy(&env, &caller, &strategy, exposure_cap)
+    }
+
+    /// Governed: validate the proposed strategy (#532).
+    pub fn validate_strategy(env: Env, caller: Address) -> Result<(), Error> {
+        Self::require_compatible_config(&env)?;
+        strategy_adapter::validate_strategy(&env, &caller)
+    }
+
+    /// Governed: drain principal from active strategy during rotation (#532).
+    pub fn drain_strategy(env: Env, caller: Address, amount: i128) -> Result<i128, Error> {
+        Self::require_compatible_config(&env)?;
+        strategy_adapter::drain_strategy(&env, &caller, amount)
+    }
+
+    /// Governed: reconcile active strategy principal to 0 during rotation (#532).
+    pub fn reconcile_strategy(env: Env, caller: Address) -> Result<(), Error> {
+        Self::require_compatible_config(&env)?;
+        strategy_adapter::reconcile_strategy(&env, &caller)
+    }
+
+    /// Governed: activate proposed strategy after full reconciliation (#532).
+    pub fn activate_strategy(env: Env, caller: Address) -> Result<(), Error> {
+        Self::require_compatible_config(&env)?;
+        strategy_adapter::activate_strategy(&env, &caller)
+    }
+
+    /// Governed: cancel pending strategy rotation (#532).
+    pub fn cancel_strategy_rotation(env: Env, caller: Address) -> Result<(), Error> {
+        Self::require_compatible_config(&env)?;
+        strategy_adapter::cancel_strategy_rotation(&env, &caller)
     }
 
     /// Governed: deploy idle principal into the configured strategy.
     pub fn deploy_to_strategy(env: Env, caller: Address, amount: i128) -> Result<(), Error> {
+        Self::require_compatible_config(&env)?;
         strategy_adapter::deploy_to_strategy(&env, &caller, amount)
     }
 
     /// Governed: recall up to `amount` of principal from the strategy.
     /// Returns the amount actually recalled (may be partial).
     pub fn recall_from_strategy(env: Env, caller: Address, amount: i128) -> Result<i128, Error> {
+        Self::require_compatible_config(&env)?;
         strategy_adapter::recall_from_strategy(&env, &caller, amount)
     }
 
@@ -1048,12 +1211,14 @@ impl DripPool {
     /// yield to `distributable_yield` and absorbing realized loss against
     /// `principal_in_strategy`. Returns (realized_yield, realized_loss).
     pub fn harvest_strategy(env: Env, caller: Address) -> Result<(i128, i128), Error> {
+        Self::require_compatible_config(&env)?;
         strategy_adapter::harvest_strategy(&env, &caller)
     }
 
     /// Governed: force-recall the strategy's entire balance regardless of
     /// cached bookkeeping. For use when a strategy is misbehaving.
     pub fn emergency_recall_strategy(env: Env, caller: Address) -> Result<i128, Error> {
+        Self::require_compatible_config(&env)?;
         strategy_adapter::emergency_recall_strategy(&env, &caller)
     }
 
@@ -1061,6 +1226,7 @@ impl DripPool {
 
     /// Extend TTL for a participant's persistent storage entry.
     pub fn renew_participant(env: Env, who: Address) -> Result<(), Error> {
+        Self::require_compatible_config(&env)?;
         if !Self::has_participant(&env, &who) {
             return Err(Error::NotJoined);
         }
@@ -1071,6 +1237,7 @@ impl DripPool {
 
     /// Extend TTL for all instance storage (pool state, admins, proposals).
     pub fn renew_instance(env: Env) -> Result<(), Error> {
+        Self::require_compatible_config(&env)?;
         if !env.storage().instance().has(&DataKey::Pool) {
             return Err(Error::NotInitialized);
         }
@@ -1082,6 +1249,7 @@ impl DripPool {
     pub fn draw_winner(env: Env, caller: Address, prize: i128) -> Result<Address, Error> {
         caller.require_auth();
         Self::require_signer(&env, &caller)?;
+        Self::require_compatible_config(&env)?;
         if prize <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -1128,6 +1296,7 @@ impl DripPool {
     // ── Emergency Pro-rata Exit (#512) ────────────────────────────────────
     pub fn emergency_withdraw(env: Env, who: Address) -> Result<i128, Error> {
         who.require_auth();
+        Self::require_compatible_config(&env)?;
 
         let mut pool: Pool = env
             .storage()
@@ -1190,6 +1359,13 @@ impl DripPool {
     }
 
     // ── Views ──────────────────────────────────────────────────────────────
+    pub fn config_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ConfigVersion)
+            .unwrap_or(1)
+    }
+
     pub fn pool(env: Env) -> Result<Pool, Error> {
         env.storage()
             .instance()

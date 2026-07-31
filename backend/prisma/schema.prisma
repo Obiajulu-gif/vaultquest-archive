@@ -7,6 +7,19 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model User {
+  id            String   @id @default(uuid()) @db.Uuid
+  walletAddress String?  @unique @map("wallet_address")
+  email         String?  @unique
+  name          String?
+  bio           String?
+  passwordHash  String?  @map("password_hash")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
 enum ActionType {
   deposit
   withdraw
@@ -79,6 +92,24 @@ model ActionLease {
   @@map("action_leases")
 }
 
+// #506 — generic named-job distributed lease with a fencing token, for
+// coordinating cron/indexer/reconciler workers across replicas. Same CAS
+// (compare-and-swap) shape as ActionLease above, but keyed by a stable
+// jobName instead of a per-action id, and carries a fencingToken that
+// increments on every successful acquisition (including takeovers) so
+// writes guarded by a lease can detect and reject a stale holder that
+// resumed after its lease already expired and was taken over.
+model JobLease {
+  jobName      String   @id @map("job_name")
+  workerId     String   @map("worker_id")
+  fencingToken BigInt   @default(1) @map("fencing_token")
+  acquiredAt   DateTime @default(now()) @map("acquired_at")
+  expiresAt    DateTime @map("expires_at")
+
+  @@index([expiresAt])
+  @@map("job_leases")
+}
+
 model IndexerCheckpoint {
   id                  String   @id @default("singleton")
   latestLedger        Int      @map("latest_ledger")
@@ -144,6 +175,70 @@ model UserQuest {
   @@index([walletAddress, status])
   @@index([status, completedAt(sort: Desc)])
   @@map("user_quests")
+}
+
+// #505 — exactly-once reward-grant intent, created atomically alongside
+// the UserQuest transition that completed a quest. idempotencyKey is
+// deterministic (sha256(walletAddress + questId)) so replaying
+// evaluateRecent over an already-processed window (backfill) or
+// re-running after a crash mid-sweep can never create a duplicate grant
+// — the unique constraint on idempotencyKey is the actual double-grant
+// guard, independent of (and a safety net beyond) the JobLease held
+// during the sweep that created it.
+model RewardGrant {
+  id             String    @id @default(uuid()) @db.Uuid
+  walletAddress  String    @map("wallet_address")
+  questId        String    @map("quest_id")
+  idempotencyKey String    @unique @map("idempotency_key")
+  status         String    @default("pending")
+  attempts       Int       @default(0)
+  lastError      String?   @map("last_error")
+  grantedAt      DateTime? @map("granted_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@index([status, createdAt])
+  @@index([walletAddress])
+  @@map("reward_grants")
+}
+
+// Off-chain mirror of the vault-factory contract's on-chain pool registry
+// (#507). `salt` is the deterministic pool id used as the factory's deploy
+// salt; `poolAddress` is derived from (factory address, salt) so it never
+// changes for a given salt. Populated by the indexer from `pool`/`deployed`
+// events and used to feed `INDEXER_CONTRACT_IDS`-style contract discovery
+// without requiring a manual env var update per new pool.
+model PoolRegistry {
+  id             String    @id @default(uuid()) @db.Uuid
+  salt           String    @unique @map("salt")
+  poolAddress    String    @unique @map("pool_address")
+  factoryAddress String    @map("factory_address")
+  admin          String
+  asset          String
+  wasmHash       String    @map("wasm_hash")
+  active         Boolean   @default(true)
+  deployedLedger Int       @map("deployed_ledger")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@index([factoryAddress])
+  @@index([active])
+  @@map("pool_registry")
+}
+
+model ProtocolAudit {
+  id             String   @id @default(uuid()) @db.Uuid
+  parameterName  String   @map("parameter_name")
+  previousValue  Json     @map("previous_value")
+  newValue       Json     @map("new_value")
+  actor          String   @map("actor")
+  txHash         String?  @unique @map("tx_hash")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([parameterName, createdAt(sort: Desc)])
+  @@index([actor, createdAt(sort: Desc)])
+  @@index([createdAt(sort: Desc)])
+  @@map("protocol_audits")
 }
 
 model RepairAudit {
@@ -225,6 +320,25 @@ model SavedPool {
   @@index([walletAddress, createdAt(sort: Desc)])
   @@index([poolId])
   @@map("saved_pools")
+}
+
+model Product {
+  id         String   @id @default(uuid()) @db.Uuid
+  name       String
+  categoryId String   @map("category_id")
+  price      Float
+  images     ProductImage[]
+  createdAt  DateTime @default(now())
+
+  @@index([categoryId])
+  @@index([price])
+}
+
+model ProductImage {
+  id        String   @id @default(uuid()) @db.Uuid
+  url       String
+  productId String   @map("product_id") @db.Uuid
+  product   Product  @relation(fields: [productId], references: [id])
 }
 
 model DrawProof {

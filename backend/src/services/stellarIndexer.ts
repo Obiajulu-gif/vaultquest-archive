@@ -67,6 +67,28 @@ export interface StellarIndexerOptions {
   /** Retry config forwarded to `withRetry` for each `fetchEvents` call. */
   retryOptions?: RetryOptions;
   logger?: Logger;
+  /**
+   * Optional (#507): resolves the full contract-id list to index, called at
+   * the start of every tick before `fetchEvents`. Lets the indexer pick up
+   * newly-deployed pools (via `PoolRegistry`) without a restart, layered on
+   * top of the static `INDEXER_CONTRACT_IDS` env list rather than replacing
+   * it — see the #507 design proposal. Only applied when `source` exposes
+   * a `setContractIds` method (currently `SorobanRpcEventSource`); ignored
+   * for test doubles that don't.
+   */
+  resolveContractIds?: () => Promise<string[]>;
+  /**
+   * #507 — the one trusted vault-factory contract address. A `fpooldep`
+   * (pool-deployed) event is only routed to the pool registry when it was
+   * emitted BY this exact contract address (`raw.contractId`) — the event
+   * payload's own fields (pool_address/admin/asset/etc.) are otherwise
+   * fully attacker-controlled data, so trusting "any watched contract that
+   * emits a topic matching fpooldep" would let an unrelated/malicious
+   * contract spoof a pool into the registry (the acceptance criteria's
+   * "spoofed pools" scenario). When unset, fpooldep events are never
+   * auto-trusted and are logged instead — fail closed, not open.
+   */
+  factoryAddress?: string;
 }
 
 export interface SorobanRpcEventSourceOptions {
@@ -104,6 +126,17 @@ function decodeValue(b64: string): Record<string, unknown> {
 }
 
 /**
+ * Hex-encodes a BytesN<32> value as decoded by `scValToNative` (a Buffer or
+ * Uint8Array); falls back to `String()` if it already arrived as a string.
+ */
+function bytesToHex(value: unknown): string {
+  if (value instanceof Uint8Array) {
+    return Buffer.from(value).toString("hex");
+  }
+  return String(value);
+}
+
+/**
  * Decodes the first topic XDR blob as a plain string action type.
  */
 function decodeTopic(b64: string): string {
@@ -134,8 +167,19 @@ const KNOWN_EVENT_TYPES = new Set([
   "draw",
   "settlement",
   "create_vault",
-  "select_winner"
+  "select_winner",
+  // vault-factory's own registry event (#507): the on-chain topic symbol
+  // is `symbol_short!("fpooldep")` (9-char Soroban Symbol limit), decoded
+  // here as the literal string "fpooldep" — distinct from drip-pool's
+  // unrelated, pre-existing `pool_created` action-event vocabulary (#413,
+  // see tests/fixtures/indexer-events/pool_created.json). Routed to
+  // LedgerService.upsertPoolRegistryEntry, not reconcileEvent — see
+  // StellarIndexer.tick's branch below.
+  "fpooldep"
 ]);
+
+/** Matches vault-factory's `FACTORY_POOL_DEPLOYED_TOPIC` (#507). */
+const FACTORY_POOL_DEPLOYED_EVENT_TYPE = "fpooldep";
 
 /**
  * Production decoder: decodes real Soroban `ScVal` XDR (via the Stellar SDK)
@@ -214,6 +258,16 @@ export class StellarIndexer {
     const { ledger, source, decoder } = this.opts;
     const batchSize = this.opts.batchSize;
 
+    // ── Refresh contract-id filter (#507) ─────────────────────────────────
+    if (this.opts.resolveContractIds && typeof (source as any).setContractIds === "function") {
+      try {
+        const contractIds = await this.opts.resolveContractIds();
+        (source as unknown as { setContractIds(ids: string[]): void }).setContractIds(contractIds);
+      } catch (err) {
+        this.opts.logger?.warn({ err }, "indexer: failed to refresh contract id filter, keeping previous list");
+      }
+    }
+
     // ── Fetch with retry ──────────────────────────────────────────────────
     const rawEvents = await withRetry(
       () => source.fetchEvents({ cursor: this.cursor, limit: batchSize }),
@@ -266,6 +320,64 @@ export class StellarIndexer {
       }
 
       const statusHint: "confirmed" | "reverted" = raw.successful ? "confirmed" : "reverted";
+
+      // vault-factory's registry event (#507) isn't an action confirmation
+      // against a pre-existing ActionLedger row — it announces a brand new
+      // pool. Route it to the registry upsert instead of reconcileEvent,
+      // which would otherwise park it as an orphaned pendingEvent forever.
+      if (payload.type === FACTORY_POOL_DEPLOYED_EVENT_TYPE && statusHint === "confirmed") {
+        // #507 "spoofed pools": only trust this event if it was emitted BY
+        // the configured, known vault-factory contract address. Without
+        // this check, ANY contract in the watched set emitting a
+        // topic-matching fpooldep event — including a malicious or
+        // unrelated contract — would get its (fully attacker-controlled)
+        // payload fields upserted into the registry as if it were a
+        // genuine factory deployment. Fails closed: if factoryAddress
+        // isn't configured, or doesn't match the emitting contract, the
+        // event is logged and skipped rather than trusted.
+        if (!this.opts.factoryAddress) {
+          this.opts.logger?.warn(
+            { txHash: raw.txHash, contractId: raw.contractId },
+            "indexer: received fpooldep event but no factoryAddress is configured — refusing to trust it, skipping"
+          );
+          this.cursor = raw.id;
+          latestLedger = raw.ledger;
+          continue;
+        }
+        if (raw.contractId !== this.opts.factoryAddress) {
+          this.opts.logger?.warn(
+            { txHash: raw.txHash, contractId: raw.contractId, expectedFactoryAddress: this.opts.factoryAddress },
+            "indexer: received fpooldep event from a contract that is NOT the configured vault-factory — possible spoofed pool, skipping"
+          );
+          this.cursor = raw.id;
+          latestLedger = raw.ledger;
+          continue;
+        }
+
+        try {
+          // `salt`/`wasm_hash` are BytesN<32> on-chain; scValToNative
+          // decodes those to Buffers, not strings — hex-encode them so the
+          // registry stores a stable, human-inspectable value instead of
+          // mangling raw bytes through String() coercion. Address fields
+          // (`pool_address`/`admin`/`asset`) already decode to their G...
+          // strkey strings.
+          await ledger.upsertPoolRegistryEntry({
+            salt: bytesToHex(payload.salt),
+            poolAddress: String(payload.pool_address),
+            factoryAddress: raw.contractId,
+            admin: String(payload.admin),
+            asset: String(payload.asset),
+            wasmHash: bytesToHex(payload.wasm_hash),
+            deployedLedger: raw.ledger
+          });
+          imported += 1;
+        } catch (err) {
+          this.opts.logger?.warn({ err, txHash: raw.txHash }, "indexer: failed to upsert pool registry entry");
+        }
+        this.cursor = raw.id;
+        latestLedger = raw.ledger;
+        continue;
+      }
 
       try {
         await ledger.reconcileEvent({
@@ -326,6 +438,18 @@ export class SorobanRpcEventSource implements HorizonEventSource {
   constructor(private options: SorobanRpcEventSourceOptions) {
     const urls = Array.isArray(options.rpcUrl) ? options.rpcUrl : [options.rpcUrl];
     this.servers = urls.map((url) => new StellarRpc.Server(url, { allowHttp: url.startsWith("http://") }));
+  }
+
+  /**
+   * Replaces the contract-id filter list (#507). Read fresh by
+   * `fetchEvents` on every call, so callers can widen the filter as new
+   * pools are deployed without needing to reconstruct this source —
+   * `StellarIndexer.tick` calls this each tick with the static
+   * `INDEXER_CONTRACT_IDS` env list merged with `PoolRegistry`'s active
+   * pool addresses.
+   */
+  setContractIds(contractIds: string[]): void {
+    this.options = { ...this.options, contractIds };
   }
 
   private async callWithFailover(request: StellarRpc.Api.GetEventsRequest): Promise<StellarRpc.Api.GetEventsResponse> {

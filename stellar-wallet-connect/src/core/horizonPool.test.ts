@@ -42,14 +42,17 @@ describe("HorizonPool", () => {
       "https://node-b.example/": 5,
       "https://node-c.example/": 20,
     };
+    let clock = 0;
     const fetchImpl = vi.fn(async (url: any) => {
-      await new Promise((resolve) => setTimeout(resolve, latency[String(url)] ?? 10));
+      const ms = latency[String(url)] ?? 10;
+      clock += ms;
       return res(200);
     });
     const pool = new HorizonPool({
       nodes: NODES,
       fetchImpl: fetchImpl as any,
       sleep: noSleep,
+      now: () => clock,
     });
 
     await pool.pingAll("/");

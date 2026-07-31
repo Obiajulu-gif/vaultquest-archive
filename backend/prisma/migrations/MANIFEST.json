@@ -64,6 +64,14 @@
           "tables": ["vault_settlements"],
           "breaking": false,
           "relatedIssues": ["#settlement"]
+        },
+        {
+          "id": "20260729000000_add_protocol_audit",
+          "timestamp": "2026-07-29T00:00:00Z",
+          "description": "Add protocol parameter change audit log table",
+          "tables": ["protocol_audits"],
+          "breaking": false,
+          "relatedIssues": ["#415"]
         }
       ]
     },
@@ -117,6 +125,11 @@
       "phase": "features",
       "createdIn": "20260531000001_feature_vault_settlements",
       "description": "Vault settlement state machine"
+    },
+    "protocol_audits": {
+      "phase": "features",
+      "createdIn": "20260729000000_add_protocol_audit",
+      "description": "Protocol parameter change audit log"
     }
   }
 }

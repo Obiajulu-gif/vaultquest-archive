@@ -20,6 +20,14 @@ const schema = z.object({
   // polls the Soroban RPC for the listed contracts' events.
   SOROBAN_RPC_URL: z.string().url().optional(),
   INDEXER_CONTRACT_IDS: z.string().optional(),
+  /**
+   * #507 — the one trusted vault-factory contract address. Required for
+   * the indexer to trust any `fpooldep` (pool-deployed) registry event —
+   * without it, such events are logged and skipped rather than blindly
+   * upserted into PoolRegistry (see stellarIndexer.ts's factoryAddress
+   * check, closing the "spoofed pools" acceptance-criteria gap).
+   */
+  VAULT_FACTORY_ADDRESS: z.string().optional(),
   // Deployment manifest attestation
   NETWORK_PASSPHRASE: z.string().min(1).optional(),
   DEPLOYMENT_MANIFEST_PATH: z.string().optional(),
@@ -91,6 +99,7 @@ export function getEnv(): Env {
       NODE_ENV: (process.env.NODE_ENV ?? "development") as Env["NODE_ENV"],
       SOROBAN_RPC_URL: process.env.SOROBAN_RPC_URL || undefined,
       INDEXER_CONTRACT_IDS: process.env.INDEXER_CONTRACT_IDS || undefined,
+      VAULT_FACTORY_ADDRESS: process.env.VAULT_FACTORY_ADDRESS || undefined,
       NETWORK_PASSPHRASE: process.env.NETWORK_PASSPHRASE || undefined,
       DEPLOYMENT_MANIFEST_PATH: process.env.DEPLOYMENT_MANIFEST_PATH || undefined,
       API_KEY: process.env.API_KEY || undefined,

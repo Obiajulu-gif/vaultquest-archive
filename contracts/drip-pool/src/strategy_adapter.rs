@@ -11,6 +11,8 @@
 //! Propose -> Validate -> Drain -> Reconcile -> Activate / Cancel.
 
 use super::*;
+use soroban_sdk::auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation};
+use soroban_sdk::IntoVal;
 use vaultquest_common::strategy::StrategyRotationPhase;
 
 fn get_strategy_token(env: &Env) -> Address {
@@ -85,6 +87,10 @@ fn internal_propose_strategy(
     env.storage().instance().set(&DataKey::ProposedStrategy, &Some(strategy.clone()));
     env.storage().instance().set(&DataKey::ProposedExposureCap, &exposure_cap);
     env.storage().instance().set(&DataKey::StrategyRotationPhase, &StrategyRotationPhase::Proposed);
+    // Strategy rotation is a high-risk governance action: it cannot activate
+    // before a ledger-based delay elapses, even once fully reconciled (#533).
+    let ready_at = env.ledger().sequence() + HIGH_RISK_DELAY_LEDGERS;
+    env.storage().instance().set(&DataKey::StrategyRotationReadyAt, &ready_at);
     DripPool::bump_instance(env);
 
     env.events().publish(
@@ -235,6 +241,15 @@ pub(crate) fn activate_strategy(env: &Env, caller: &Address) -> Result<(), Error
         return Err(Error::StrategyRotationNotInProgress);
     }
 
+    let ready_at: u32 = env
+        .storage()
+        .instance()
+        .get(&DataKey::StrategyRotationReadyAt)
+        .unwrap_or(0);
+    if env.ledger().sequence() < ready_at {
+        return Err(Error::StrategyRotationDelayNotElapsed);
+    }
+
     let mut pool: Pool = env
         .storage()
         .instance()
@@ -255,6 +270,7 @@ pub(crate) fn activate_strategy(env: &Env, caller: &Address) -> Result<(), Error
     env.storage().instance().set(&DataKey::StrategyExposureCap, &proposed_cap);
     env.storage().instance().remove(&DataKey::ProposedStrategy);
     env.storage().instance().remove(&DataKey::ProposedExposureCap);
+    env.storage().instance().remove(&DataKey::StrategyRotationReadyAt);
     env.storage().instance().set(&DataKey::StrategyRotationPhase, &StrategyRotationPhase::Idle);
     DripPool::bump_instance(env);
 
@@ -281,6 +297,7 @@ pub(crate) fn cancel_strategy_rotation(env: &Env, caller: &Address) -> Result<()
 
     env.storage().instance().remove(&DataKey::ProposedStrategy);
     env.storage().instance().remove(&DataKey::ProposedExposureCap);
+    env.storage().instance().remove(&DataKey::StrategyRotationReadyAt);
     env.storage().instance().set(&DataKey::StrategyRotationPhase, &StrategyRotationPhase::Idle);
     DripPool::bump_instance(env);
 
@@ -327,8 +344,37 @@ pub(crate) fn deploy_to_strategy(env: &Env, caller: &Address, amount: i128) -> R
         return Err(Error::InvalidAction);
     }
 
+    // Governance cannot deploy funds below the required idle-liquidity
+    // buffer for immediately withdrawable principal (#529).
+    let min_idle_reserve: i128 = env.storage().instance().get(&DataKey::MinIdleReserve).unwrap_or(0);
+    if idle - amount < min_idle_reserve {
+        return Err(Error::InsufficientIdleReserve);
+    }
+
     let token = get_strategy_token(env);
     let contract_addr = env.current_contract_address();
+
+    // A conforming strategy's `deposit` pulls `amount` of `token` from this
+    // pool via a real SAC transfer (see `YieldStrategy` docs). That transfer
+    // is two contract-calls deep (pool -> strategy -> token), so the pool
+    // must explicitly authorize the specific downstream `transfer` call on
+    // its own behalf before invoking the strategy (#529).
+    env.authorize_as_current_contract(vec![
+        env,
+        InvokerContractAuthEntry::Contract(SubContractInvocation {
+            context: ContractContext {
+                contract: token.clone(),
+                fn_name: soroban_sdk::Symbol::new(env, "transfer"),
+                args: vec![
+                    env,
+                    contract_addr.clone().into_val(env),
+                    strategy.clone().into_val(env),
+                    amount.into_val(env),
+                ],
+            },
+            sub_invocations: vec![env],
+        }),
+    ]);
 
     let client = YieldStrategyClient::new(env, &strategy);
     client.deposit(&contract_addr, &token, &amount);

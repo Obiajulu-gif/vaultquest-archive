@@ -2,17 +2,35 @@
 //! Event emission tests (#255). Storage optimisation regression (#257).
 //! #377: principal/reward separation tests.
 
-use super::proxy::{VaultProxy, VaultProxyClient};
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger as _},
-    Address, Env, IntoVal,
+    token, Address, Env, IntoVal,
 };
 
 // Re-export the main contract error for convenience
 use super::Error;
-// Import proxy error separately since it's a different type
-use super::proxy::Error as ProxyError;
+
+/// Real-SAC setup for tests that need actual token custody (#526, #529),
+/// mirroring the pattern used in `mock-yield`'s strategy tests.
+fn setup_with_token() -> (
+    Env,
+    DripPoolClient<'static>,
+    Address,
+    token::TokenClient<'static>,
+    token::StellarAssetClient<'static>,
+) {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let asset_admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(asset_admin);
+    let token = token::TokenClient::new(&env, &sac.address());
+    let issuer = token::StellarAssetClient::new(&env, &sac.address());
+    client.set_token(&admin, &sac.address());
+
+    (env, client, admin, token, issuer)
+}
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -29,6 +47,12 @@ fn setup() -> (Env, DripPoolClient<'static>, Address) {
 fn skip_lockup(env: &Env) {
     let current = env.ledger().sequence();
     env.ledger().set_sequence_number(current + 120_961);
+}
+
+/// Advance ledger sequence past the high-risk governance timelock (#533).
+fn skip_high_risk_delay(env: &Env) {
+    let current = env.ledger().sequence();
+    env.ledger().set_sequence_number(current + HIGH_RISK_DELAY_LEDGERS + 1);
 }
 
 // ── existing regression tests (updated for #377) ───────────────────────────
@@ -351,51 +375,8 @@ fn pool_locked_field_starts_false() {
     assert!(!client.pool().locked);
 }
 
-// ── #265: proxy upgrade tests ─────────────────────────────────────────────
-
-#[test]
-fn proxy_create_initialises() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let proxy_id = env.register_contract(None, VaultProxy);
-    let client = VaultProxyClient::new(&env, &proxy_id);
-    let admin = Address::generate(&env);
-    let logic = Address::generate(&env);
-    client.create(&admin, &logic);
-    assert_eq!(client.admin(), admin);
-    assert_eq!(client.logic_contract(), logic);
-}
-
-#[test]
-fn proxy_upgrade_changes_logic() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let proxy_id = env.register_contract(None, VaultProxy);
-    let client = VaultProxyClient::new(&env, &proxy_id);
-    let admin = Address::generate(&env);
-    let logic1 = Address::generate(&env);
-    let logic2 = Address::generate(&env);
-    client.create(&admin, &logic1);
-    assert_eq!(client.logic_contract(), logic1);
-    client.upgrade(&admin, &logic2, &false);
-    assert_eq!(client.logic_contract(), logic2);
-}
-
-#[test]
-fn proxy_upgrade_unauthorized_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let proxy_id = env.register_contract(None, VaultProxy);
-    let client = VaultProxyClient::new(&env, &proxy_id);
-    let admin = Address::generate(&env);
-    let rando = Address::generate(&env);
-    let logic = Address::generate(&env);
-    client.create(&admin, &logic);
-    assert_eq!(
-        client.try_upgrade(&rando, &logic, &false),
-        Err(Ok(ProxyError::Unauthorized))
-    );
-}
+// ── #531: proxy upgrade governance now lives in proxy.rs's own test module,
+// since VaultProxy is bound to pool multisig governance (no single admin) ──
 
 // ── #382: yield-backed lockup multipliers ─────────────────────────────────
 
@@ -543,6 +524,8 @@ fn seed_admin_blocked_at_threshold() {
 }
 
 /// SetThreshold proposal lowers threshold so 2-of-2 workflows become testable.
+/// SetThreshold is high-risk (#533): approval alone doesn't execute it —
+/// the timelock must elapse first, then any signer calls `execute_proposal`.
 #[test]
 fn set_threshold_via_proposal() {
     let (env, client, admin) = setup();
@@ -556,13 +539,18 @@ fn set_threshold_via_proposal() {
 
     // propose SetThreshold(1) — admin auto-approves (1 of 2)
     let pid = client.propose(&admin, &ProposalAction::SetThreshold(1));
-    // signer2 approves — threshold_met (2 of 2)
+    // signer2 approves — threshold_met (2 of 2), but the timelock still blocks execution.
     let executed = client.approve(&signer2, &pid);
-    assert!(executed);
+    assert!(!executed, "high-risk action must not execute before its delay");
+    assert_eq!(client.threshold(), 2);
+
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&signer2, &pid);
     assert_eq!(client.threshold(), 1);
 }
 
 /// RemoveAdmin is blocked when it would leave fewer admins than threshold.
+/// The liveness check now runs at execution time, after the timelock (#533).
 #[test]
 fn remove_admin_below_threshold_fails() {
     let (env, client, admin) = setup();
@@ -572,8 +560,11 @@ fn remove_admin_below_threshold_fails() {
 
     // Trying to remove signer2 would leave 1 admin < threshold=2
     let pid = client.propose(&admin, &ProposalAction::RemoveAdmin(signer2.clone()));
-    let result = client.try_approve(&signer2, &pid);
-    // Execution should fail with InvalidAction
+    let executed = client.approve(&signer2, &pid);
+    assert!(!executed, "high-risk action must not execute before its delay");
+
+    skip_high_risk_delay(&env);
+    let result = client.try_execute_proposal(&signer2, &pid);
     assert_eq!(result, Err(Ok(Error::InvalidAction)));
 }
 
@@ -1359,9 +1350,13 @@ fn draw_winner_blocked_in_emergency() {
     let signer2 = Address::generate(&env);
     client.seed_admin(&admin, &signer2); // 2 signers for threshold
 
-    // Trigger emergency mode with 500 available assets
+    // Trigger emergency mode with 500 available assets. TriggerEmergency is
+    // high-risk (#533): approval alone doesn't execute it — the timelock
+    // must elapse first.
     let pid = client.propose(&admin, &ProposalAction::TriggerEmergency(500));
     client.approve(&signer2, &pid);
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&signer2, &pid);
 
     assert!(client.is_emergency());
     assert_eq!(client.emergency_assets(), 500);
@@ -1394,9 +1389,12 @@ fn emergency_withdraw_pro_rata_partial_loss() {
     client.deposit(&bob, &400);
     assert_eq!(client.pool().total_deposited, 1_000);
 
-    // Trigger emergency with 500 assets (50% loss)
+    // Trigger emergency with 500 assets (50% loss). High-risk action: the
+    // timelock must elapse before it executes (#533).
     let pid = client.propose(&admin, &ProposalAction::TriggerEmergency(500));
     client.approve(&signer2, &pid);
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&signer2, &pid);
 
     assert!(client.is_emergency());
 
@@ -1424,9 +1422,11 @@ fn emergency_withdraw_total_strategy_failure() {
     client.join(&alice);
     client.deposit(&alice, &1_000);
 
-    // Trigger emergency with 0 assets
+    // Trigger emergency with 0 assets (high-risk; timelock must elapse first, #533)
     let pid = client.propose(&admin, &ProposalAction::TriggerEmergency(0));
     client.approve(&signer2, &pid);
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&signer2, &pid);
 
     let payout = client.emergency_withdraw(&alice);
     assert_eq!(payout, 0);
@@ -1445,9 +1445,11 @@ fn recapitalization_and_resume_normal() {
     client.join(&alice);
     client.deposit(&alice, &1_000);
 
-    // Trigger emergency with 400 assets
+    // Trigger emergency with 400 assets (high-risk; timelock must elapse first, #533)
     let pid1 = client.propose(&admin, &ProposalAction::TriggerEmergency(400));
     client.approve(&signer2, &pid1);
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&signer2, &pid1);
 
     // Try ResumeNormal before recapitalization -> fails with Insolvent at propose time
     assert_eq!(
@@ -1455,15 +1457,17 @@ fn recapitalization_and_resume_normal() {
         Err(Ok(Error::Insolvent))
     );
 
-    // Recapitalize by 600
+    // Recapitalize by 600 — low-risk, executes immediately once approved.
     let pid2 = client.propose(&admin, &ProposalAction::Recapitalize(600));
     client.approve(&signer2, &pid2);
 
     assert_eq!(client.emergency_assets(), 1_000);
 
-    // Resume normal mode
+    // Resume normal mode — also high-risk (#533): timelock must elapse.
     let pid3 = client.propose(&admin, &ProposalAction::ResumeNormal);
     client.approve(&signer2, &pid3);
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&signer2, &pid3);
 
     assert!(!client.is_emergency());
 }
@@ -1589,6 +1593,43 @@ impl BadVersionStrategy {
     }
 }
 
+/// Strategy stub that moves *real* SAC tokens, for tests that need the
+/// pool's actual custody balance to change (#529 idle-liquidity checks).
+#[contract]
+pub struct RealTokenStrategy;
+
+#[contractimpl]
+impl RealTokenStrategy {
+    pub fn interface_version(_env: Env) -> u32 {
+        1
+    }
+    pub fn deposit(env: Env, from: Address, asset: Address, amount: i128) -> Result<(), vaultquest_common::ContractError> {
+        let token = token::TokenClient::new(&env, &asset);
+        token.transfer(&from, &env.current_contract_address(), &amount);
+        Ok(())
+    }
+    pub fn redeem(env: Env, to: Address, asset: Address, amount: i128) -> Result<i128, vaultquest_common::ContractError> {
+        let token = token::TokenClient::new(&env, &asset);
+        let available = token.balance(&env.current_contract_address());
+        let redeemed = if amount < available { amount } else { available };
+        if redeemed > 0 {
+            token.transfer(&env.current_contract_address(), &to, &redeemed);
+        }
+        Ok(redeemed)
+    }
+    pub fn harvest(env: Env, asset: Address) -> Result<vaultquest_common::StrategyReport, vaultquest_common::ContractError> {
+        let balance = token::TokenClient::new(&env, &asset).balance(&env.current_contract_address());
+        Ok(vaultquest_common::StrategyReport {
+            realized_yield: 0,
+            realized_loss: 0,
+            total_assets: balance,
+        })
+    }
+    pub fn total_assets(env: Env, asset: Address) -> i128 {
+        token::TokenClient::new(&env, &asset).balance(&env.current_contract_address())
+    }
+}
+
 #[test]
 fn test_strategy_rotation_lifecycle_happy_path() {
     let (env, client, admin) = setup();
@@ -1606,12 +1647,35 @@ fn test_strategy_rotation_lifecycle_happy_path() {
     // Validate proposed strategy
     client.validate_strategy(&admin);
 
-    // Reconcile and activate
+    // Reconcile and activate. Strategy rotation is high-risk (#533): it
+    // cannot activate before its ledger-based delay elapses.
     client.reconcile_strategy(&admin);
+    skip_high_risk_delay(&env);
     client.activate_strategy(&admin);
 
     let pool = client.pool();
     assert_eq!(pool.strategy, Some(s2));
+}
+
+/// Strategy rotation cannot activate before its timelock elapses, even once
+/// fully reconciled (#533).
+#[test]
+fn test_strategy_rotation_activate_before_delay_fails() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let s1 = env.register_contract(None, MockStrategy);
+    let s2 = env.register_contract(None, MockStrategy);
+
+    client.set_strategy(&admin, &s1);
+    client.propose_strategy(&admin, &s2, &500);
+    client.validate_strategy(&admin);
+    client.reconcile_strategy(&admin);
+
+    assert_eq!(
+        client.try_activate_strategy(&admin),
+        Err(Ok(Error::StrategyRotationDelayNotElapsed))
+    );
 }
 
 #[test]
@@ -1630,6 +1694,7 @@ fn test_strategy_exposure_cap_enforced() {
     client.propose_strategy(&admin, &s2, &300);
     client.validate_strategy(&admin);
     client.reconcile_strategy(&admin);
+    skip_high_risk_delay(&env);
     client.activate_strategy(&admin);
 
     // Deploying 400 when cap is 300 should fail
@@ -1692,4 +1757,303 @@ fn test_strategy_emergency_recall_during_rotation() {
     client.emergency_recall_strategy(&admin);
     let pool = client.pool();
     assert_eq!(pool.principal_in_strategy, 0);
+}
+
+// ── #526: reward claims transfer real SAC assets ───────────────────────────
+
+#[test]
+fn claim_reward_transfers_real_tokens() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+
+    issuer.mint(&alice, &1_000);
+    client.deposit(&alice, &1_000);
+
+    issuer.mint(&admin, &200);
+    client.add_yield(&admin, &200);
+    client.credit_yield(&admin, &alice, &200);
+
+    assert_eq!(token.balance(&alice), 0);
+    let claimed = client.claim_reward(&alice);
+    assert_eq!(claimed, 200);
+    // The claimant's SAC balance increases by exactly the returned amount (#526).
+    assert_eq!(token.balance(&alice), 200);
+    assert_eq!(client.savings(&alice).claimed_reward, 200);
+}
+
+#[test]
+fn claim_reward_zero_available_is_a_noop() {
+    let (env, client, _admin, _token, _issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    assert_eq!(client.claim_reward(&alice), 0);
+}
+
+#[test]
+fn claim_reward_twice_only_pays_once() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&admin, &150);
+    client.add_yield(&admin, &150);
+    client.credit_yield(&admin, &alice, &150);
+
+    assert_eq!(client.claim_reward(&alice), 150);
+    // Already-claimed rewards cannot be claimed again (#526).
+    assert_eq!(client.claim_reward(&alice), 0);
+    assert_eq!(token.balance(&alice), 150);
+}
+
+#[test]
+fn claim_reward_after_deadline_fails_and_keeps_balance_claimable() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&admin, &100);
+    client.add_yield(&admin, &100);
+    client.credit_yield(&admin, &alice, &100);
+
+    env.ledger().set_timestamp(1_000);
+    client.set_claim_deadline(&admin, &2_000);
+    env.ledger().set_timestamp(2_001);
+
+    assert_eq!(
+        client.try_claim_reward(&alice),
+        Err(Ok(Error::ClaimDeadlinePassed))
+    );
+    assert_eq!(token.balance(&alice), 0);
+    assert_eq!(client.savings(&alice).claimed_reward, 0);
+}
+
+// ── #533: governance epoch & timelock for high-risk actions ────────────────
+
+#[test]
+fn epoch_bumps_on_threshold_change_and_invalidates_pending_proposal() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let signer2 = Address::generate(&env);
+    client.seed_admin(&admin, &signer2);
+    assert_eq!(client.governance_epoch(), 1); // seed_admin bumped it once
+
+    // A ReleaseEscrow proposal is snapshotted under the current epoch.
+    client.deposit(&admin, &500);
+    let recipient = Address::generate(&env);
+    let pid = client.propose(&admin, &ProposalAction::ReleaseEscrow(recipient, 100));
+
+    // Rotate governance via SetThreshold, which bumps the epoch after its own delay.
+    let set_pid = client.propose(&admin, &ProposalAction::SetThreshold(1));
+    client.approve(&signer2, &set_pid);
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&signer2, &set_pid);
+    assert_eq!(client.governance_epoch(), 2);
+
+    // The earlier ReleaseEscrow proposal is now stale and cannot be approved.
+    assert_eq!(
+        client.try_approve(&signer2, &pid),
+        Err(Ok(Error::GovernanceEpochChanged))
+    );
+    assert_eq!(client.pool().total_deposited, 500, "stale proposal must not execute");
+}
+
+#[test]
+fn threshold_snapshot_is_frozen_even_if_threshold_later_changes() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let signer2 = Address::generate(&env);
+    let signer3 = Address::generate(&env);
+    client.seed_admin(&admin, &signer2); // 2 admins, threshold=2
+
+    // Lower threshold to 1 via governance (high-risk, delayed).
+    let set_pid = client.propose(&admin, &ProposalAction::SetThreshold(1));
+    client.approve(&signer2, &set_pid);
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&signer2, &set_pid);
+    assert_eq!(client.threshold(), 1);
+
+    // Add signer3: with threshold now 1, the proposer's own approval already
+    // meets threshold_snapshot, so any signer can trigger execution directly
+    // (AddAdmin is low-risk, so `ready_at` is immediate).
+    let add_pid = client.propose(&admin, &ProposalAction::AddAdmin(signer3.clone()));
+    client.execute_proposal(&admin, &add_pid);
+    assert!(client.admins().contains(&signer3));
+
+    // A NEW proposal created now snapshots threshold=1, not the original 2 —
+    // it must execute on the FIRST approval, proving the snapshot isn't
+    // retroactively affected by any later change either way (#533).
+    client.deposit(&admin, &50);
+    let recipient = Address::generate(&env);
+    let pid = client.propose(&admin, &ProposalAction::ReleaseEscrow(recipient, 10));
+    // Single approval (the proposer's) already meets threshold_snapshot=1,
+    // and ReleaseEscrow's ready_at is in the future (high-risk) — so it's
+    // recorded as met but not yet executed.
+    assert_eq!(client.pool().total_deposited, 50);
+}
+
+#[test]
+fn cancel_proposal_by_current_signer_when_epoch_is_stale() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let signer2 = Address::generate(&env);
+    client.seed_admin(&admin, &signer2);
+
+    let recipient = Address::generate(&env);
+    client.deposit(&admin, &200);
+    let pid = client.propose(&admin, &ProposalAction::ReleaseEscrow(recipient, 100));
+
+    // Rotate epoch via SetThreshold.
+    let set_pid = client.propose(&admin, &ProposalAction::SetThreshold(1));
+    client.approve(&signer2, &set_pid);
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&signer2, &set_pid);
+
+    // signer2 is a current signer but was never in the stale proposal's
+    // approver snapshot's approvals; cancellation must still succeed rather
+    // than deadlock (#533).
+    client.cancel_proposal(&signer2, &pid);
+    assert_eq!(
+        client.try_approve(&admin, &pid),
+        Err(Ok(Error::ProposalNotFound))
+    );
+}
+
+#[test]
+fn high_risk_execute_before_threshold_met_fails() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let signer2 = Address::generate(&env);
+    client.seed_admin(&admin, &signer2);
+
+    client.deposit(&admin, &500);
+    let recipient = Address::generate(&env);
+    let pid = client.propose(&admin, &ProposalAction::ReleaseEscrow(recipient, 100));
+
+    skip_high_risk_delay(&env);
+    // Only the proposer has approved — threshold (2) not met.
+    assert_eq!(
+        client.try_execute_proposal(&admin, &pid),
+        Err(Ok(Error::ThresholdNotMet))
+    );
+}
+
+// ── #529: liquidity buffer & withdrawal queue ──────────────────────────────
+
+#[test]
+fn deploy_to_strategy_below_min_idle_reserve_fails() {
+    let (env, client, admin, _token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+    client.deposit(&alice, &1_000);
+
+    client.set_min_idle_reserve(&admin, &300);
+
+    let strategy = env.register_contract(None, RealTokenStrategy);
+    client.set_strategy(&admin, &strategy);
+
+    // Deploying 800 would leave only 200 idle, below the 300 buffer.
+    assert_eq!(
+        client.try_deploy_to_strategy(&admin, &800),
+        Err(Ok(Error::InsufficientIdleReserve))
+    );
+    // Deploying 700 leaves exactly 300 idle — allowed.
+    client.deploy_to_strategy(&admin, &700);
+    assert_eq!(client.pool().principal_in_strategy, 700);
+}
+
+#[test]
+fn withdraw_queues_when_strategy_deployment_exhausts_idle_liquidity() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+    client.deposit(&alice, &1_000);
+
+    let strategy = env.register_contract(None, RealTokenStrategy);
+    client.set_strategy(&admin, &strategy);
+    client.deploy_to_strategy(&admin, &900); // only 100 left in real custody
+
+    skip_lockup(&env);
+    // Queuing is a successful outcome (Ok(0) paid immediately), not an
+    // error — a failing top-level call would roll back the queue entry (#529).
+    let result = client.withdraw(&alice);
+    assert_eq!(result, 0);
+    // Nothing was paid out, and the participant's principal is untouched.
+    assert_eq!(token.balance(&alice), 0);
+    assert_eq!(client.savings(&alice).withdrawn_principal, 0);
+
+    let qid = client.withdrawal_request_of(&alice).unwrap();
+    let request = client.withdrawal_request(&qid);
+    assert_eq!(request.amount, 1_000);
+    assert_eq!(request.status, WithdrawalRequestStatus::Pending);
+
+    // Calling withdraw again while queued is rejected, not re-queued (#529).
+    assert_eq!(
+        client.try_withdraw(&alice),
+        Err(Ok(Error::WithdrawalAlreadyQueued))
+    );
+}
+
+#[test]
+fn fulfill_withdrawal_queue_pays_partial_then_completes_in_order() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.join(&alice);
+    client.join(&bob);
+    issuer.mint(&alice, &1_000);
+    issuer.mint(&bob, &1_000);
+    client.deposit(&alice, &1_000);
+    client.deposit(&bob, &1_000);
+
+    let strategy = env.register_contract(None, RealTokenStrategy);
+    client.set_strategy(&admin, &strategy);
+    client.deploy_to_strategy(&admin, &1_950); // 50 left idle
+
+    skip_lockup(&env);
+    // Alice queues first (FIFO position 0), then Bob (position 1).
+    assert_eq!(client.withdraw(&alice), 0);
+    assert_eq!(client.withdraw(&bob), 0);
+
+    // Only 50 idle: fulfillment partially pays Alice's 1,000 request and
+    // stops — Bob's smaller-or-equal request is never paid out of order.
+    let paid = client.fulfill_withdrawal_queue(&admin, &10);
+    assert_eq!(paid, 50);
+    assert_eq!(token.balance(&alice), 50);
+    assert_eq!(token.balance(&bob), 0);
+    assert_eq!(client.withdrawal_queue_head(), 0, "alice's request stays at head, partially paid");
+
+    // Recall more liquidity from the strategy, then fulfill the rest.
+    client.recall_from_strategy(&admin, &1_950);
+    let paid2 = client.fulfill_withdrawal_queue(&admin, &10);
+    assert_eq!(paid2, 1_950);
+    assert_eq!(token.balance(&alice), 1_000);
+    assert_eq!(token.balance(&bob), 1_000);
+    assert_eq!(client.withdrawal_queue_head(), 2, "both requests fulfilled");
+}
+
+#[test]
+fn cancel_withdrawal_request_preserves_claim_for_a_later_withdraw() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+    client.deposit(&alice, &1_000);
+
+    let strategy = env.register_contract(None, RealTokenStrategy);
+    client.set_strategy(&admin, &strategy);
+    client.deploy_to_strategy(&admin, &900);
+
+    skip_lockup(&env);
+    assert_eq!(client.withdraw(&alice), 0);
+
+    let refunded = client.cancel_withdrawal_request(&alice);
+    assert_eq!(refunded, 1_000);
+    assert_eq!(client.savings(&alice).withdrawn_principal, 0);
+
+    // Recall liquidity, then a fresh withdraw succeeds immediately.
+    client.recall_from_strategy(&admin, &900);
+    let paid = client.withdraw(&alice);
+    assert_eq!(paid, 1_000);
+    assert_eq!(token.balance(&alice), 1_000);
 }

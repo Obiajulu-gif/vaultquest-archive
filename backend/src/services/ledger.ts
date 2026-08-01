@@ -72,6 +72,33 @@ function stableStringify(value: unknown): string {
 
 export type ActionConfirmedCallback = (actionId: string, actionType: string) => void;
 
+/** Returns the value of the first key present in `obj` from `keys`, or undefined. */
+function firstDefined(obj: Record<string, unknown>, keys: string[]): unknown {
+  for (const k of keys) {
+    if (obj[k] !== undefined) return obj[k];
+  }
+  return undefined;
+}
+
+/**
+ * Normalizes a value for equality comparison between actionPayload and a
+ * decoded event payload: numbers/numeric-strings compare as strings (so
+ * `100` and `"100"` agree, but `100` and `100.0` are treated as equal too via
+ * a round-trip through Number), and everything else compares as a trimmed
+ * string. This intentionally does not attempt currency/precision-aware
+ * comparison — an amount that differs even in trailing zeros after
+ * normalization is a genuine mismatch, not a false positive to suppress.
+ */
+function normalize(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "number") return String(value);
+  if (typeof value === "string") {
+    const n = Number(value);
+    return Number.isFinite(n) && value.trim() !== "" ? String(n) : value.trim().toLowerCase();
+  }
+  return JSON.stringify(value);
+}
+
 export class LedgerService {
   private onActionConfirmedCallback: ActionConfirmedCallback | null = null;
 
@@ -244,6 +271,9 @@ export class LedgerService {
               submittedAt: new Date(),
               confirmedAt: new Date(),
               sorobanEventId: pending.sorobanEventId,
+              // #509: same rationale as reconcileEvent — this is the
+              // finalized event's decoded payload, not the caller's claim.
+              verifiedPayload: pending.eventPayload as object,
               errorCode: pending.statusHint === "reverted" ? ERROR_CODES.REVERTED_ON_CHAIN : null
             }
           });
@@ -296,6 +326,75 @@ export class LedgerService {
   async getAction(id: string): Promise<ActionRecord | null> {
     const row = await this.prisma.actionLedger.findUnique({ where: { id } });
     return row ? (row as unknown as ActionRecord) : null;
+  }
+
+  /**
+   * Verifies that an action's claimed payout facts (winner/recipient, amount,
+   * asset) agree with what the finalized on-chain event actually decoded to
+   * (#509). `actionPayload` is client-supplied and mutable by anyone with
+   * database write access; `verifiedPayload` is populated only from
+   * `reconcileEvent`/`attachTxHash`'s pending-event match, both of which are
+   * driven exclusively by the indexer reading finalized Soroban events.
+   *
+   * Returns `verified: false` — never throws — for every disagreement case
+   * so callers (e.g. a "payoutConfirmed" flag) can surface *why* verification
+   * failed rather than just erroring.
+   */
+  async verifyPayoutIntegrity(actionId: string): Promise<{
+    verified: boolean;
+    reason?: string;
+    action: ActionRecord | null;
+  }> {
+    const row = await this.prisma.actionLedger.findUnique({ where: { id: actionId } });
+    if (!row) {
+      return { verified: false, reason: "action not found", action: null };
+    }
+    const action = row as unknown as ActionRecord;
+
+    if (action.status === "reverted") {
+      return { verified: false, reason: "transaction reverted on-chain", action };
+    }
+    if (action.status !== "confirmed") {
+      // Not yet backed by a finalized event — pending/submitted/failed/orphaned
+      // must never be reported as a verified payout, regardless of what
+      // actionPayload claims.
+      return { verified: false, reason: `action status is ${action.status}, not confirmed`, action };
+    }
+    if (!action.verifiedPayload) {
+      // Should not happen for a `confirmed` row (both reconciliation paths
+      // set it), but fail closed rather than assume agreement.
+      return { verified: false, reason: "no finalized event payload on record", action };
+    }
+
+    const claimed = (action.actionPayload ?? {}) as Record<string, unknown>;
+    const verifiedEvent = action.verifiedPayload as Record<string, unknown>;
+
+    // Field names are normalised loosely (winner/recipient, asset/token) since
+    // actionPayload and the decoded event payload aren't guaranteed to use
+    // identical keys — but every field that both sides *do* provide must
+    // agree; a field present on one side and absent on the other is treated
+    // as a mismatch rather than silently skipped.
+    const fieldPairs: Array<[string, string[]]> = [
+      ["recipient", ["winner", "recipient", "to"]],
+      ["amount", ["amount", "value"]],
+      ["asset", ["asset", "token"]],
+      ["contractId", ["contractId", "contract_id"]]
+    ];
+
+    for (const [label, keys] of fieldPairs) {
+      const claimedVal = firstDefined(claimed, keys);
+      const verifiedVal = firstDefined(verifiedEvent, keys);
+      if (claimedVal === undefined && verifiedVal === undefined) continue;
+      if (normalize(claimedVal) !== normalize(verifiedVal)) {
+        return {
+          verified: false,
+          reason: `${label} mismatch: claimed=${JSON.stringify(claimedVal)} verified=${JSON.stringify(verifiedVal)}`,
+          action
+        };
+      }
+    }
+
+    return { verified: true, action };
   }
 
   async listActions(params: ListActionsParams): Promise<ListActionsResult> {
@@ -363,6 +462,11 @@ export class LedgerService {
         data: {
           status: input.statusHint === "reverted" ? "reverted" : "confirmed",
           sorobanEventId: input.sorobanEventId,
+          // #509: persist what the finalized on-chain event actually decoded
+          // to, distinct from actionPayload (client-supplied, mutable).
+          // Nothing should treat this action's payout facts as trustworthy
+          // from actionPayload alone — see verifyPayoutIntegrity below.
+          verifiedPayload: input.eventPayload as object,
           confirmedAt: new Date(),
           errorCode: input.statusHint === "reverted" ? ERROR_CODES.REVERTED_ON_CHAIN : null
         }
@@ -607,6 +711,7 @@ export class LedgerService {
     for (const action of confirmedActionsChronological) {
       const payload = action.actionPayload as Record<string, unknown> | null;
       if (!payload) continue;
+
       const vaultId = String(payload.vault_id ?? payload.pool_id ?? "default");
       if (!(vaultId in vaultCanonicalToken)) {
         vaultCanonicalToken[vaultId] = String(payload.token ?? payload.asset ?? DEFAULT_POOL_ASSET_CODE);
@@ -626,9 +731,33 @@ export class LedgerService {
       const token = String(payload.token ?? payload.asset ?? DEFAULT_POOL_ASSET_CODE);
       const canonicalToken = vaultCanonicalToken[vaultId] ?? token;
 
+      // #509: for claim/select_winner (payout-bearing actions), the amount
+      // must come from the finalized event's decoded payload when one is on
+      // record — actionPayload is client-supplied and mutable, and this
+      // figure is exactly the "claimable_amount" the wallet UI displays as
+      // fact. Deposit/withdraw amounts still read actionPayload: the wallet
+      // itself signs those transactions, so there's no third-party payout
+      // trust boundary to cross for them the way there is for a payout the
+      // *admin* settles on the wallet's behalf.
+      const isPayoutAction = action.actionType === "claim" || action.actionType === "select_winner";
+      const verified = action.verifiedPayload as Record<string, unknown> | null;
+      if (isPayoutAction && !verified) {
+        // A claim/select_winner confirmed on-chain but with no verified
+        // payload on record (shouldn't happen — both reconciliation paths
+        // always set it for a confirmed row — but if data predates this
+        // column, or the event decode failed silently upstream) is excluded
+        // rather than trusting an unverified actionPayload amount.
+        invalidActionCount++;
+        continue;
+      }
+      const amountSource = isPayoutAction && verified ? verified : payload;
+      const amountToken = isPayoutAction && verified
+        ? String(verified.token ?? verified.asset ?? token)
+        : token;
+
       let amount: Amount;
       try {
-        amount = Amount.fromPayload(payload, token, DEFAULT_POOL_ASSET_DECIMALS);
+        amount = Amount.fromPayload(amountSource, amountToken, DEFAULT_POOL_ASSET_DECIMALS);
       } catch (err) {
         if (err instanceof InvalidAmountError) {
           invalidActionCount++;
@@ -637,7 +766,7 @@ export class LedgerService {
         throw err;
       }
 
-      if (token !== canonicalToken) {
+      if (amountToken !== canonicalToken) {
         // This action's asset doesn't match the vault's canonical asset
         // (established from its earliest confirmed action) — a data
         // inconsistency, not something to combine. Skip rather than
@@ -654,7 +783,7 @@ export class LedgerService {
         poolBalances[vaultId].balance = poolBalances[vaultId].balance.add(amount);
       } else if (action.actionType === "withdraw") {
         poolBalances[vaultId].balance = poolBalances[vaultId].balance.subtract(amount);
-      } else if (action.actionType === "claim") {
+      } else if (isPayoutAction) {
         totalClaimed = totalClaimed ? totalClaimed.add(amount) : amount;
       }
     }

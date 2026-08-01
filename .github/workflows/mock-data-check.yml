@@ -1,0 +1,53 @@
+name: Mock Data Guard
+
+on:
+  pull_request:
+    paths:
+      - "app/**"
+      - "components/**"
+      - "lib/**"
+      - "services/**"
+      - "hooks/**"
+      - "backend/src/**"
+      - "scripts/check-mock-data.js"
+      - "scripts/mock-data-allowlist.json"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/mock-data-check.yml"
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - "app/**"
+      - "components/**"
+      - "lib/**"
+      - "services/**"
+      - "hooks/**"
+      - "backend/src/**"
+      - "scripts/check-mock-data.js"
+      - "scripts/mock-data-allowlist.json"
+      - ".github/workflows/mock-data-check.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mock-data-check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-mock-data:
+    name: Check for mock data / placeholder services in production paths
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Run mock data guard
+        run: node ./scripts/check-mock-data.js

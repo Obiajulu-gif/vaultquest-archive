@@ -43,6 +43,12 @@ fn skip_lockup(env: &Env) {
     env.ledger().set_sequence_number(current + 120_961);
 }
 
+/// Advance ledger sequence past the high-risk governance timelock (#533).
+fn skip_high_risk_delay(env: &Env) {
+    let current = env.ledger().sequence();
+    env.ledger().set_sequence_number(current + HIGH_RISK_DELAY_LEDGERS + 1);
+}
+
 fn create_participants(env: &Env, client: &DripPoolClient, count: u32) -> Vec<Address> {
     let mut participants = Vec::new(env);
     for _ in 0..count {
@@ -479,7 +485,9 @@ fn bench_propose_and_approve_2_of_2() {
         &ProposalAction::ReleaseEscrow(recipient.clone(), 5_000),
     );
     let executed = client.approve(&signer2, &pid);
-    assert!(executed);
+    assert!(!executed, "high-risk action must not execute before its delay");
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&signer2, &pid);
 
     let pool = client.pool();
     assert_eq!(pool.total_deposited, 5_000);
@@ -498,9 +506,11 @@ fn bench_propose_and_approve_3_of_5() {
     client.seed_admin(&admin, &signer2);
     client.seed_admin(&admin, &signer3);
 
-    // Lower threshold to 3 via proposal
+    // Lower threshold to 3 via proposal (high-risk: needs its own delay).
     let threshold_pid = client.propose(&admin, &ProposalAction::SetThreshold(3));
     let _ = client.approve(&signer2, &threshold_pid);
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&signer2, &threshold_pid);
 
     client.deposit(&admin, &10_000);
 
@@ -511,7 +521,9 @@ fn bench_propose_and_approve_3_of_5() {
     );
     let _ = client.approve(&signer2, &pid);
     let executed = client.approve(&signer3, &pid);
-    assert!(executed);
+    assert!(!executed, "high-risk action must not execute before its delay");
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&signer3, &pid);
 
     let pool = client.pool();
     assert_eq!(pool.total_deposited, 5_000);
@@ -956,7 +968,9 @@ fn bench_proposal_with_5_admins() {
     let _ = client.approve(&signer2, &pid);
     let _ = client.approve(&signer3, &pid);
     let executed = client.approve(&signer4, &pid);
-    assert!(executed);
+    assert!(!executed, "high-risk action must not execute before its delay");
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&signer4, &pid);
 
     let pool = client.pool();
     assert_eq!(pool.total_deposited, 5_000);

@@ -78,6 +78,11 @@ const PERSISTENT_TTL_EXTEND: u32 = 500_000;
 // ── Proposal expiry (~30 days at 5 s/ledger) ──────────────────────────────
 const PROPOSAL_EXPIRY_LEDGERS: u32 = 17_280 * 30;
 
+// ── Timelock delay for high-risk governance actions (~24h at 5 s/ledger,
+// #533). Applies to fund release, emergency transitions, signer removal,
+// threshold changes, and strategy rotation — see `is_high_risk`.
+pub(crate) const HIGH_RISK_DELAY_LEDGERS: u32 = 17_280;
+
 // ── Default multi-sig threshold ────────────────────────────────────────────
 const DEFAULT_THRESHOLD: u32 = 2;
 
@@ -100,6 +105,18 @@ pub enum DataKey {
     StrategyExposureCap,    // i128 — maximum allowable deposit for active strategy (#532)
     ProposedExposureCap,    // i128 — exposure cap for candidate strategy (#532)
     StrategyRotationPhase,  // StrategyRotationPhase — phase of current rotation (#532)
+    StrategyRotationReadyAt, // u32 — ledger sequence when the pending rotation may activate (#533)
+    GovernanceEpoch,        // u32 — bumped on every Admins/Threshold change (#533)
+    MinIdleReserve,         // i128 — minimum idle principal governance must leave undeployed (#529)
+    WithdrawalQueueHead,    // u32 — next withdrawal request id to fulfill (#529)
+    WithdrawalQueueTail,    // u32 — next withdrawal request id to assign (#529)
+    WithdrawalRequest(u32), // queued withdrawal request, by id (#529)
+    ParticipantQueue(Address), // Address -> pending request id, prevents duplicate queuing (#529)
+    RoundNonce,             // u32 — next round id to assign (#508)
+    Round(u32),             // Round — round-scoped state, by round id (#508)
+    RoundDeposit(Address, u32), // i128 — a participant's principal snapshotted into a
+    // specific round; keyed per (address, round_id) rather than a Vec on
+    // Participant to avoid unbounded per-participant storage growth (#508)
 }
 
 // ── Errors ─────────────────────────────────────────────────────────────────
@@ -131,6 +148,8 @@ pub enum Error {
     NotInEmergency = 22,          // emergency exit blocked while not in emergency mode (#512)
     Insolvent = 23,               // principal coverage below policy (#512)
     IncompatibleConfig = 24,      // configuration schema version mismatch (#441)
+    GovernanceEpochChanged = 25, // admin/threshold set changed since proposal creation (#533)
+    TimelockNotElapsed = 26,     // high-risk proposal executed before its delay (#533)
     StrategyNotSet = 51,
     StrategyVersionUnsupported = 52,
     StrategyPaused = 53,
@@ -141,6 +160,17 @@ pub enum Error {
     StrategyUnreconciledPrincipal = 58,
     ExposureCapExceeded = 59,
     StrategyAssetMismatch = 60,
+    StrategyRotationDelayNotElapsed = 61, // activate_strategy before timelock elapses (#533)
+    InsufficientIdleReserve = 62,  // deploy_to_strategy would breach the idle buffer (#529)
+    WithdrawalAlreadyQueued = 64,  // participant already has a pending queued withdrawal (#529)
+    WithdrawalRequestNotFound = 65,
+    WithdrawalRequestNotOwned = 66,
+    WithdrawalRequestNotPending = 67,
+    RoundNotFound = 68,      // referenced round id has no stored Round (#508)
+    RoundNotOpen = 69,       // round_deposit into a round that isn't Open (#508)
+    RoundNotLocked = 70,     // settle_round called on a round that isn't Locked (#508)
+    RoundAlreadySettled = 71, // settle_round/round_claim called twice on the same round (#508)
+    RoundAccountingViolation = 72, // a round-scoped invariant would be broken by this mutation (#508)
 }
 
 // ── Structs ────────────────────────────────────────────────────────────────
@@ -194,6 +224,35 @@ pub struct Proposal {
     pub approvals: Vec<Address>,
     pub expires_at: u32, // ledger sequence; approvals rejected after this (#383)
     pub approver_snapshot: Vec<Address>, // admin set frozen at proposal creation (#384)
+    pub threshold_snapshot: u32, // approvals required, frozen at creation — a later
+    // SetThreshold can never raise or lower what THIS proposal needs (#533)
+    pub epoch_snapshot: u32, // governance epoch at creation; a later Admins/Threshold
+    // change bumps the epoch and makes this proposal stale (#533)
+    pub ready_at: u32, // ledger sequence at/after which this proposal may execute;
+                        // `created_at + HIGH_RISK_DELAY_LEDGERS` for high-risk actions,
+                        // `created_at` (immediate) otherwise (#533)
+}
+
+/// Lifecycle status of a queued withdrawal request (#529).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[contracttype]
+pub enum WithdrawalRequestStatus {
+    Pending,
+    Fulfilled,
+    Cancelled,
+    Expired,
+}
+
+/// A FIFO withdrawal request created when idle liquidity cannot cover an
+/// immediate withdrawal because principal is deployed to a strategy (#529).
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct WithdrawalRequest {
+    pub who: Address,
+    pub amount: i128, // remaining amount still owed via this request
+    pub requested_at: u32,
+    pub expires_at: u32,
+    pub status: WithdrawalRequestStatus,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -206,6 +265,36 @@ pub enum ProposalAction {
     TriggerEmergency(i128), // enter emergency mode with available asset amount (#512)
     Recapitalize(i128),     // inject capital into emergency pool (#512)
     ResumeNormal,           // return to normal operations (#512)
+}
+
+/// Lifecycle status of a round (#508).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[contracttype]
+pub enum RoundStatus {
+    Open,    // accepting round_deposit
+    Locked,  // principal_snapshot frozen; deposits rejected
+    Settled, // realized_yield/prize_reserve fixed; round_claim enabled
+}
+
+/// Round-scoped accounting (#508). Isolates yield/prize computed for one
+/// round from every other round: `principal_snapshot` is frozen at
+/// `lock_round`, `realized_yield`/`prize_reserve` are fixed once at
+/// `settle_round`, and neither can be mutated afterward. This is what
+/// prevents a late deposit from diluting an already-locked round's snapshot,
+/// and prevents yield settled for round N from being double-counted into
+/// round N+1.
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct Round {
+    pub id: u32,
+    pub status: RoundStatus,
+    pub opened_at: u64,               // ledger timestamp when opened
+    pub locked_at: Option<u64>,       // ledger timestamp when locked
+    pub settled_at: Option<u64>,      // ledger timestamp when settled
+    pub principal_snapshot: i128,     // sum of round_deposit amounts at lock time
+    pub realized_yield: i128,         // set once, at settlement; 0 until then
+    pub prize_reserve: i128,          // set once, at settlement; 0 until then
+    pub claimed: i128,                // running total paid out via round_claim
 }
 
 // ── Contract ───────────────────────────────────────────────────────────────
@@ -269,6 +358,37 @@ impl DripPool {
             return Err(Error::IncompatibleConfig);
         }
         Ok(())
+    }
+
+    // ── Governance epoch & timelock helpers (#533) ────────────────────────
+
+    fn get_epoch(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::GovernanceEpoch)
+            .unwrap_or(0)
+    }
+
+    /// Bump the governance epoch. Called whenever the admin set or threshold
+    /// changes, so proposals snapshotted under the old rules become stale
+    /// (#533) instead of being silently approved/executed under new ones.
+    fn bump_epoch(env: &Env) {
+        let epoch = Self::get_epoch(env) + 1;
+        env.storage().instance().set(&DataKey::GovernanceEpoch, &epoch);
+    }
+
+    /// High-risk actions get a ledger-based execution delay after the
+    /// approval threshold is met, so they can never execute immediately even
+    /// when fully approved (#533).
+    fn is_high_risk(action: &ProposalAction) -> bool {
+        matches!(
+            action,
+            ProposalAction::ReleaseEscrow(_, _)
+                | ProposalAction::RemoveAdmin(_)
+                | ProposalAction::SetThreshold(_)
+                | ProposalAction::TriggerEmergency(_)
+                | ProposalAction::ResumeNormal
+        )
     }
 
     fn bump_participant(env: &Env, key: &DataKey) {
@@ -379,6 +499,51 @@ impl DripPool {
         accounting_update()
     }
 
+    // ── Withdrawal queue helpers (#529) ────────────────────────────────────
+
+    /// Real spendable custody: the contract's own SAC balance. When no token
+    /// is configured, transfers are no-ops, so liquidity is never the
+    /// constraint (mirrors `transfer_tokens`'s backward-compatible no-op).
+    fn idle_liquidity(env: &Env) -> i128 {
+        if !Self::has_token_configured(env) {
+            return i128::MAX;
+        }
+        let token_addr = match Self::get_token_address(env) {
+            Ok(a) => a,
+            Err(_) => return i128::MAX,
+        };
+        let contract_addr = env.current_contract_address();
+        soroban_sdk::token::TokenClient::new(env, &token_addr).balance(&contract_addr)
+    }
+
+    /// Push a new FIFO withdrawal request. Bounded and ordered by assignment
+    /// order — the queue can only be processed head-first (#529).
+    fn enqueue_withdrawal(env: &Env, who: &Address, amount: i128) -> u32 {
+        let tail: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::WithdrawalQueueTail)
+            .unwrap_or(0);
+        let request = WithdrawalRequest {
+            who: who.clone(),
+            amount,
+            requested_at: env.ledger().sequence(),
+            expires_at: env.ledger().sequence() + PROPOSAL_EXPIRY_LEDGERS,
+            status: WithdrawalRequestStatus::Pending,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::WithdrawalRequest(tail), &request);
+        env.storage()
+            .instance()
+            .set(&DataKey::ParticipantQueue(who.clone()), &tail);
+        env.storage()
+            .instance()
+            .set(&DataKey::WithdrawalQueueTail, &(tail + 1));
+        Self::bump_instance(env);
+        tail
+    }
+
     // ── Initialise ─────────────────────────────────────────────────────────
     pub fn create(env: Env, admin: Address) -> Result<(), Error> {
         admin.require_auth();
@@ -472,6 +637,7 @@ impl DripPool {
         if !admins.contains(&new_admin) {
             admins.push_back(new_admin);
             env.storage().instance().set(&DataKey::Admins, &admins);
+            Self::bump_epoch(&env);
         }
         Self::bump_instance(&env);
         Ok(())
@@ -527,15 +693,28 @@ impl DripPool {
         pool.proposal_nonce += 1;
         env.storage().instance().set(&DataKey::Pool, &pool);
 
-        // Snapshot the current admin set; only these addresses may approve (#384)
+        // Snapshot the current admin set, threshold and governance epoch;
+        // only this snapshot governs whether/when this proposal can execute,
+        // regardless of later Admins/Threshold changes (#384, #533).
         let snapshot = Self::get_admins(&env);
-        let expires_at = env.ledger().sequence() + PROPOSAL_EXPIRY_LEDGERS;
+        let threshold_snapshot = Self::get_threshold(&env);
+        let epoch_snapshot = Self::get_epoch(&env);
+        let now = env.ledger().sequence();
+        let ready_at = if Self::is_high_risk(&action) {
+            now + HIGH_RISK_DELAY_LEDGERS
+        } else {
+            now
+        };
+        let expires_at = now + PROPOSAL_EXPIRY_LEDGERS;
 
         let proposal = Proposal {
             action,
             approvals: vec![&env, signer],
             expires_at,
             approver_snapshot: snapshot,
+            threshold_snapshot,
+            epoch_snapshot,
+            ready_at,
         };
         env.storage()
             .instance()
@@ -544,7 +723,10 @@ impl DripPool {
         Ok(nonce)
     }
 
-    /// Approve an existing proposal. Executes automatically when threshold met.
+    /// Approve an existing proposal. Executes automatically once the
+    /// proposal's own snapshotted threshold is met AND (for high-risk
+    /// actions) its timelock delay has elapsed — never before (#533).
+    /// Returns whether the action executed as part of this call.
     pub fn approve(env: Env, signer: Address, proposal_id: u32) -> Result<bool, Error> {
         signer.require_auth();
         Self::require_signer(&env, &signer)?;
@@ -564,6 +746,15 @@ impl DripPool {
             return Err(Error::ProposalExpired);
         }
 
+        // A later Admins/Threshold change invalidates proposals snapshotted
+        // under the old epoch — they cannot be revived, only re-proposed (#533).
+        if proposal.epoch_snapshot != Self::get_epoch(&env) {
+            env.storage()
+                .instance()
+                .remove(&DataKey::Proposal(proposal_id));
+            return Err(Error::GovernanceEpochChanged);
+        }
+
         // Approvers must be in the snapshot from proposal creation (#384)
         if !proposal.approver_snapshot.contains(&signer) {
             return Err(Error::Unauthorized);
@@ -574,26 +765,31 @@ impl DripPool {
         }
         proposal.approvals.push_back(signer);
 
-        let threshold = Self::get_threshold(&env);
-        let threshold_met = proposal.approvals.len() >= threshold;
-        if threshold_met {
-            Self::execute_proposal(&env, &proposal)?;
+        // Threshold is always evaluated against the snapshot taken at
+        // creation, never the live value (#533).
+        let threshold_met = proposal.approvals.len() >= proposal.threshold_snapshot;
+        let executed = if threshold_met && env.ledger().sequence() >= proposal.ready_at {
+            Self::apply_proposal_action(&env, &proposal)?;
             env.storage()
                 .instance()
                 .remove(&DataKey::Proposal(proposal_id));
+            true
         } else {
             env.storage()
                 .instance()
                 .set(&DataKey::Proposal(proposal_id), &proposal);
-        }
+            false
+        };
         Self::bump_instance(&env);
-        Ok(threshold_met)
+        Ok(executed)
     }
 
-    /// Cancel a pending proposal. Any signer present in the proposal's snapshot may cancel.
-    pub fn cancel_proposal(env: Env, signer: Address, proposal_id: u32) -> Result<(), Error> {
-        signer.require_auth();
-        Self::require_signer(&env, &signer)?;
+    /// Execute a proposal whose threshold was already met by `approve` but
+    /// whose timelock delay had not yet elapsed. Any current signer may
+    /// trigger it once the delay passes and before expiry (#533).
+    pub fn execute_proposal(env: Env, caller: Address, proposal_id: u32) -> Result<(), Error> {
+        caller.require_auth();
+        Self::require_signer(&env, &caller)?;
         Self::require_compatible_config(&env)?;
 
         let proposal: Proposal = env
@@ -602,7 +798,60 @@ impl DripPool {
             .get(&DataKey::Proposal(proposal_id))
             .ok_or(Error::ProposalNotFound)?;
 
-        if !proposal.approver_snapshot.contains(&signer) {
+        if proposal.epoch_snapshot != Self::get_epoch(&env) {
+            env.storage()
+                .instance()
+                .remove(&DataKey::Proposal(proposal_id));
+            return Err(Error::GovernanceEpochChanged);
+        }
+
+        if env.ledger().sequence() > proposal.expires_at {
+            env.storage()
+                .instance()
+                .remove(&DataKey::Proposal(proposal_id));
+            return Err(Error::ProposalExpired);
+        }
+
+        if proposal.approvals.len() < proposal.threshold_snapshot {
+            return Err(Error::ThresholdNotMet);
+        }
+
+        if env.ledger().sequence() < proposal.ready_at {
+            return Err(Error::TimelockNotElapsed);
+        }
+
+        Self::apply_proposal_action(&env, &proposal)?;
+        env.storage()
+            .instance()
+            .remove(&DataKey::Proposal(proposal_id));
+        Self::bump_instance(&env);
+        Ok(())
+    }
+
+    /// Cancel a pending proposal. Any signer present in the proposal's
+    /// snapshot may cancel. Once the governance epoch has moved on, any
+    /// *current* signer may also cancel — otherwise a rotated-out signer set
+    /// could leave a stale proposal permanently stuck (#533).
+    pub fn cancel_proposal(env: Env, signer: Address, proposal_id: u32) -> Result<(), Error> {
+        signer.require_auth();
+        Self::require_compatible_config(&env)?;
+
+        let proposal: Proposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::Proposal(proposal_id))
+            .ok_or(Error::ProposalNotFound)?;
+
+        let is_current_signer = Self::get_admins(&env).contains(&signer);
+        let in_snapshot = proposal.approver_snapshot.contains(&signer);
+        let epoch_stale = proposal.epoch_snapshot != Self::get_epoch(&env);
+
+        let authorized = if epoch_stale {
+            is_current_signer || in_snapshot
+        } else {
+            is_current_signer && in_snapshot
+        };
+        if !authorized {
             return Err(Error::Unauthorized);
         }
 
@@ -613,19 +862,23 @@ impl DripPool {
         Ok(())
     }
 
-    fn execute_proposal(env: &Env, proposal: &Proposal) -> Result<(), Error> {
+    fn apply_proposal_action(env: &Env, proposal: &Proposal) -> Result<(), Error> {
         match proposal.action.clone() {
             ProposalAction::AddAdmin(addr) => {
                 let mut admins = Self::get_admins(env);
                 if !admins.contains(&addr) {
                     admins.push_back(addr);
                     env.storage().instance().set(&DataKey::Admins, &admins);
+                    Self::bump_epoch(env);
                 }
             }
             ProposalAction::RemoveAdmin(addr) => {
                 let admins = Self::get_admins(env);
                 let threshold = Self::get_threshold(env);
-                // Liveness guard: cannot reduce admin count to below threshold (#383)
+                // Liveness guard: cannot reduce admin count to below threshold
+                // (#383). Checked against the CURRENT threshold at execution
+                // time, since this is a live safety invariant rather than
+                // something frozen by the approval-count snapshot (#533).
                 if admins.len() <= threshold {
                     return Err(Error::InvalidAction);
                 }
@@ -636,6 +889,7 @@ impl DripPool {
                     }
                 }
                 env.storage().instance().set(&DataKey::Admins, &new_admins);
+                Self::bump_epoch(env);
             }
             ProposalAction::ReleaseEscrow(recipient, amount) => {
                 let mut pool: Pool = env
@@ -669,6 +923,7 @@ impl DripPool {
                     return Err(Error::InvalidAction);
                 }
                 env.storage().instance().set(&DataKey::Threshold, &t);
+                Self::bump_epoch(env);
             }
             ProposalAction::TriggerEmergency(assets) => {
                 let mut pool: Pool = env
@@ -936,8 +1191,22 @@ impl DripPool {
 
         let mut p = Self::load_participant(&env, &who)?;
         let available = (p.yield_accrued + p.prize) - p.claimed_reward;
+        if available <= 0 {
+            return Ok(0);
+        }
         p.claimed_reward += available;
         Self::save_participant(&env, &who, &p);
+
+        // Transfer first; roll back claimed_reward on failure so a failed
+        // claim never silently burns the reward and can be retried (#526,
+        // mirrors the withdraw/sweep_unclaimed rollback pattern from #376/#440).
+        let contract_addr = env.current_contract_address();
+        if let Err(e) = Self::transfer_tokens(&env, &contract_addr, &who, &available) {
+            let mut p = Self::load_participant(&env, &who)?;
+            p.claimed_reward -= available;
+            Self::save_participant(&env, &who, &p);
+            return Err(e);
+        }
 
         env.events().publish(
             (symbol_short!("pool"), symbol_short!("claimed")),
@@ -1025,6 +1294,15 @@ impl DripPool {
     }
 
     // ── Withdraw (#376: real token custody) ────────────────────────────────
+
+    /// Withdraw unwithdrawn principal. Returns the amount paid out
+    /// immediately. If idle custody can't cover it (principal is deployed
+    /// to a strategy), returns `Ok(0)` and enqueues a FIFO withdrawal
+    /// request instead of reverting — a Soroban top-level call that returns
+    /// `Err` rolls back all of its own storage writes, so signaling "queued"
+    /// via an error would silently discard the just-created queue entry.
+    /// Callers should check `withdrawal_request_of` to distinguish a
+    /// genuine zero balance from a queued request (#529).
     pub fn withdraw(env: Env, who: Address) -> Result<i128, Error> {
         who.require_auth();
         Self::require_compatible_config(&env)?;
@@ -1035,17 +1313,40 @@ impl DripPool {
             return Err(Error::LockupActive);
         }
 
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::ParticipantQueue(who.clone()))
+        {
+            return Err(Error::WithdrawalAlreadyQueued);
+        }
+
         // Reentrancy lock via Pool field
         let mut pool: Pool = env
             .storage()
             .instance()
             .get(&DataKey::Pool)
             .ok_or(Error::NotInitialized)?;
+
+        // Never trap on insufficient real custody — queue the request for
+        // governed strategy recall instead (#529). This must return Ok,
+        // not Err: a failing top-level call rolls back everything it wrote,
+        // including the queue entry just created.
+        let available = p.deposited - p.withdrawn_principal;
+        let idle = Self::idle_liquidity(&env);
+        if available > 0 && available > idle {
+            let qid = Self::enqueue_withdrawal(&env, &who, available);
+            env.events().publish(
+                (symbol_short!("wq"), symbol_short!("queued")),
+                (who, available, qid),
+            );
+            return Ok(0);
+        }
+
         Self::acquire_lock(&mut pool)?;
         env.storage().instance().set(&DataKey::Pool, &pool);
 
         // Withdraw only unwithdrawn principal, not rewards (#377)
-        let available = p.deposited - p.withdrawn_principal;
         p.withdrawn_principal += available;
         Self::save_participant(&env, &who, &p);
 
@@ -1078,6 +1379,209 @@ impl DripPool {
             (who, available),
         );
         Ok(available)
+    }
+
+    // ── Liquidity buffer & withdrawal queue (#529) ─────────────────────────
+
+    /// Governed: set the minimum idle principal `deploy_to_strategy` must
+    /// leave undeployed, so normal withdrawals always have custody to draw
+    /// from without depending on strategy recall.
+    pub fn set_min_idle_reserve(env: Env, caller: Address, amount: i128) -> Result<(), Error> {
+        caller.require_auth();
+        Self::require_signer(&env, &caller)?;
+        Self::require_compatible_config(&env)?;
+        if amount < 0 {
+            return Err(Error::InvalidAmount);
+        }
+        env.storage().instance().set(&DataKey::MinIdleReserve, &amount);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("pool"), symbol_short!("idlecfg")), amount);
+        Ok(())
+    }
+
+    /// View the configured minimum idle reserve (#529).
+    pub fn min_idle_reserve(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MinIdleReserve)
+            .unwrap_or(0)
+    }
+
+    /// Governed: pay out pending withdrawal requests from the head of the
+    /// FIFO queue, in order, up to `max_requests` and up to currently idle
+    /// liquidity. A request blocking on insufficient liquidity is paid
+    /// partially and stays at the head — later, smaller requests are never
+    /// paid out of order (#529). Returns the total amount paid.
+    pub fn fulfill_withdrawal_queue(
+        env: Env,
+        caller: Address,
+        max_requests: u32,
+    ) -> Result<i128, Error> {
+        caller.require_auth();
+        Self::require_signer(&env, &caller)?;
+        Self::require_compatible_config(&env)?;
+
+        let pool: Pool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pool)
+            .ok_or(Error::NotInitialized)?;
+        if pool.is_emergency {
+            return Err(Error::InEmergency);
+        }
+
+        let mut head: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::WithdrawalQueueHead)
+            .unwrap_or(0);
+        let tail: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::WithdrawalQueueTail)
+            .unwrap_or(0);
+
+        let mut total_paid: i128 = 0;
+        let mut processed: u32 = 0;
+        let contract_addr = env.current_contract_address();
+
+        while head < tail && processed < max_requests {
+            let key = DataKey::WithdrawalRequest(head);
+            let mut request: WithdrawalRequest = match env.storage().instance().get(&key) {
+                Some(r) => r,
+                None => {
+                    head += 1;
+                    continue;
+                }
+            };
+
+            if request.status != WithdrawalRequestStatus::Pending {
+                head += 1;
+                continue;
+            }
+
+            if env.ledger().sequence() > request.expires_at {
+                request.status = WithdrawalRequestStatus::Expired;
+                env.storage().instance().set(&key, &request);
+                env.storage()
+                    .instance()
+                    .remove(&DataKey::ParticipantQueue(request.who.clone()));
+                head += 1;
+                processed += 1;
+                continue;
+            }
+
+            let idle = Self::idle_liquidity(&env);
+            if idle <= 0 {
+                break;
+            }
+
+            let pay = if request.amount <= idle {
+                request.amount
+            } else {
+                idle
+            };
+
+            Self::transfer_tokens(&env, &contract_addr, &request.who, &pay)?;
+
+            let mut p = Self::load_participant(&env, &request.who)?;
+            p.withdrawn_principal += pay;
+            Self::save_participant(&env, &request.who, &p);
+
+            request.amount -= pay;
+            total_paid += pay;
+
+            if request.amount == 0 {
+                request.status = WithdrawalRequestStatus::Fulfilled;
+                env.storage().instance().set(&key, &request);
+                env.storage()
+                    .instance()
+                    .remove(&DataKey::ParticipantQueue(request.who.clone()));
+                head += 1;
+                processed += 1;
+            } else {
+                // Partial payment — liquidity exhausted; stop without
+                // skipping ahead to a later, smaller request (#529).
+                env.storage().instance().set(&key, &request);
+                break;
+            }
+        }
+
+        env.storage().instance().set(&DataKey::WithdrawalQueueHead, &head);
+        Self::bump_instance(&env);
+
+        if total_paid > 0 {
+            env.events()
+                .publish((symbol_short!("wq"), symbol_short!("fulfill")), (head, total_paid));
+        }
+        Ok(total_paid)
+    }
+
+    /// Cancel the caller's own pending withdrawal request. The un-paid
+    /// remaining amount was never counted as withdrawn, so the participant's
+    /// claim is preserved and `withdraw` can be called again later (#529).
+    pub fn cancel_withdrawal_request(env: Env, who: Address) -> Result<i128, Error> {
+        who.require_auth();
+        Self::require_compatible_config(&env)?;
+
+        let qid: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ParticipantQueue(who.clone()))
+            .ok_or(Error::WithdrawalRequestNotFound)?;
+        let key = DataKey::WithdrawalRequest(qid);
+        let mut request: WithdrawalRequest = env
+            .storage()
+            .instance()
+            .get(&key)
+            .ok_or(Error::WithdrawalRequestNotFound)?;
+
+        if request.who != who {
+            return Err(Error::WithdrawalRequestNotOwned);
+        }
+        if request.status != WithdrawalRequestStatus::Pending {
+            return Err(Error::WithdrawalRequestNotPending);
+        }
+
+        let remaining = request.amount;
+        request.status = WithdrawalRequestStatus::Cancelled;
+        env.storage().instance().set(&key, &request);
+        env.storage()
+            .instance()
+            .remove(&DataKey::ParticipantQueue(who));
+        Self::bump_instance(&env);
+
+        env.events()
+            .publish((symbol_short!("wq"), symbol_short!("cancel")), (qid, remaining));
+        Ok(remaining)
+    }
+
+    /// View a withdrawal request by id (#529).
+    pub fn withdrawal_request(env: Env, request_id: u32) -> Result<WithdrawalRequest, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::WithdrawalRequest(request_id))
+            .ok_or(Error::WithdrawalRequestNotFound)
+    }
+
+    /// View the caller's active queued request id, if any (#529).
+    pub fn withdrawal_request_of(env: Env, who: Address) -> Option<u32> {
+        env.storage().instance().get(&DataKey::ParticipantQueue(who))
+    }
+
+    pub fn withdrawal_queue_head(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::WithdrawalQueueHead)
+            .unwrap_or(0)
+    }
+
+    pub fn withdrawal_queue_tail(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::WithdrawalQueueTail)
+            .unwrap_or(0)
     }
 
     // ── Yield management (#382) ────────────────────────────────────────────
@@ -1358,6 +1862,237 @@ impl DripPool {
         Ok(pool.emergency_assets)
     }
 
+    // ── Round-scoped accounting (#508) ──────────────────────────────────────
+    //
+    // A parallel, additive accounting layer: it does not read or mutate
+    // `Pool`/`Participant` at all, so it cannot regress the existing
+    // single-pool deposit/claim/withdraw flows. Each round is independent
+    // storage (`DataKey::Round(id)`), and a participant's contribution to a
+    // given round is tracked separately (`DataKey::RoundDeposit(who, id)`)
+    // from their lifetime `Participant.deposited` total.
+    //
+    // Lifecycle: Open -> Locked -> Settled.
+    //   - `open_round`: admin-only, creates a new Open round.
+    //   - `round_deposit`: any caller, only while the round is Open. Adds to
+    //     the caller's per-round deposit and to the round's live total; the
+    //     live total becomes `principal_snapshot` at lock time.
+    //   - `lock_round`: admin-only, freezes `principal_snapshot` and flips to
+    //     Locked. `round_deposit` is rejected for this round from this point
+    //     on — a late deposit can never dilute an already-locked snapshot.
+    //   - `settle_round`: admin-only (multi-sig signer), sets
+    //     `realized_yield`/`prize_reserve` exactly once and flips to Settled.
+    //     Rejected if the round isn't Locked or is already Settled, so yield
+    //     can never be attributed twice or leak into a later round.
+    //   - `round_claim`: pays a participant their pro-rata share of
+    //     `realized_yield + prize_reserve` for one Settled round, based on
+    //     their frozen per-round deposit versus `principal_snapshot`. Uses
+    //     integer division; any dust remainder stays unclaimed in the round
+    //     (never over-distributed) and is inspectable via `round.claimed`
+    //     vs `round.realized_yield + round.prize_reserve`.
+
+    /// Admin-only: open a new round. Returns the new round's id.
+    pub fn open_round(env: Env, caller: Address) -> Result<u32, Error> {
+        caller.require_auth();
+        Self::require_signer(&env, &caller)?;
+        Self::require_compatible_config(&env)?;
+
+        let id: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RoundNonce)
+            .unwrap_or(0);
+
+        let round = Round {
+            id,
+            status: RoundStatus::Open,
+            opened_at: env.ledger().timestamp(),
+            locked_at: None,
+            settled_at: None,
+            principal_snapshot: 0,
+            realized_yield: 0,
+            prize_reserve: 0,
+            claimed: 0,
+        };
+        env.storage().persistent().set(&DataKey::Round(id), &round);
+        Self::bump_round(&env, &DataKey::Round(id));
+        env.storage()
+            .instance()
+            .set(&DataKey::RoundNonce, &(id + 1));
+        Self::bump_instance(&env);
+
+        env.events()
+            .publish((symbol_short!("round"), symbol_short!("opened")), id);
+        Ok(id)
+    }
+
+    /// Deposit principal into a specific round. Only accepted while that
+    /// round is `Open`; a round that is `Locked` or `Settled` rejects the
+    /// deposit rather than silently misattributing it (#508). This does not
+    /// move tokens or touch `Pool`/`Participant` — it is purely the
+    /// round-scoped accounting ledger.
+    pub fn round_deposit(env: Env, who: Address, round_id: u32, amount: i128) -> Result<(), Error> {
+        who.require_auth();
+        Self::require_compatible_config(&env)?;
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let mut round = Self::load_round(&env, round_id)?;
+        if round.status != RoundStatus::Open {
+            return Err(Error::RoundNotOpen);
+        }
+
+        let key = DataKey::RoundDeposit(who.clone(), round_id);
+        let existing: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        let updated = existing.saturating_add(amount);
+        env.storage().persistent().set(&key, &updated);
+        Self::bump_round(&env, &key);
+
+        round.principal_snapshot = round.principal_snapshot.saturating_add(amount);
+        Self::save_round(&env, &round);
+
+        env.events().publish(
+            (symbol_short!("round"), symbol_short!("deposit")),
+            (who, round_id, amount),
+        );
+        Ok(())
+    }
+
+    /// Admin-only: freeze a round's `principal_snapshot` and move it to
+    /// `Locked`. After this call, `round_deposit` for this round always
+    /// fails — this is the boundary that stops a late deposit from being
+    /// counted in a round that has already closed for deposits (#508).
+    pub fn lock_round(env: Env, caller: Address, round_id: u32) -> Result<(), Error> {
+        caller.require_auth();
+        Self::require_signer(&env, &caller)?;
+        Self::require_compatible_config(&env)?;
+
+        let mut round = Self::load_round(&env, round_id)?;
+        if round.status != RoundStatus::Open {
+            return Err(Error::RoundNotOpen);
+        }
+        round.status = RoundStatus::Locked;
+        round.locked_at = Some(env.ledger().timestamp());
+        Self::save_round(&env, &round);
+
+        env.events().publish(
+            (symbol_short!("round"), symbol_short!("locked")),
+            (round_id, round.principal_snapshot),
+        );
+        Ok(())
+    }
+
+    /// Admin-only (multi-sig signer): fix `realized_yield`/`prize_reserve`
+    /// for a `Locked` round exactly once and move it to `Settled`. Rejects a
+    /// round that isn't `Locked` yet, and rejects a round that is already
+    /// `Settled` (idempotent no-op guard) — so yield can never be attributed
+    /// twice to the same round, and settling round N can never reach into
+    /// round N+1's state, because each round's storage is fully independent
+    /// (#508).
+    pub fn settle_round(
+        env: Env,
+        caller: Address,
+        round_id: u32,
+        realized_yield: i128,
+        prize_reserve: i128,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+        Self::require_signer(&env, &caller)?;
+        Self::require_compatible_config(&env)?;
+        if realized_yield < 0 || prize_reserve < 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let mut round = Self::load_round(&env, round_id)?;
+        match round.status {
+            RoundStatus::Settled => return Err(Error::RoundAlreadySettled),
+            RoundStatus::Open => return Err(Error::RoundNotLocked),
+            RoundStatus::Locked => {}
+        }
+
+        round.realized_yield = realized_yield;
+        round.prize_reserve = prize_reserve;
+        round.status = RoundStatus::Settled;
+        round.settled_at = Some(env.ledger().timestamp());
+        Self::save_round(&env, &round);
+
+        env.events().publish(
+            (symbol_short!("round"), symbol_short!("settled")),
+            (round_id, realized_yield, prize_reserve),
+        );
+        Ok(())
+    }
+
+    /// Claim a participant's pro-rata share of a Settled round's
+    /// `realized_yield + prize_reserve`, proportional to their frozen
+    /// per-round deposit vs. `principal_snapshot`. Enforces
+    /// `round.claimed <= round.realized_yield + round.prize_reserve` inline
+    /// rather than trusting the division, returning
+    /// `Error::RoundAccountingViolation` if a claim would ever push the
+    /// round over its settled total (#508).
+    pub fn round_claim(env: Env, who: Address, round_id: u32) -> Result<i128, Error> {
+        who.require_auth();
+        Self::require_compatible_config(&env)?;
+
+        let mut round = Self::load_round(&env, round_id)?;
+        if round.status != RoundStatus::Settled {
+            return Err(Error::RoundNotLocked);
+        }
+        if round.principal_snapshot <= 0 {
+            return Ok(0);
+        }
+
+        let key = DataKey::RoundDeposit(who.clone(), round_id);
+        let deposit: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        if deposit <= 0 {
+            return Ok(0);
+        }
+
+        let total_pool = round.realized_yield.saturating_add(round.prize_reserve);
+        // Integer division: any dust remainder is left unclaimed in the
+        // round rather than distributed, so total payouts can never exceed
+        // `total_pool` (checked explicitly below regardless).
+        let share = (total_pool.saturating_mul(deposit)) / round.principal_snapshot;
+
+        let new_claimed = round.claimed.saturating_add(share);
+        if new_claimed > total_pool {
+            return Err(Error::RoundAccountingViolation);
+        }
+
+        round.claimed = new_claimed;
+        Self::save_round(&env, &round);
+
+        // Zero out this participant's per-round deposit so a second call
+        // for the same round pays nothing (idempotent claim).
+        env.storage().persistent().set(&key, &0i128);
+        Self::bump_round(&env, &key);
+
+        env.events().publish(
+            (symbol_short!("round"), symbol_short!("claimed")),
+            (who, round_id, share),
+        );
+        Ok(share)
+    }
+
+    fn load_round(env: &Env, round_id: u32) -> Result<Round, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Round(round_id))
+            .ok_or(Error::RoundNotFound)
+    }
+
+    fn save_round(env: &Env, round: &Round) {
+        let key = DataKey::Round(round.id);
+        env.storage().persistent().set(&key, round);
+        Self::bump_round(env, &key);
+    }
+
+    fn bump_round(env: &Env, key: &DataKey) {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
+    }
+
     // ── Views ──────────────────────────────────────────────────────────────
     pub fn config_version(env: Env) -> u32 {
         env.storage()
@@ -1383,6 +2118,13 @@ impl DripPool {
 
     pub fn threshold(env: Env) -> u32 {
         Self::get_threshold(&env)
+    }
+
+    /// View the current governance epoch. Bumped on every Admins/Threshold
+    /// change; proposals snapshotted under an earlier epoch cannot execute
+    /// (#533).
+    pub fn governance_epoch(env: Env) -> u32 {
+        Self::get_epoch(&env)
     }
 
     /// View the configured token address (#376).
@@ -1423,6 +2165,29 @@ impl DripPool {
             .get(&DataKey::Pool)
             .ok_or(Error::NotInitialized)?;
         Ok(pool.unclaimed_swept)
+    }
+
+    /// View a round's full state (#508).
+    pub fn round(env: Env, round_id: u32) -> Result<Round, Error> {
+        Self::load_round(&env, round_id)
+    }
+
+    /// View a participant's frozen deposit for a specific round (#508).
+    /// Zero both before any `round_deposit` and after a successful
+    /// `round_claim` for that round.
+    pub fn round_deposit_of(env: Env, who: Address, round_id: u32) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RoundDeposit(who, round_id))
+            .unwrap_or(0)
+    }
+
+    /// The next round id that `open_round` will assign (#508).
+    pub fn round_nonce(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::RoundNonce)
+            .unwrap_or(0)
     }
 }
 

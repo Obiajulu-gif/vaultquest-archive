@@ -20,6 +20,8 @@
     "generate:manifest": "npx tsx scripts/generate-manifest.ts",
     "check:drift": "npx tsx scripts/check-config-drift.ts",
     "fixtures:regenerate": "node scripts/regenerate-fixtures.js"
+    "fixtures:regenerate": "node scripts/regenerate-fixtures.js",
+    "check:mock-data": "node ./scripts/check-mock-data.js"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.12",

@@ -43,6 +43,26 @@ export interface HorizonGateway {
   submit(signedXdr: string): Promise<SubmitResult>;
 }
 
+/** Facts extracted from a finalized token-transfer/payout event on-chain. */
+export interface VerifiedPayoutFacts {
+  recipient: string;
+  amount: string;
+  /** Asset/token code, when the underlying event exposes one. */
+  asset?: string;
+}
+
+/**
+ * Independently re-confirms a submitted transaction against finalized
+ * ledger/contract-event state, rather than trusting `HorizonGateway.submit`'s
+ * synchronous `successful` flag alone (#509 — a `tx_success` response is not
+ * itself proof of *what* transferred, to *whom*, only that the ledger
+ * accepted the envelope). `null` means no finalized transfer event was found
+ * for this hash — including because the event hasn't been indexed yet.
+ */
+export interface PayoutVerifier {
+  verify(txHash: string): Promise<VerifiedPayoutFacts | null>;
+}
+
 export interface TransactionAssembler {
   assemble(input: AssembleInput): Promise<PreparedTransaction>;
 }
@@ -55,6 +75,14 @@ export interface EscrowServiceDeps {
   signer: AdminSigner;
   assembler: TransactionAssembler;
   networkPassphrase: string;
+  /**
+   * Independently confirms a payout against finalized chain state before
+   * `settleVault` reports `Resolved` (#509). Optional so existing callers
+   * (and pre-#509 tests) keep working unchanged; omitting it reproduces the
+   * prior trust-the-submission-result behavior, so new integrations should
+   * supply one.
+   */
+  verifier?: PayoutVerifier;
   /** Injected sleep — override to `async () => {}` in tests. */
   sleep?: (ms: number) => Promise<void>;
 }
@@ -69,9 +97,10 @@ export interface SettleVaultInput {
 }
 
 export type SettleVaultOutcome =
-  | { state: "Resolved"; txHash: string; attempts: number; alreadySettled?: false }
+  | { state: "Resolved"; txHash: string; attempts: number; alreadySettled?: false; payoutVerified?: boolean }
   | { state: "Unresolved"; txHash: null; attempts: number; alreadySettled?: false; errorCode: string }
-  | { state: "Resolved"; txHash: string; attempts: 0; alreadySettled: true };
+  | { state: "Resolved"; txHash: string; attempts: 0; alreadySettled: true }
+  | { state: "PendingVerification"; txHash: string; attempts: number; payoutVerified: false; errorCode: string };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -96,6 +125,15 @@ const defaultSleep = (ms: number): Promise<void> =>
  *   - Only retries when the Horizon result code is in `RETRYABLE_RESULT_CODES`
  *   - Reloads the account sequence number before each attempt so stale-sequence
  *     failures are resolved automatically
+ *
+ * Independent payout verification (#509): once Horizon reports a successful
+ * submission, a configured `verifier` is used to independently confirm the
+ * finalized transfer event before reporting `Resolved`. A vault whose
+ * verification doesn't (yet) agree is parked in `PendingVerification` — a
+ * terminal-on-chain but not-yet-trusted state that is never auto-retried
+ * (retrying a transaction that already succeeded on-chain risks a double
+ * payout). Calling `settleVault` again on a `PendingVerification` vault only
+ * re-checks the verifier against the existing hash; it never resubmits.
  */
 export class EscrowService {
   private readonly sleep: (ms: number) => Promise<void>;
@@ -110,7 +148,7 @@ export class EscrowService {
    * Returns immediately (idempotent) if the vault already has a terminal state.
    */
   async settleVault(input: SettleVaultInput): Promise<SettleVaultOutcome> {
-    const { prisma, horizon, signer, assembler, networkPassphrase } = this.deps;
+    const { prisma, horizon, signer, assembler, verifier } = this.deps;
 
     // ── Idempotency check ─────────────────────────────────────────────────
     const existing = await prisma.vaultSettlement.findUnique({
@@ -123,6 +161,14 @@ export class EscrowService {
         attempts: 0,
         alreadySettled: true
       };
+    }
+
+    // #509: a vault stuck in PendingVerification already has a transaction
+    // that submitted successfully — resubmitting here (falling through to the
+    // retry loop below) risks a double payout. Instead, only re-check the
+    // verifier against the hash that already succeeded on-chain.
+    if (existing && existing.state === "PendingVerification" && existing.txHash) {
+      return this.recheckPendingVerification(existing.txHash, existing.attempts, input);
     }
 
     // ── Create / reset the settlement record ──────────────────────────────
@@ -183,40 +229,8 @@ export class EscrowService {
       lastResultCode = result.resultCode;
 
       if (result.successful) {
-        // ── Success ───────────────────────────────────────────────────────
-        const finalState = input.settlementType === "refund" ? "Refunded" : "Resolved";
-        try {
-          await prisma.vaultSettlement.update({
-            where: { vaultId: input.vaultId },
-            data: {
-              state: finalState,
-              txHash: result.hash || null,
-              resultCode: result.resultCode,
-              attempts: attempt,
-              resolvedAt: new Date()
-            }
-          });
-        } catch (updateErr: unknown) {
-          // P2002 on txHash means another settlement already owns this hash
-          // (possible in test environments with scripted stub horizons).
-          // The on-chain tx succeeded — record the state without the hash.
-          const isHashConflict =
-            updateErr instanceof Error &&
-            (updateErr.message.includes("P2002") ||
-              (updateErr as any).code === "P2002");
-          if (!isHashConflict) throw updateErr;
-
-          await prisma.vaultSettlement.update({
-            where: { vaultId: input.vaultId },
-            data: {
-              state: finalState,
-              resultCode: result.resultCode,
-              attempts: attempt,
-              resolvedAt: new Date()
-            }
-          });
-        }
-        return { state: "Resolved", txHash: result.hash, attempts: attempt };
+        // ── Success on-chain — independently verify before reporting Resolved ──
+        return this.finalizeSuccess(input, result.hash, attempt, verifier);
       }
 
       // ── Failed attempt ────────────────────────────────────────────────
@@ -247,6 +261,123 @@ export class EscrowService {
     });
 
     return { state: "Unresolved", txHash: null, attempts: attempt, errorCode };
+  }
+
+  /**
+   * Called once Horizon reports a successful submission. Verifies the payout
+   * against finalized chain state when a `verifier` is configured and the
+   * settlement has a single recipient/amount to check (#509); `distribute`
+   * settlements fan out to multiple recipients and have no single fact to
+   * verify, so — like the no-verifier case — they're reported Resolved
+   * immediately.
+   */
+  private async finalizeSuccess(
+    input: SettleVaultInput,
+    txHash: string,
+    attempts: number,
+    verifier: PayoutVerifier | undefined
+  ): Promise<SettleVaultOutcome> {
+    const canVerify = Boolean(
+      verifier && input.settlementType !== "distribute" && input.recipient && input.amount
+    );
+
+    if (canVerify) {
+      const facts = await verifier!.verify(txHash);
+      const verified = this.factsMatch(facts, input);
+      if (!verified) {
+        await this.deps.prisma.vaultSettlement.update({
+          where: { vaultId: input.vaultId },
+          data: {
+            state: "PendingVerification",
+            txHash,
+            errorCode: ERROR_CODES.SETTLEMENT_PAYOUT_UNVERIFIED,
+            errorDetail: facts ? "payout facts mismatch" : "no finalized event found",
+            attempts
+          }
+        });
+        return {
+          state: "PendingVerification",
+          txHash,
+          attempts,
+          payoutVerified: false,
+          errorCode: ERROR_CODES.SETTLEMENT_PAYOUT_UNVERIFIED
+        };
+      }
+    }
+
+    const finalState = input.settlementType === "refund" ? "Refunded" : "Resolved";
+    await this.persistResolved(input.vaultId, finalState, txHash, attempts);
+    return { state: "Resolved", txHash, attempts, payoutVerified: canVerify ? true : undefined };
+  }
+
+  /** Re-checks the verifier for a vault already parked in PendingVerification, without resubmitting. */
+  private async recheckPendingVerification(
+    txHash: string,
+    attempts: number,
+    input: SettleVaultInput
+  ): Promise<SettleVaultOutcome> {
+    const { verifier } = this.deps;
+    const facts = verifier ? await verifier.verify(txHash) : null;
+
+    if (this.factsMatch(facts, input)) {
+      const finalState = input.settlementType === "refund" ? "Refunded" : "Resolved";
+      await this.persistResolved(input.vaultId, finalState, txHash, attempts);
+      return { state: "Resolved", txHash, attempts, payoutVerified: true };
+    }
+
+    return {
+      state: "PendingVerification",
+      txHash,
+      attempts,
+      payoutVerified: false,
+      errorCode: ERROR_CODES.SETTLEMENT_PAYOUT_UNVERIFIED
+    };
+  }
+
+  private factsMatch(facts: VerifiedPayoutFacts | null, input: SettleVaultInput): boolean {
+    return !!facts && facts.recipient === input.recipient && facts.amount === input.amount;
+  }
+
+  /** Persists the terminal Resolved/Refunded state, tolerating a tx-hash race. */
+  private async persistResolved(
+    vaultId: string,
+    finalState: "Resolved" | "Refunded",
+    txHash: string,
+    attempts: number
+  ): Promise<void> {
+    const { prisma } = this.deps;
+    try {
+      await prisma.vaultSettlement.update({
+        where: { vaultId },
+        data: {
+          state: finalState,
+          txHash,
+          resultCode: "tx_success",
+          errorCode: null,
+          errorDetail: null,
+          attempts,
+          resolvedAt: new Date()
+        }
+      });
+    } catch (updateErr: unknown) {
+      // P2002 on txHash means another settlement already owns this hash
+      // (possible in test environments with scripted stub horizons).
+      // The on-chain tx succeeded — record the state without the hash.
+      const isHashConflict =
+        updateErr instanceof Error &&
+        (updateErr.message.includes("P2002") || (updateErr as any).code === "P2002");
+      if (!isHashConflict) throw updateErr;
+
+      await prisma.vaultSettlement.update({
+        where: { vaultId },
+        data: {
+          state: finalState,
+          resultCode: "tx_success",
+          attempts,
+          resolvedAt: new Date()
+        }
+      });
+    }
   }
 
   /** Returns persisted settlement state for a vault, or null if none exists. */

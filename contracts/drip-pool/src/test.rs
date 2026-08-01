@@ -2032,6 +2032,338 @@ fn fulfill_withdrawal_queue_pays_partial_then_completes_in_order() {
     assert_eq!(client.withdrawal_queue_head(), 2, "both requests fulfilled");
 }
 
+// ── Round-scoped accounting (#508) ──────────────────────────────────────────
+//
+// Regression coverage for round isolation: yield/prize realized for round N
+// must never leak into round N+1's calculations, and a deposit made after a
+// round is locked must never be counted in that round's snapshot.
+
+#[test]
+fn open_round_starts_empty_and_open() {
+    let (_env, client, admin) = setup();
+    client.create(&admin);
+
+    let round_id = client.open_round(&admin);
+    assert_eq!(round_id, 0);
+
+    let round = client.round(&round_id);
+    assert_eq!(round.status, RoundStatus::Open);
+    assert_eq!(round.principal_snapshot, 0);
+    assert_eq!(round.realized_yield, 0);
+    assert_eq!(round.prize_reserve, 0);
+    assert_eq!(round.claimed, 0);
+
+    // Nonce advances so the next open_round doesn't collide.
+    assert_eq!(client.round_nonce(), 1);
+    let round_id_2 = client.open_round(&admin);
+    assert_eq!(round_id_2, 1);
+}
+
+#[test]
+fn open_round_unauthorized_fails() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let stranger = Address::generate(&env);
+    assert_eq!(client.try_open_round(&stranger), Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn round_deposit_accumulates_into_snapshot() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let round_id = client.open_round(&admin);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.round_deposit(&alice, &round_id, &100);
+    client.round_deposit(&bob, &round_id, &50);
+    client.round_deposit(&alice, &round_id, &25); // second deposit, same round
+
+    let round = client.round(&round_id);
+    assert_eq!(round.principal_snapshot, 175);
+    assert_eq!(client.round_deposit_of(&alice, &round_id), 125);
+    assert_eq!(client.round_deposit_of(&bob, &round_id), 50);
+}
+
+#[test]
+fn round_deposit_zero_or_negative_rejected() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let round_id = client.open_round(&admin);
+    let alice = Address::generate(&env);
+
+    assert_eq!(
+        client.try_round_deposit(&alice, &round_id, &0),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(
+        client.try_round_deposit(&alice, &round_id, &-10),
+        Err(Ok(Error::InvalidAmount))
+    );
+}
+
+#[test]
+fn round_deposit_into_unknown_round_fails() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let alice = Address::generate(&env);
+    assert_eq!(
+        client.try_round_deposit(&alice, &999, &10),
+        Err(Ok(Error::RoundNotFound))
+    );
+}
+
+#[test]
+fn deposits_before_vs_after_lock_go_to_correct_rounds() {
+    // Core isolation guarantee: a late deposit (after lock) must never be
+    // counted in the already-locked round's snapshot — it must land in the
+    // next round instead.
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let round_0 = client.open_round(&admin);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    client.round_deposit(&alice, &round_0, &100);
+    client.lock_round(&admin, &round_0);
+
+    // Late deposit attempt into the now-locked round is rejected outright.
+    assert_eq!(
+        client.try_round_deposit(&bob, &round_0, &999),
+        Err(Ok(Error::RoundNotOpen))
+    );
+
+    // round_0's snapshot is unaffected by the rejected attempt.
+    let locked_round = client.round(&round_0);
+    assert_eq!(locked_round.status, RoundStatus::Locked);
+    assert_eq!(locked_round.principal_snapshot, 100);
+
+    // Bob's deposit correctly lands in a freshly opened round_1 instead.
+    let round_1 = client.open_round(&admin);
+    client.round_deposit(&bob, &round_1, &999);
+    let round_1_state = client.round(&round_1);
+    assert_eq!(round_1_state.principal_snapshot, 999);
+
+    // round_0 is still untouched by round_1 activity.
+    assert_eq!(client.round(&round_0).principal_snapshot, 100);
+}
+
+#[test]
+fn lock_round_requires_open_status() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let round_id = client.open_round(&admin);
+    client.lock_round(&admin, &round_id);
+
+    // Locking an already-locked round fails rather than silently no-op'ing.
+    assert_eq!(
+        client.try_lock_round(&admin, &round_id),
+        Err(Ok(Error::RoundNotOpen))
+    );
+}
+
+#[test]
+fn lock_round_unauthorized_fails() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let round_id = client.open_round(&admin);
+    let stranger = Address::generate(&env);
+    assert_eq!(
+        client.try_lock_round(&stranger, &round_id),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+#[test]
+fn settle_round_requires_locked_status() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let round_id = client.open_round(&admin);
+
+    // Can't settle an Open round — must be Locked first.
+    assert_eq!(
+        client.try_settle_round(&admin, &round_id, &100, &0),
+        Err(Ok(Error::RoundNotLocked))
+    );
+}
+
+#[test]
+fn settle_round_twice_fails() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let round_id = client.open_round(&admin);
+    client.lock_round(&admin, &round_id);
+    client.settle_round(&admin, &round_id, &100, &0);
+
+    assert_eq!(
+        client.try_settle_round(&admin, &round_id, &50, &0),
+        Err(Ok(Error::RoundAlreadySettled))
+    );
+    // First settlement's values are untouched by the rejected second call.
+    assert_eq!(client.round(&round_id).realized_yield, 100);
+}
+
+#[test]
+fn settling_round_does_not_affect_next_rounds_opening_balance() {
+    // "settling a round doesn't affect the next round's opening balance"
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let round_0 = client.open_round(&admin);
+    let alice = Address::generate(&env);
+    client.round_deposit(&alice, &round_0, &200);
+    client.lock_round(&admin, &round_0);
+    client.settle_round(&admin, &round_0, &40, &10); // yield=40, prize=10
+
+    let round_1 = client.open_round(&admin);
+    let round_1_state = client.round(&round_1);
+    assert_eq!(round_1_state.principal_snapshot, 0, "round_1 opens with a zero balance");
+    assert_eq!(round_1_state.realized_yield, 0);
+    assert_eq!(round_1_state.prize_reserve, 0);
+
+    // round_0's settled figures are unchanged by round_1 having been opened.
+    let round_0_state = client.round(&round_0);
+    assert_eq!(round_0_state.realized_yield, 40);
+    assert_eq!(round_0_state.prize_reserve, 10);
+}
+
+#[test]
+fn round_claim_pays_pro_rata_share_and_is_isolated_per_round() {
+    // Basic overlap/isolation scenario: two participants across two rounds
+    // with different yield outcomes — round N's payout must never bleed
+    // into round N+1's, and vice versa.
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    // Round 0: alice 300, bob 100 (75%/25% split), settled with yield 40.
+    let round_0 = client.open_round(&admin);
+    client.round_deposit(&alice, &round_0, &300);
+    client.round_deposit(&bob, &round_0, &100);
+    client.lock_round(&admin, &round_0);
+    client.settle_round(&admin, &round_0, &40, &0);
+
+    // Round 1 opened concurrently with different deposits/outcome.
+    let round_1 = client.open_round(&admin);
+    client.round_deposit(&alice, &round_1, &50);
+    client.round_deposit(&bob, &round_1, &50);
+    client.lock_round(&admin, &round_1);
+    client.settle_round(&admin, &round_1, &0, &20); // pure prize round
+
+    // Round 0 payouts: 40 * 300/400 = 30, 40 * 100/400 = 10.
+    assert_eq!(client.round_claim(&alice, &round_0), 30);
+    assert_eq!(client.round_claim(&bob, &round_0), 10);
+    assert_eq!(client.round(&round_0).claimed, 40);
+
+    // Round 1 payouts (independent split): 20 * 50/100 = 10 each.
+    assert_eq!(client.round_claim(&alice, &round_1), 10);
+    assert_eq!(client.round_claim(&bob, &round_1), 10);
+    assert_eq!(client.round(&round_1).claimed, 20);
+
+    // Second claim attempt for the same round pays nothing further —
+    // the per-round deposit was zeroed on first claim.
+    assert_eq!(client.round_claim(&alice, &round_0), 0);
+}
+
+#[test]
+fn round_claim_before_settlement_fails() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let round_id = client.open_round(&admin);
+    let alice = Address::generate(&env);
+    client.round_deposit(&alice, &round_id, &100);
+
+    assert_eq!(
+        client.try_round_claim(&alice, &round_id),
+        Err(Ok(Error::RoundNotLocked))
+    );
+
+    client.lock_round(&admin, &round_id);
+    assert_eq!(
+        client.try_round_claim(&alice, &round_id),
+        Err(Ok(Error::RoundNotLocked)),
+        "still not Settled, only Locked"
+    );
+}
+
+#[test]
+fn round_claim_with_no_deposit_returns_zero() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let round_id = client.open_round(&admin);
+    client.lock_round(&admin, &round_id);
+    client.settle_round(&admin, &round_id, &100, &0);
+
+    let stranger = Address::generate(&env);
+    assert_eq!(client.round_claim(&stranger, &round_id), 0);
+}
+
+#[test]
+fn round_claim_rounding_never_over_distributes() {
+    // Odd realized_yield split across an odd number of participants: sum of
+    // distributed shares must never exceed the settled total (dust is left
+    // unclaimed rather than dropped incorrectly or over-paid).
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let round_id = client.open_round(&admin);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let carol = Address::generate(&env);
+    client.round_deposit(&alice, &round_id, &1);
+    client.round_deposit(&bob, &round_id, &1);
+    client.round_deposit(&carol, &round_id, &1);
+    client.lock_round(&admin, &round_id);
+    client.settle_round(&admin, &round_id, &10, &0); // 10 / 3 each, not evenly divisible
+
+    let a = client.round_claim(&alice, &round_id);
+    let b = client.round_claim(&bob, &round_id);
+    let c = client.round_claim(&carol, &round_id);
+
+    assert!(a + b + c <= 10, "distributed total must never exceed realized_yield");
+    assert_eq!(client.round(&round_id).claimed, a + b + c);
+}
+
+#[test]
+fn full_round_lifecycle_two_overlapping_rounds() {
+    // End-to-end: round 0 is locked and settled while round 1 is opened and
+    // collects deposits concurrently — asserts full isolation both ways.
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    let round_0 = client.open_round(&admin);
+    client.round_deposit(&alice, &round_0, &500);
+    client.lock_round(&admin, &round_0);
+
+    // round_1 opens while round_0 is locked but not yet settled.
+    let round_1 = client.open_round(&admin);
+    client.round_deposit(&bob, &round_1, &200);
+
+    // Settle round_0 — must not touch round_1 in any way.
+    client.settle_round(&admin, &round_0, &50, &0);
+    let round_1_mid = client.round(&round_1);
+    assert_eq!(round_1_mid.status, RoundStatus::Open);
+    assert_eq!(round_1_mid.principal_snapshot, 200);
+    assert_eq!(round_1_mid.realized_yield, 0);
+
+    assert_eq!(client.round_claim(&alice, &round_0), 50);
+
+    // round_1 continues its own lifecycle independently.
+    client.lock_round(&admin, &round_1);
+    client.settle_round(&admin, &round_1, &20, &0);
+    assert_eq!(client.round_claim(&bob, &round_1), 20);
+
+    // Final sanity: round_0's claimed total didn't move during round_1's
+    // settlement/claim.
+    assert_eq!(client.round(&round_0).claimed, 50);
+}
+
 #[test]
 fn cancel_withdrawal_request_preserves_claim_for_a_later_withdraw() {
     let (env, client, admin, token, issuer) = setup_with_token();

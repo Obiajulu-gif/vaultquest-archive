@@ -112,6 +112,11 @@ pub enum DataKey {
     WithdrawalQueueTail,    // u32 — next withdrawal request id to assign (#529)
     WithdrawalRequest(u32), // queued withdrawal request, by id (#529)
     ParticipantQueue(Address), // Address -> pending request id, prevents duplicate queuing (#529)
+    RoundNonce,             // u32 — next round id to assign (#508)
+    Round(u32),             // Round — round-scoped state, by round id (#508)
+    RoundDeposit(Address, u32), // i128 — a participant's principal snapshotted into a
+    // specific round; keyed per (address, round_id) rather than a Vec on
+    // Participant to avoid unbounded per-participant storage growth (#508)
 }
 
 // ── Errors ─────────────────────────────────────────────────────────────────
@@ -161,6 +166,11 @@ pub enum Error {
     WithdrawalRequestNotFound = 65,
     WithdrawalRequestNotOwned = 66,
     WithdrawalRequestNotPending = 67,
+    RoundNotFound = 68,      // referenced round id has no stored Round (#508)
+    RoundNotOpen = 69,       // round_deposit into a round that isn't Open (#508)
+    RoundNotLocked = 70,     // settle_round called on a round that isn't Locked (#508)
+    RoundAlreadySettled = 71, // settle_round/round_claim called twice on the same round (#508)
+    RoundAccountingViolation = 72, // a round-scoped invariant would be broken by this mutation (#508)
 }
 
 // ── Structs ────────────────────────────────────────────────────────────────
@@ -255,6 +265,36 @@ pub enum ProposalAction {
     TriggerEmergency(i128), // enter emergency mode with available asset amount (#512)
     Recapitalize(i128),     // inject capital into emergency pool (#512)
     ResumeNormal,           // return to normal operations (#512)
+}
+
+/// Lifecycle status of a round (#508).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[contracttype]
+pub enum RoundStatus {
+    Open,    // accepting round_deposit
+    Locked,  // principal_snapshot frozen; deposits rejected
+    Settled, // realized_yield/prize_reserve fixed; round_claim enabled
+}
+
+/// Round-scoped accounting (#508). Isolates yield/prize computed for one
+/// round from every other round: `principal_snapshot` is frozen at
+/// `lock_round`, `realized_yield`/`prize_reserve` are fixed once at
+/// `settle_round`, and neither can be mutated afterward. This is what
+/// prevents a late deposit from diluting an already-locked round's snapshot,
+/// and prevents yield settled for round N from being double-counted into
+/// round N+1.
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct Round {
+    pub id: u32,
+    pub status: RoundStatus,
+    pub opened_at: u64,               // ledger timestamp when opened
+    pub locked_at: Option<u64>,       // ledger timestamp when locked
+    pub settled_at: Option<u64>,      // ledger timestamp when settled
+    pub principal_snapshot: i128,     // sum of round_deposit amounts at lock time
+    pub realized_yield: i128,         // set once, at settlement; 0 until then
+    pub prize_reserve: i128,          // set once, at settlement; 0 until then
+    pub claimed: i128,                // running total paid out via round_claim
 }
 
 // ── Contract ───────────────────────────────────────────────────────────────
@@ -1822,6 +1862,237 @@ impl DripPool {
         Ok(pool.emergency_assets)
     }
 
+    // ── Round-scoped accounting (#508) ──────────────────────────────────────
+    //
+    // A parallel, additive accounting layer: it does not read or mutate
+    // `Pool`/`Participant` at all, so it cannot regress the existing
+    // single-pool deposit/claim/withdraw flows. Each round is independent
+    // storage (`DataKey::Round(id)`), and a participant's contribution to a
+    // given round is tracked separately (`DataKey::RoundDeposit(who, id)`)
+    // from their lifetime `Participant.deposited` total.
+    //
+    // Lifecycle: Open -> Locked -> Settled.
+    //   - `open_round`: admin-only, creates a new Open round.
+    //   - `round_deposit`: any caller, only while the round is Open. Adds to
+    //     the caller's per-round deposit and to the round's live total; the
+    //     live total becomes `principal_snapshot` at lock time.
+    //   - `lock_round`: admin-only, freezes `principal_snapshot` and flips to
+    //     Locked. `round_deposit` is rejected for this round from this point
+    //     on — a late deposit can never dilute an already-locked snapshot.
+    //   - `settle_round`: admin-only (multi-sig signer), sets
+    //     `realized_yield`/`prize_reserve` exactly once and flips to Settled.
+    //     Rejected if the round isn't Locked or is already Settled, so yield
+    //     can never be attributed twice or leak into a later round.
+    //   - `round_claim`: pays a participant their pro-rata share of
+    //     `realized_yield + prize_reserve` for one Settled round, based on
+    //     their frozen per-round deposit versus `principal_snapshot`. Uses
+    //     integer division; any dust remainder stays unclaimed in the round
+    //     (never over-distributed) and is inspectable via `round.claimed`
+    //     vs `round.realized_yield + round.prize_reserve`.
+
+    /// Admin-only: open a new round. Returns the new round's id.
+    pub fn open_round(env: Env, caller: Address) -> Result<u32, Error> {
+        caller.require_auth();
+        Self::require_signer(&env, &caller)?;
+        Self::require_compatible_config(&env)?;
+
+        let id: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RoundNonce)
+            .unwrap_or(0);
+
+        let round = Round {
+            id,
+            status: RoundStatus::Open,
+            opened_at: env.ledger().timestamp(),
+            locked_at: None,
+            settled_at: None,
+            principal_snapshot: 0,
+            realized_yield: 0,
+            prize_reserve: 0,
+            claimed: 0,
+        };
+        env.storage().persistent().set(&DataKey::Round(id), &round);
+        Self::bump_round(&env, &DataKey::Round(id));
+        env.storage()
+            .instance()
+            .set(&DataKey::RoundNonce, &(id + 1));
+        Self::bump_instance(&env);
+
+        env.events()
+            .publish((symbol_short!("round"), symbol_short!("opened")), id);
+        Ok(id)
+    }
+
+    /// Deposit principal into a specific round. Only accepted while that
+    /// round is `Open`; a round that is `Locked` or `Settled` rejects the
+    /// deposit rather than silently misattributing it (#508). This does not
+    /// move tokens or touch `Pool`/`Participant` — it is purely the
+    /// round-scoped accounting ledger.
+    pub fn round_deposit(env: Env, who: Address, round_id: u32, amount: i128) -> Result<(), Error> {
+        who.require_auth();
+        Self::require_compatible_config(&env)?;
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let mut round = Self::load_round(&env, round_id)?;
+        if round.status != RoundStatus::Open {
+            return Err(Error::RoundNotOpen);
+        }
+
+        let key = DataKey::RoundDeposit(who.clone(), round_id);
+        let existing: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        let updated = existing.saturating_add(amount);
+        env.storage().persistent().set(&key, &updated);
+        Self::bump_round(&env, &key);
+
+        round.principal_snapshot = round.principal_snapshot.saturating_add(amount);
+        Self::save_round(&env, &round);
+
+        env.events().publish(
+            (symbol_short!("round"), symbol_short!("deposit")),
+            (who, round_id, amount),
+        );
+        Ok(())
+    }
+
+    /// Admin-only: freeze a round's `principal_snapshot` and move it to
+    /// `Locked`. After this call, `round_deposit` for this round always
+    /// fails — this is the boundary that stops a late deposit from being
+    /// counted in a round that has already closed for deposits (#508).
+    pub fn lock_round(env: Env, caller: Address, round_id: u32) -> Result<(), Error> {
+        caller.require_auth();
+        Self::require_signer(&env, &caller)?;
+        Self::require_compatible_config(&env)?;
+
+        let mut round = Self::load_round(&env, round_id)?;
+        if round.status != RoundStatus::Open {
+            return Err(Error::RoundNotOpen);
+        }
+        round.status = RoundStatus::Locked;
+        round.locked_at = Some(env.ledger().timestamp());
+        Self::save_round(&env, &round);
+
+        env.events().publish(
+            (symbol_short!("round"), symbol_short!("locked")),
+            (round_id, round.principal_snapshot),
+        );
+        Ok(())
+    }
+
+    /// Admin-only (multi-sig signer): fix `realized_yield`/`prize_reserve`
+    /// for a `Locked` round exactly once and move it to `Settled`. Rejects a
+    /// round that isn't `Locked` yet, and rejects a round that is already
+    /// `Settled` (idempotent no-op guard) — so yield can never be attributed
+    /// twice to the same round, and settling round N can never reach into
+    /// round N+1's state, because each round's storage is fully independent
+    /// (#508).
+    pub fn settle_round(
+        env: Env,
+        caller: Address,
+        round_id: u32,
+        realized_yield: i128,
+        prize_reserve: i128,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+        Self::require_signer(&env, &caller)?;
+        Self::require_compatible_config(&env)?;
+        if realized_yield < 0 || prize_reserve < 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let mut round = Self::load_round(&env, round_id)?;
+        match round.status {
+            RoundStatus::Settled => return Err(Error::RoundAlreadySettled),
+            RoundStatus::Open => return Err(Error::RoundNotLocked),
+            RoundStatus::Locked => {}
+        }
+
+        round.realized_yield = realized_yield;
+        round.prize_reserve = prize_reserve;
+        round.status = RoundStatus::Settled;
+        round.settled_at = Some(env.ledger().timestamp());
+        Self::save_round(&env, &round);
+
+        env.events().publish(
+            (symbol_short!("round"), symbol_short!("settled")),
+            (round_id, realized_yield, prize_reserve),
+        );
+        Ok(())
+    }
+
+    /// Claim a participant's pro-rata share of a Settled round's
+    /// `realized_yield + prize_reserve`, proportional to their frozen
+    /// per-round deposit vs. `principal_snapshot`. Enforces
+    /// `round.claimed <= round.realized_yield + round.prize_reserve` inline
+    /// rather than trusting the division, returning
+    /// `Error::RoundAccountingViolation` if a claim would ever push the
+    /// round over its settled total (#508).
+    pub fn round_claim(env: Env, who: Address, round_id: u32) -> Result<i128, Error> {
+        who.require_auth();
+        Self::require_compatible_config(&env)?;
+
+        let mut round = Self::load_round(&env, round_id)?;
+        if round.status != RoundStatus::Settled {
+            return Err(Error::RoundNotLocked);
+        }
+        if round.principal_snapshot <= 0 {
+            return Ok(0);
+        }
+
+        let key = DataKey::RoundDeposit(who.clone(), round_id);
+        let deposit: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        if deposit <= 0 {
+            return Ok(0);
+        }
+
+        let total_pool = round.realized_yield.saturating_add(round.prize_reserve);
+        // Integer division: any dust remainder is left unclaimed in the
+        // round rather than distributed, so total payouts can never exceed
+        // `total_pool` (checked explicitly below regardless).
+        let share = (total_pool.saturating_mul(deposit)) / round.principal_snapshot;
+
+        let new_claimed = round.claimed.saturating_add(share);
+        if new_claimed > total_pool {
+            return Err(Error::RoundAccountingViolation);
+        }
+
+        round.claimed = new_claimed;
+        Self::save_round(&env, &round);
+
+        // Zero out this participant's per-round deposit so a second call
+        // for the same round pays nothing (idempotent claim).
+        env.storage().persistent().set(&key, &0i128);
+        Self::bump_round(&env, &key);
+
+        env.events().publish(
+            (symbol_short!("round"), symbol_short!("claimed")),
+            (who, round_id, share),
+        );
+        Ok(share)
+    }
+
+    fn load_round(env: &Env, round_id: u32) -> Result<Round, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Round(round_id))
+            .ok_or(Error::RoundNotFound)
+    }
+
+    fn save_round(env: &Env, round: &Round) {
+        let key = DataKey::Round(round.id);
+        env.storage().persistent().set(&key, round);
+        Self::bump_round(env, &key);
+    }
+
+    fn bump_round(env: &Env, key: &DataKey) {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
+    }
+
     // ── Views ──────────────────────────────────────────────────────────────
     pub fn config_version(env: Env) -> u32 {
         env.storage()
@@ -1894,6 +2165,29 @@ impl DripPool {
             .get(&DataKey::Pool)
             .ok_or(Error::NotInitialized)?;
         Ok(pool.unclaimed_swept)
+    }
+
+    /// View a round's full state (#508).
+    pub fn round(env: Env, round_id: u32) -> Result<Round, Error> {
+        Self::load_round(&env, round_id)
+    }
+
+    /// View a participant's frozen deposit for a specific round (#508).
+    /// Zero both before any `round_deposit` and after a successful
+    /// `round_claim` for that round.
+    pub fn round_deposit_of(env: Env, who: Address, round_id: u32) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RoundDeposit(who, round_id))
+            .unwrap_or(0)
+    }
+
+    /// The next round id that `open_round` will assign (#508).
+    pub fn round_nonce(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::RoundNonce)
+            .unwrap_or(0)
     }
 }
 

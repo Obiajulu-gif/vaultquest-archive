@@ -21,6 +21,7 @@ import { DrawProofService } from "./services/drawProofService.js";
 import { drawProofRoutes } from "./routes/drawProofs.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { rateLimiter } from "./middleware/rateLimiter.js";
+import { etagPlugin } from "./middleware/etag.js";
 import { requireApiKey } from "./middleware/api-key-auth.js";
 import { createLogger } from "./logger.js";
 import { ok } from "./responses.js";
@@ -73,6 +74,9 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 
   // Register rate limiting and CSRF protection
   app.register(rateLimiter);
+
+  // Register ETag and Cache-Control middleware
+  app.register(etagPlugin);
 
   // Register correlation ID middleware
   app.register(correlation);

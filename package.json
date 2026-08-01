@@ -20,6 +20,7 @@
     "check:terms": "node ./scripts/check-product-terms.js",
     "docs:validate": "node ./scripts/validate-docs.js",
     "generate:manifest": "npx tsx scripts/generate-manifest.ts",
+    "check:drift": "npx tsx scripts/check-config-drift.ts",
     "fixtures:regenerate": "node scripts/regenerate-fixtures.js"
   },
   "dependencies": {

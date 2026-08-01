@@ -4,8 +4,8 @@ import { parseAssetAmount, formatAssetAmount } from "@/lib/formatting";
 describe("shared asset decimal formatting utility", () => {
   describe("parseAssetAmount", () => {
     it("parses asset amounts to bigint base units correctly based on asset decimals", () => {
-      expect(parseAssetAmount("10.5", "XLM")).toBe(10500000n); // 7 decimals
-      expect(parseAssetAmount("1.234567", "XLM")).toBe(1234567n);
+      expect(parseAssetAmount("10.5", "XLM")).toBe(105000000n); // 7 decimals
+      expect(parseAssetAmount("1.234567", "XLM")).toBe(12345670n);
       expect(parseAssetAmount("10.5", "USDC")).toBe(10500000n); // 6 decimals
       expect(parseAssetAmount("100", "ETH")).toBe(100000000000000000000n); // 18 decimals
     });

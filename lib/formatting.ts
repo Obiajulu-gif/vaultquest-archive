@@ -121,7 +121,10 @@ export function formatAssetAmount(
   } = options;
 
   const resolvedMinFrac = minimumFractionDigits ?? (symbol === "XLM" ? 6 : 2);
-  const resolvedMaxFrac = maximumFractionDigits ?? (symbol === "XLM" ? 7 : 4);
+  let resolvedMaxFrac = maximumFractionDigits ?? (symbol === "XLM" ? 7 : (symbol === "USDC" || symbol === "USDT" ? 2 : 4));
+  if (resolvedMaxFrac < resolvedMinFrac) {
+    resolvedMaxFrac = resolvedMinFrac;
+  }
 
   let roundedValue = numValue;
   const factor = Math.pow(10, resolvedMaxFrac);

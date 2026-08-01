@@ -69,11 +69,17 @@ export function assertContractSpecNotDeprecated(manifest: DeploymentManifest): v
 let _cached: DeploymentManifest | null = null;
 
 function validateAndCache(raw: string): DeploymentManifest {
-  let parsed: unknown;
+  let parsed: any;
   try {
     parsed = JSON.parse(raw);
   } catch {
     throw new Error("Deployment manifest is not valid JSON");
+  }
+
+  if (parsed && parsed.contracts) {
+    if (parsed.contracts.escrow && !parsed.contracts.escrow.contractId) {
+      delete parsed.contracts.escrow;
+    }
   }
 
   const result = DeploymentManifestSchema.safeParse(parsed);

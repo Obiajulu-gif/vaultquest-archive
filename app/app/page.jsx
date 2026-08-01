@@ -20,6 +20,7 @@ import { WalletConnectionStatus } from "@vaultquest/stellar-wallet-connect/src/c
 import { OnboardingChecklist } from "@vaultquest/stellar-wallet-connect/src/vault/components/OnboardingChecklist";
 import VaultEmptyState from "@/components/app/VaultEmptyState";
 import VaultOnboardingTour from "@/components/app/VaultOnboardingTour";
+import FirstDepositOnboarding from "@/components/app/FirstDepositOnboarding";
 import VaultGoalTracker from "@/components/app/VaultGoalTracker";
 import VaultRewardsExplanationModal from "@/components/app/VaultRewardsExplanationModal";
 import VaultDocsQuickLinks from "@/components/app/VaultDocsQuickLinks";
@@ -98,6 +99,7 @@ export default function AppDashboardPage() {
   const { openConnectModal } = useConnectModal();
   const [onboardingStep, setOnboardingStep] = useState(0);
   const [hasJoinedVault] = useState(false);
+  const [onboardingForceOpen, setOnboardingForceOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -168,6 +170,26 @@ export default function AppDashboardPage() {
         <main className="space-y-8 lg:col-span-8">
           <ActivitySummaryWidget />
           <OnboardingChecklist walletConnected={isConnected} hasJoinedVault={hasJoinedVault} />
+          
+          <FirstDepositOnboarding
+            hasJoinedVault={hasJoinedVault && !onboardingForceOpen}
+          />
+
+          {!onboardingForceOpen && (hasJoinedVault || (typeof window !== "undefined" && localStorage.getItem("vq_first_deposit_onboarding_dismissed") === "true")) && (
+            <div className="flex justify-end pr-2">
+              <button
+                type="button"
+                onClick={() => {
+                  localStorage.removeItem("vq_first_deposit_onboarding_dismissed");
+                  setOnboardingForceOpen(true);
+                }}
+                className="text-xs font-semibold text-red-400 hover:text-red-300 transition-colors hover:underline"
+              >
+                Reopen First-Deposit Guide
+              </button>
+            </div>
+          )}
+
           {isConnected && !hasJoinedVault && (
             <VaultEmptyState variant="dashboard" />
           )}

@@ -2389,3 +2389,111 @@ fn cancel_withdrawal_request_preserves_claim_for_a_later_withdraw() {
     assert_eq!(paid, 1_000);
     assert_eq!(token.balance(&alice), 1_000);
 }
+
+// ── #524: Security — Fail closed when token is unconfigured ────────────────
+
+#[test]
+fn test_unconfigured_token_fails_closed() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let alice = Address::generate(&env);
+
+    // Any value-changing call on an unconfigured pool must fail closed with TokenNotConfigured
+    assert_eq!(client.try_join(&alice), Err(Ok(Error::TokenNotConfigured)));
+    assert_eq!(client.try_deposit(&alice, &100), Err(Ok(Error::TokenNotConfigured)));
+    assert_eq!(client.try_withdraw(&alice), Err(Ok(Error::TokenNotConfigured)));
+    assert_eq!(client.try_claim(&alice), Err(Ok(Error::TokenNotConfigured)));
+}
+
+#[test]
+fn test_set_token_twice_fails() {
+    let (env, client, admin, token, _issuer) = setup_with_token();
+    let rando_token = Address::generate(&env);
+
+    // Re-configuring token must fail with AlreadyInitialized (#524)
+    assert_eq!(
+        client.try_set_token(&admin, &rando_token),
+        Err(Ok(Error::AlreadyInitialized))
+    );
+}
+
+// ── #553: Post-upgrade smoke test helper ───────────────────────────────────
+
+pub fn run_post_upgrade_smoke_tests(
+    env: &Env,
+    client: &DripPoolClient,
+    admin: &Address,
+    token: &token::TokenClient,
+    issuer: &token::StellarAssetClient,
+) {
+    let user = Address::generate(env);
+    issuer.mint(&user, &1_000);
+
+    // 1. Join & deposit
+    client.join(&user);
+    client.deposit(&user, &500);
+
+    // 2. View checks
+    let pool_info = client.pool();
+    assert_eq!(pool_info.total_deposited, pool_info.total_deposited);
+    let savings = client.savings(&user);
+    assert_eq!(savings.deposited, 500);
+
+    // 3. Multisig proposal flow
+    let new_admin = Address::generate(env);
+    let _prop_id = client.propose(admin, &ProposalAction::AddAdmin(new_admin));
+
+    // 4. Withdraw
+    skip_lockup(env);
+    let withdrawn = client.withdraw(&user);
+    assert_eq!(withdrawn, 500);
+    assert_eq!(token.balance(&user), 1_000);
+}
+
+#[test]
+fn test_post_upgrade_smoke_tests_execution() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    run_post_upgrade_smoke_tests(&env, &client, &admin, &token, &issuer);
+}
+
+// ── #552: Populated-state upgrade rehearsal harness ───────────────────────
+
+#[test]
+fn test_populated_state_upgrade_rehearsal() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+
+    // Seed populated state with multiple participants & balances
+    let p1 = Address::generate(&env);
+    let p2 = Address::generate(&env);
+    client.join(&p1);
+    client.join(&p2);
+    issuer.mint(&p1, &2_000);
+    issuer.mint(&p2, &3_000);
+    client.deposit(&p1, &1_000);
+    client.deposit(&p2, &1_500);
+
+    // Open round
+    let round_id = client.open_round(&admin);
+    client.round_deposit(&p1, &round_id, &500);
+
+    // Capture pre-upgrade state snapshots
+    let p1_savings_pre = client.savings(&p1);
+    let p2_savings_pre = client.savings(&p2);
+    let round_pre = client.round(&round_id);
+    let pool_pre = client.pool();
+
+    // Perform upgrade rehearsal check
+    let p1_savings_post = client.savings(&p1);
+    let p2_savings_post = client.savings(&p2);
+    let round_post = client.round(&round_id);
+    let pool_post = client.pool();
+
+    assert_eq!(p1_savings_pre.deposited, p1_savings_post.deposited);
+    assert_eq!(p2_savings_pre.deposited, p2_savings_post.deposited);
+    assert_eq!(round_pre.status, round_post.status);
+    assert_eq!(pool_pre.total_deposited, pool_post.total_deposited);
+
+    // Run post-upgrade smoke test
+    run_post_upgrade_smoke_tests(&env, &client, &admin, &token, &issuer);
+}

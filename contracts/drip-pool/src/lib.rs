@@ -467,7 +467,7 @@ impl DripPool {
     }
 
     /// Transfer tokens from `from` to `to` via the configured SAC.
-    /// If no token is configured, this is a no-op (backward compatibility).
+    /// Fails closed with TokenNotConfigured if no token is configured (#524).
     /// Returns Ok(()) on success, Err(TransferFailed) on failure.
     fn transfer_tokens(
         env: &Env,
@@ -476,7 +476,7 @@ impl DripPool {
         amount: &i128,
     ) -> Result<(), Error> {
         if !Self::has_token_configured(env) {
-            return Ok(());
+            return Err(Error::TokenNotConfigured);
         }
         let token_addr = Self::get_token_address(env)?;
 
@@ -502,15 +502,14 @@ impl DripPool {
     // ── Withdrawal queue helpers (#529) ────────────────────────────────────
 
     /// Real spendable custody: the contract's own SAC balance. When no token
-    /// is configured, transfers are no-ops, so liquidity is never the
-    /// constraint (mirrors `transfer_tokens`'s backward-compatible no-op).
+    /// is configured, return 0 idle liquidity (#524).
     fn idle_liquidity(env: &Env) -> i128 {
         if !Self::has_token_configured(env) {
-            return i128::MAX;
+            return 0;
         }
         let token_addr = match Self::get_token_address(env) {
             Ok(a) => a,
-            Err(_) => return i128::MAX,
+            Err(_) => return 0,
         };
         let contract_addr = env.current_contract_address();
         soroban_sdk::token::TokenClient::new(env, &token_addr).balance(&contract_addr)
@@ -610,11 +609,14 @@ impl DripPool {
     }
 
     /// Configure the accepted Stellar Asset Contract address.
-    /// Only callable by an authorized signer.
+    /// Only callable by an authorized signer. Fails if already configured (#524).
     pub fn set_token(env: Env, caller: Address, token: Address) -> Result<(), Error> {
         caller.require_auth();
         Self::require_signer(&env, &caller)?;
         Self::require_compatible_config(&env)?;
+        if Self::has_token_configured(&env) {
+            return Err(Error::AlreadyInitialized);
+        }
         env.storage().instance().set(&DataKey::Token, &token);
         Self::bump_instance(&env);
         env.events()
@@ -991,6 +993,9 @@ impl DripPool {
     pub fn join(env: Env, who: Address) -> Result<(), Error> {
         who.require_auth();
         Self::require_compatible_config(&env)?;
+        if !Self::has_token_configured(&env) {
+            return Err(Error::TokenNotConfigured);
+        }
         let pool: Pool = env
             .storage()
             .instance()
@@ -1027,6 +1032,9 @@ impl DripPool {
     pub fn deposit(env: Env, who: Address, amount: i128) -> Result<(), Error> {
         who.require_auth();
         Self::require_compatible_config(&env)?;
+        if !Self::has_token_configured(&env) {
+            return Err(Error::TokenNotConfigured);
+        }
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -1117,6 +1125,9 @@ impl DripPool {
     pub fn withdraw_locked(env: Env, who: Address) -> Result<i128, Error> {
         who.require_auth();
         Self::require_compatible_config(&env)?;
+        if !Self::has_token_configured(&env) {
+            return Err(Error::TokenNotConfigured);
+        }
 
         let mut pool: Pool = env
             .storage()
@@ -1175,6 +1186,9 @@ impl DripPool {
     pub fn claim_reward(env: Env, who: Address) -> Result<i128, Error> {
         who.require_auth();
         Self::require_compatible_config(&env)?;
+        if !Self::has_token_configured(&env) {
+            return Err(Error::TokenNotConfigured);
+        }
 
         let pool: Pool = env
             .storage()
@@ -1306,6 +1320,9 @@ impl DripPool {
     pub fn withdraw(env: Env, who: Address) -> Result<i128, Error> {
         who.require_auth();
         Self::require_compatible_config(&env)?;
+        if !Self::has_token_configured(&env) {
+            return Err(Error::TokenNotConfigured);
+        }
 
         let mut p = Self::load_participant(&env, &who)?;
 

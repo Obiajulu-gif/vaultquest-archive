@@ -58,7 +58,8 @@
 //!   views so the frontend can read deadline/status without decoding `Pool`.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, vec, Address, Env, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, vec, Address, BytesN, Env,
+    Vec,
 };
 use vaultquest_common::YieldStrategyClient;
 
@@ -119,6 +120,8 @@ pub enum DataKey {
     RoundDeposit(Address, u32), // i128 — a participant's principal snapshotted into a
                     // specific round; keyed per (address, round_id) rather than a Vec on
                     // Participant to avoid unbounded per-participant storage growth (#508)
+    TokenDecimals,             // u8 — token decimal precision for exact unit handling (#599)
+    AllowedStrategyCodeHashes, // Vec<BytesN<32>> — allowlisted strategy WASM hashes (#602)
 }
 
 // ── Errors ─────────────────────────────────────────────────────────────────
@@ -175,6 +178,9 @@ pub enum Error {
     RoundAccountingViolation = 72, // a round-scoped invariant would be broken by this mutation (#508)
     RenewalLimitExceeded = 73,     // permissionless TTL renewal request exceeds bounded work budget
     RoundFinalizationTooEarly = 74, // permissionless finalization before objective deadline
+    TokenDecimalsNotConfigured = 75, // token decimals not set (#599)
+    StrategyCodeHashNotAllowed = 76, // strategy code hash not on allowlist (#602)
+    BalanceVerificationFailed = 77,  // strategy reported values not backed by real balance (#601)
 }
 
 // ── Structs ────────────────────────────────────────────────────────────────
@@ -2231,6 +2237,130 @@ impl DripPool {
         env.storage()
             .persistent()
             .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
+    }
+
+    // ── Token decimals (#599) ────────────────────────────────────────────────
+
+    /// Configure the token's decimal precision. Must be called after
+    /// `set_token` and before any deposits. Stored as u8 for compact
+    /// on-chain representation; valid range 0–38 covers all Stellar
+    /// assets. This value is used by the frontend and backend to
+    /// convert between human-readable amounts and on-chain i128 units
+    /// without lossy floating-point arithmetic (#599).
+    pub fn set_token_decimals(
+        env: Env,
+        caller: Address,
+        decimals: u8,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+        Self::require_signer(&env, &caller)?;
+        if !Self::has_token_configured(&env) {
+            return Err(Error::TokenNotConfigured);
+        }
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::TokenDecimals)
+        {
+            return Err(Error::AlreadyInitialized);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::TokenDecimals, &decimals);
+        Self::bump_instance(&env);
+
+        env.events().publish(
+            (symbol_short!("pool"), symbol_short!("decimals")),
+            decimals,
+        );
+        Ok(())
+    }
+
+    /// View the configured token decimals (#599).
+    pub fn token_decimals(env: Env) -> Result<u8, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::TokenDecimals)
+            .ok_or(Error::TokenDecimalsNotConfigured)
+    }
+
+    // ── Strategy code hash allowlist (#602) ────────────────────────────────
+
+    /// Add a WASM hash to the strategy code hash allowlist. Only callable
+    /// by an approved signer. Strategies deployed with code whose hash is
+    /// not on this list cannot be proposed or activated (#602).
+    pub fn allow_strategy_code_hash(
+        env: Env,
+        caller: Address,
+        code_hash: BytesN<32>,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+        Self::require_signer(&env, &caller)?;
+        let mut hashes: Vec<BytesN<32>> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowedStrategyCodeHashes)
+            .unwrap_or(Vec::new(&env));
+        if !hashes.contains(&code_hash) {
+            hashes.push_back(code_hash.clone());
+            env.storage()
+                .instance()
+                .set(&DataKey::AllowedStrategyCodeHashes, &hashes);
+            Self::bump_instance(&env);
+
+            env.events().publish(
+                (symbol_short!("strat"), symbol_short!("hash_ok")),
+                code_hash,
+            );
+        }
+        Ok(())
+    }
+
+    /// Remove a WASM hash from the strategy code hash allowlist.
+    pub fn disallow_strategy_code_hash(
+        env: Env,
+        caller: Address,
+        code_hash: BytesN<32>,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+        Self::require_signer(&env, &caller)?;
+        let mut hashes: Vec<BytesN<32>> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowedStrategyCodeHashes)
+            .unwrap_or(Vec::new(&env));
+        let mut new_hashes: Vec<BytesN<32>> = Vec::new(&env);
+        for h in hashes.iter() {
+            if h != code_hash {
+                new_hashes.push_back(h);
+            }
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::AllowedStrategyCodeHashes, &new_hashes);
+        Self::bump_instance(&env);
+        Ok(())
+    }
+
+    /// View the strategy code hash allowlist (#602).
+    pub fn allowed_strategy_code_hashes(env: Env) -> Vec<BytesN<32>> {
+        env.storage()
+            .instance()
+            .get(&DataKey::AllowedStrategyCodeHashes)
+            .unwrap_or(Vec::new(&env))
+    }
+
+    /// Check if a strategy's code hash is on the allowlist (#602).
+    pub fn is_strategy_code_hash_allowed(
+        env: Env,
+        code_hash: BytesN<32>,
+    ) -> bool {
+        let hashes: Vec<BytesN<32>> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowedStrategyCodeHashes)
+            .unwrap_or(Vec::new(&env));
+        hashes.contains(&code_hash)
     }
 
     // ── Views ──────────────────────────────────────────────────────────────

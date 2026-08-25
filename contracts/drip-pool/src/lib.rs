@@ -74,6 +74,8 @@ const INSTANCE_TTL_THRESHOLD: u32 = 500;
 const INSTANCE_TTL_EXTEND: u32 = 100_000;
 const PERSISTENT_TTL_THRESHOLD: u32 = 100_000;
 const PERSISTENT_TTL_EXTEND: u32 = 500_000;
+const MAX_RENEWAL_ITEMS: u32 = 32;
+const ROUND_PERMISSIONLESS_FINALIZE_DELAY_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 // ── Proposal expiry (~30 days at 5 s/ledger) ──────────────────────────────
 const PROPOSAL_EXPIRY_LEDGERS: u32 = 17_280 * 30;
@@ -96,27 +98,27 @@ pub enum DataKey {
     Admins,    // Vec<Address> — approved signers
     Threshold, // u32 — current multisig threshold
     Pool,
-    Participant(Address),   // V2 participant storage (#377)
-    ParticipantV1(Address), // legacy V1 participant storage (migration source)
-    Proposal(u32),          // pending admin proposal
-    Token,                  // Address — accepted Stellar Asset Contract address (#376)
-    ConfigVersion,          // u32 — configuration schema version (#441)
-    ProposedStrategy,       // Option<Address> — candidate strategy proposed for rotation (#532)
-    StrategyExposureCap,    // i128 — maximum allowable deposit for active strategy (#532)
-    ProposedExposureCap,    // i128 — exposure cap for candidate strategy (#532)
-    StrategyRotationPhase,  // StrategyRotationPhase — phase of current rotation (#532)
+    Participant(Address),      // V2 participant storage (#377)
+    ParticipantV1(Address),    // legacy V1 participant storage (migration source)
+    Proposal(u32),             // pending admin proposal
+    Token,                     // Address — accepted Stellar Asset Contract address (#376)
+    ConfigVersion,             // u32 — configuration schema version (#441)
+    ProposedStrategy,          // Option<Address> — candidate strategy proposed for rotation (#532)
+    StrategyExposureCap,       // i128 — maximum allowable deposit for active strategy (#532)
+    ProposedExposureCap,       // i128 — exposure cap for candidate strategy (#532)
+    StrategyRotationPhase,     // StrategyRotationPhase — phase of current rotation (#532)
     StrategyRotationReadyAt, // u32 — ledger sequence when the pending rotation may activate (#533)
-    GovernanceEpoch,        // u32 — bumped on every Admins/Threshold change (#533)
-    MinIdleReserve,         // i128 — minimum idle principal governance must leave undeployed (#529)
-    WithdrawalQueueHead,    // u32 — next withdrawal request id to fulfill (#529)
-    WithdrawalQueueTail,    // u32 — next withdrawal request id to assign (#529)
+    GovernanceEpoch,         // u32 — bumped on every Admins/Threshold change (#533)
+    MinIdleReserve, // i128 — minimum idle principal governance must leave undeployed (#529)
+    WithdrawalQueueHead, // u32 — next withdrawal request id to fulfill (#529)
+    WithdrawalQueueTail, // u32 — next withdrawal request id to assign (#529)
     WithdrawalRequest(u32), // queued withdrawal request, by id (#529)
     ParticipantQueue(Address), // Address -> pending request id, prevents duplicate queuing (#529)
-    RoundNonce,             // u32 — next round id to assign (#508)
-    Round(u32),             // Round — round-scoped state, by round id (#508)
+    RoundNonce,     // u32 — next round id to assign (#508)
+    Round(u32),     // Round — round-scoped state, by round id (#508)
     RoundDeposit(Address, u32), // i128 — a participant's principal snapshotted into a
-    // specific round; keyed per (address, round_id) rather than a Vec on
-    // Participant to avoid unbounded per-participant storage growth (#508)
+                    // specific round; keyed per (address, round_id) rather than a Vec on
+                    // Participant to avoid unbounded per-participant storage growth (#508)
 }
 
 // ── Errors ─────────────────────────────────────────────────────────────────
@@ -148,8 +150,8 @@ pub enum Error {
     NotInEmergency = 22,          // emergency exit blocked while not in emergency mode (#512)
     Insolvent = 23,               // principal coverage below policy (#512)
     IncompatibleConfig = 24,      // configuration schema version mismatch (#441)
-    GovernanceEpochChanged = 25, // admin/threshold set changed since proposal creation (#533)
-    TimelockNotElapsed = 26,     // high-risk proposal executed before its delay (#533)
+    GovernanceEpochChanged = 25,  // admin/threshold set changed since proposal creation (#533)
+    TimelockNotElapsed = 26,      // high-risk proposal executed before its delay (#533)
     StrategyNotSet = 51,
     StrategyVersionUnsupported = 52,
     StrategyPaused = 53,
@@ -161,16 +163,18 @@ pub enum Error {
     ExposureCapExceeded = 59,
     StrategyAssetMismatch = 60,
     StrategyRotationDelayNotElapsed = 61, // activate_strategy before timelock elapses (#533)
-    InsufficientIdleReserve = 62,  // deploy_to_strategy would breach the idle buffer (#529)
-    WithdrawalAlreadyQueued = 64,  // participant already has a pending queued withdrawal (#529)
+    InsufficientIdleReserve = 62,         // deploy_to_strategy would breach the idle buffer (#529)
+    WithdrawalAlreadyQueued = 64, // participant already has a pending queued withdrawal (#529)
     WithdrawalRequestNotFound = 65,
     WithdrawalRequestNotOwned = 66,
     WithdrawalRequestNotPending = 67,
-    RoundNotFound = 68,      // referenced round id has no stored Round (#508)
-    RoundNotOpen = 69,       // round_deposit into a round that isn't Open (#508)
-    RoundNotLocked = 70,     // settle_round called on a round that isn't Locked (#508)
+    RoundNotFound = 68,       // referenced round id has no stored Round (#508)
+    RoundNotOpen = 69,        // round_deposit into a round that isn't Open (#508)
+    RoundNotLocked = 70,      // settle_round called on a round that isn't Locked (#508)
     RoundAlreadySettled = 71, // settle_round/round_claim called twice on the same round (#508)
     RoundAccountingViolation = 72, // a round-scoped invariant would be broken by this mutation (#508)
+    RenewalLimitExceeded = 73,     // permissionless TTL renewal request exceeds bounded work budget
+    RoundFinalizationTooEarly = 74, // permissionless finalization before objective deadline
 }
 
 // ── Structs ────────────────────────────────────────────────────────────────
@@ -229,8 +233,8 @@ pub struct Proposal {
     pub epoch_snapshot: u32, // governance epoch at creation; a later Admins/Threshold
     // change bumps the epoch and makes this proposal stale (#533)
     pub ready_at: u32, // ledger sequence at/after which this proposal may execute;
-                        // `created_at + HIGH_RISK_DELAY_LEDGERS` for high-risk actions,
-                        // `created_at` (immediate) otherwise (#533)
+                       // `created_at + HIGH_RISK_DELAY_LEDGERS` for high-risk actions,
+                       // `created_at` (immediate) otherwise (#533)
 }
 
 /// Lifecycle status of a queued withdrawal request (#529).
@@ -261,7 +265,7 @@ pub enum ProposalAction {
     ReleaseEscrow(Address, i128), // recipient, amount
     AddAdmin(Address),
     RemoveAdmin(Address),
-    SetThreshold(u32), // change the approval threshold (#383)
+    SetThreshold(u32),      // change the approval threshold (#383)
     TriggerEmergency(i128), // enter emergency mode with available asset amount (#512)
     Recapitalize(i128),     // inject capital into emergency pool (#512)
     ResumeNormal,           // return to normal operations (#512)
@@ -288,13 +292,30 @@ pub enum RoundStatus {
 pub struct Round {
     pub id: u32,
     pub status: RoundStatus,
-    pub opened_at: u64,               // ledger timestamp when opened
-    pub locked_at: Option<u64>,       // ledger timestamp when locked
-    pub settled_at: Option<u64>,      // ledger timestamp when settled
-    pub principal_snapshot: i128,     // sum of round_deposit amounts at lock time
-    pub realized_yield: i128,         // set once, at settlement; 0 until then
-    pub prize_reserve: i128,          // set once, at settlement; 0 until then
-    pub claimed: i128,                // running total paid out via round_claim
+    pub opened_at: u64,           // ledger timestamp when opened
+    pub locked_at: Option<u64>,   // ledger timestamp when locked
+    pub settled_at: Option<u64>,  // ledger timestamp when settled
+    pub principal_snapshot: i128, // sum of round_deposit amounts at lock time
+    pub realized_yield: i128,     // set once, at settlement; 0 until then
+    pub prize_reserve: i128,      // set once, at settlement; 0 until then
+    pub claimed: i128,            // running total paid out via round_claim
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub enum RenewalKey {
+    Participant(Address),
+    Round(u32),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct RenewalReport {
+    pub requested: u32,
+    pub renewed: u32,
+    pub skipped: u32,
+    pub required_budget: u32,
+    pub blocking_key: Option<RenewalKey>,
 }
 
 // ── Contract ───────────────────────────────────────────────────────────────
@@ -374,7 +395,9 @@ impl DripPool {
     /// (#533) instead of being silently approved/executed under new ones.
     fn bump_epoch(env: &Env) {
         let epoch = Self::get_epoch(env) + 1;
-        env.storage().instance().set(&DataKey::GovernanceEpoch, &epoch);
+        env.storage()
+            .instance()
+            .set(&DataKey::GovernanceEpoch, &epoch);
     }
 
     /// High-risk actions get a ledger-based execution delay after the
@@ -489,7 +512,13 @@ impl DripPool {
         Ok(())
     }
     // Atomic helper that performs a token transfer and then runs a closure to update accounting.
-    fn atomic_transfer_and<F>(env: &Env, from: &Address, to: &Address, amount: i128, accounting_update: F) -> Result<(), Error>
+    fn atomic_transfer_and<F>(
+        env: &Env,
+        from: &Address,
+        to: &Address,
+        amount: i128,
+        accounting_update: F,
+    ) -> Result<(), Error>
     where
         F: FnOnce() -> Result<(), Error>,
     {
@@ -571,7 +600,9 @@ impl DripPool {
             .instance()
             .set(&DataKey::Threshold, &DEFAULT_THRESHOLD);
         env.storage().instance().set(&DataKey::Pool, &pool);
-        env.storage().instance().set(&DataKey::ConfigVersion, &CONFIG_SCHEMA_VERSION);
+        env.storage()
+            .instance()
+            .set(&DataKey::ConfigVersion, &CONFIG_SCHEMA_VERSION);
         Self::bump_instance(&env);
         env.events()
             .publish((symbol_short!("pool"), symbol_short!("created")), admin);
@@ -597,7 +628,9 @@ impl DripPool {
             return Err(Error::IncompatibleConfig);
         }
 
-        env.storage().instance().set(&DataKey::ConfigVersion, &new_version);
+        env.storage()
+            .instance()
+            .set(&DataKey::ConfigVersion, &new_version);
         Self::bump_instance(&env);
 
         env.events().publish(
@@ -905,19 +938,13 @@ impl DripPool {
                 }
                 // Perform atomic token transfer from contract to the bound recipient.
                 let contract_addr = env.current_contract_address();
-                Self::atomic_transfer_and(
-                    &env,
-                    &contract_addr,
-                    &recipient,
-                    amount,
-                    || {
-                        // Update free-reserve bucket only (total_deposited reflects locked principal).
-                        // We decrement total_deposited to reflect the escrow payout.
-                        pool.total_deposited = pool.total_deposited.saturating_sub(amount);
-                        env.storage().instance().set(&DataKey::Pool, &pool);
-                        Ok(())
-                    },
-                )?;
+                Self::atomic_transfer_and(&env, &contract_addr, &recipient, amount, || {
+                    // Update free-reserve bucket only (total_deposited reflects locked principal).
+                    // We decrement total_deposited to reflect the escrow payout.
+                    pool.total_deposited = pool.total_deposited.saturating_sub(amount);
+                    env.storage().instance().set(&DataKey::Pool, &pool);
+                    Ok(())
+                })?;
             }
             ProposalAction::SetThreshold(t) => {
                 let admins = Self::get_admins(env);
@@ -948,26 +975,18 @@ impl DripPool {
                 // Transfer tokens from the proposal creator (funder) into the contract.
                 let funder = proposal.approvals.get(0).unwrap();
                 let contract_addr = env.current_contract_address();
-                Self::atomic_transfer_and(
-                    &env,
-                    &funder,
-                    &contract_addr,
-                    amount,
-                    || {
-                        let mut pool: Pool = env
-                            .storage()
-                            .instance()
-                            .get(&DataKey::Pool)
-                            .ok_or(Error::NotInitialized)?;
-                        pool.emergency_assets = pool.emergency_assets.saturating_add(amount);
-                        env.storage().instance().set(&DataKey::Pool, &pool);
-                        env.events().publish(
-                            (symbol_short!("emergency"), symbol_short!("recap")),
-                            amount,
-                        );
-                        Ok(())
-                    },
-                )?;
+                Self::atomic_transfer_and(&env, &funder, &contract_addr, amount, || {
+                    let mut pool: Pool = env
+                        .storage()
+                        .instance()
+                        .get(&DataKey::Pool)
+                        .ok_or(Error::NotInitialized)?;
+                    pool.emergency_assets = pool.emergency_assets.saturating_add(amount);
+                    env.storage().instance().set(&DataKey::Pool, &pool);
+                    env.events()
+                        .publish((symbol_short!("emergency"), symbol_short!("recap")), amount);
+                    Ok(())
+                })?;
             }
             ProposalAction::ResumeNormal => {
                 let mut pool: Pool = env
@@ -1410,7 +1429,9 @@ impl DripPool {
         if amount < 0 {
             return Err(Error::InvalidAmount);
         }
-        env.storage().instance().set(&DataKey::MinIdleReserve, &amount);
+        env.storage()
+            .instance()
+            .set(&DataKey::MinIdleReserve, &amount);
         Self::bump_instance(&env);
         env.events()
             .publish((symbol_short!("pool"), symbol_short!("idlecfg")), amount);
@@ -1525,12 +1546,16 @@ impl DripPool {
             }
         }
 
-        env.storage().instance().set(&DataKey::WithdrawalQueueHead, &head);
+        env.storage()
+            .instance()
+            .set(&DataKey::WithdrawalQueueHead, &head);
         Self::bump_instance(&env);
 
         if total_paid > 0 {
-            env.events()
-                .publish((symbol_short!("wq"), symbol_short!("fulfill")), (head, total_paid));
+            env.events().publish(
+                (symbol_short!("wq"), symbol_short!("fulfill")),
+                (head, total_paid),
+            );
         }
         Ok(total_paid)
     }
@@ -1569,8 +1594,10 @@ impl DripPool {
             .remove(&DataKey::ParticipantQueue(who));
         Self::bump_instance(&env);
 
-        env.events()
-            .publish((symbol_short!("wq"), symbol_short!("cancel")), (qid, remaining));
+        env.events().publish(
+            (symbol_short!("wq"), symbol_short!("cancel")),
+            (qid, remaining),
+        );
         Ok(remaining)
     }
 
@@ -1584,7 +1611,9 @@ impl DripPool {
 
     /// View the caller's active queued request id, if any (#529).
     pub fn withdrawal_request_of(env: Env, who: Address) -> Option<u32> {
-        env.storage().instance().get(&DataKey::ParticipantQueue(who))
+        env.storage()
+            .instance()
+            .get(&DataKey::ParticipantQueue(who))
     }
 
     pub fn withdrawal_queue_head(env: Env) -> u32 {
@@ -1764,6 +1793,67 @@ impl DripPool {
         }
         Self::bump_instance(&env);
         Ok(())
+    }
+
+    /// Permissionless bounded TTL maintenance. Each item costs one renewal
+    /// unit; callers must provide a per-call cap so a griefing transaction
+    /// cannot force unbounded storage work (#606).
+    pub fn renew_storage(
+        env: Env,
+        participants: Vec<Address>,
+        round_ids: Vec<u32>,
+        max_items: u32,
+    ) -> Result<RenewalReport, Error> {
+        Self::require_compatible_config(&env)?;
+        if !env.storage().instance().has(&DataKey::Pool) {
+            return Err(Error::NotInitialized);
+        }
+
+        let requested = participants.len() + round_ids.len();
+        if requested > max_items || max_items > MAX_RENEWAL_ITEMS {
+            return Err(Error::RenewalLimitExceeded);
+        }
+
+        let mut renewed: u32 = 0;
+        let mut skipped: u32 = 0;
+        let mut blocking_key: Option<RenewalKey> = None;
+
+        for i in 0..participants.len() {
+            let who = participants.get(i).unwrap();
+            let key = DataKey::Participant(who.clone());
+            if env.storage().persistent().has(&key) {
+                Self::bump_participant(&env, &key);
+                renewed += 1;
+            } else {
+                skipped += 1;
+                if blocking_key.is_none() {
+                    blocking_key = Some(RenewalKey::Participant(who));
+                }
+            }
+        }
+
+        for i in 0..round_ids.len() {
+            let round_id = round_ids.get(i).unwrap();
+            let key = DataKey::Round(round_id);
+            if env.storage().persistent().has(&key) {
+                Self::bump_round(&env, &key);
+                renewed += 1;
+            } else {
+                skipped += 1;
+                if blocking_key.is_none() {
+                    blocking_key = Some(RenewalKey::Round(round_id));
+                }
+            }
+        }
+
+        Self::bump_instance(&env);
+        Ok(RenewalReport {
+            requested,
+            renewed,
+            skipped,
+            required_budget: requested,
+            blocking_key,
+        })
     }
 
     // ── Draw winner ────────────────────────────────────────────────────────
@@ -2036,6 +2126,39 @@ impl DripPool {
         env.events().publish(
             (symbol_short!("round"), symbol_short!("settled")),
             (round_id, realized_yield, prize_reserve),
+        );
+        Ok(())
+    }
+
+    /// Permissionless liveness fallback: after a locked round has remained
+    /// unsettled past the objective deadline, any account may finalize it
+    /// with zero realized yield/prize. The caller cannot choose a winner or
+    /// payout, and duplicate calls hit the same settled-state guard (#604).
+    pub fn finalize_round(env: Env, caller: Address, round_id: u32) -> Result<(), Error> {
+        caller.require_auth();
+        Self::require_compatible_config(&env)?;
+
+        let mut round = Self::load_round(&env, round_id)?;
+        match round.status {
+            RoundStatus::Settled => return Err(Error::RoundAlreadySettled),
+            RoundStatus::Open => return Err(Error::RoundNotLocked),
+            RoundStatus::Locked => {}
+        }
+
+        let locked_at = round.locked_at.ok_or(Error::RoundNotLocked)?;
+        if env.ledger().timestamp() < locked_at + ROUND_PERMISSIONLESS_FINALIZE_DELAY_SECONDS {
+            return Err(Error::RoundFinalizationTooEarly);
+        }
+
+        round.realized_yield = 0;
+        round.prize_reserve = 0;
+        round.status = RoundStatus::Settled;
+        round.settled_at = Some(env.ledger().timestamp());
+        Self::save_round(&env, &round);
+
+        env.events().publish(
+            (symbol_short!("round"), symbol_short!("finalize")),
+            (caller, round_id),
         );
         Ok(())
     }

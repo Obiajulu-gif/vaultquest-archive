@@ -52,7 +52,8 @@ fn skip_lockup(env: &Env) {
 /// Advance ledger sequence past the high-risk governance timelock (#533).
 fn skip_high_risk_delay(env: &Env) {
     let current = env.ledger().sequence();
-    env.ledger().set_sequence_number(current + HIGH_RISK_DELAY_LEDGERS + 1);
+    env.ledger()
+        .set_sequence_number(current + HIGH_RISK_DELAY_LEDGERS + 1);
 }
 
 // ── existing regression tests (updated for #377) ───────────────────────────
@@ -541,7 +542,10 @@ fn set_threshold_via_proposal() {
     let pid = client.propose(&admin, &ProposalAction::SetThreshold(1));
     // signer2 approves — threshold_met (2 of 2), but the timelock still blocks execution.
     let executed = client.approve(&signer2, &pid);
-    assert!(!executed, "high-risk action must not execute before its delay");
+    assert!(
+        !executed,
+        "high-risk action must not execute before its delay"
+    );
     assert_eq!(client.threshold(), 2);
 
     skip_high_risk_delay(&env);
@@ -561,7 +565,10 @@ fn remove_admin_below_threshold_fails() {
     // Trying to remove signer2 would leave 1 admin < threshold=2
     let pid = client.propose(&admin, &ProposalAction::RemoveAdmin(signer2.clone()));
     let executed = client.approve(&signer2, &pid);
-    assert!(!executed, "high-risk action must not execute before its delay");
+    assert!(
+        !executed,
+        "high-risk action must not execute before its delay"
+    );
 
     skip_high_risk_delay(&env);
     let result = client.try_execute_proposal(&signer2, &pid);
@@ -680,6 +687,35 @@ fn renew_instance_succeeds() {
 fn renew_instance_not_initialized_fails() {
     let (_env, client, _admin) = setup();
     assert_eq!(client.try_renew_instance(), Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+fn renew_storage_is_bounded_and_reports_blocking_key() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let alice = Address::generate(&env);
+    let ghost = Address::generate(&env);
+    client.join(&alice);
+    let round_id = client.open_round(&admin);
+
+    let participants = vec![&env, alice.clone(), ghost.clone()];
+    let rounds = vec![&env, round_id, 999u32];
+    let report = client.renew_storage(&participants, &rounds, &4);
+
+    assert_eq!(report.requested, 4);
+    assert_eq!(report.renewed, 2);
+    assert_eq!(report.skipped, 2);
+    assert_eq!(report.required_budget, 4);
+    assert_eq!(report.blocking_key, Some(RenewalKey::Participant(ghost)));
+
+    assert_eq!(
+        client.try_renew_storage(&participants, &rounds, &3),
+        Err(Ok(Error::RenewalLimitExceeded))
+    );
+    assert_eq!(
+        client.try_renew_storage(&vec![&env], &vec![&env], &(MAX_RENEWAL_ITEMS + 1)),
+        Err(Ok(Error::RenewalLimitExceeded))
+    );
 }
 
 /// threshold view returns the stored value.
@@ -1485,7 +1521,7 @@ fn test_config_version_initialization() {
 fn test_update_config_version_success() {
     let (env, client, admin) = setup();
     client.create(&admin);
-    
+
     // Update config version from 1 to 2
     let res = client.try_update_config_version(&admin, &1, &2);
     assert!(res.is_ok());
@@ -1500,7 +1536,7 @@ fn test_update_config_version_success() {
 fn test_update_config_version_invalid_expected() {
     let (_env, client, admin) = setup();
     client.create(&admin);
-    
+
     // Update config version with wrong expected_version fails
     let res = client.try_update_config_version(&admin, &2, &3);
     assert_eq!(res, Err(Ok(Error::IncompatibleConfig)));
@@ -1511,7 +1547,7 @@ fn test_update_config_version_invalid_expected() {
 fn test_update_config_version_unauthorized() {
     let (env, client, admin) = setup();
     client.create(&admin);
-    
+
     let rando = Address::generate(&env);
     let res = client.try_update_config_version(&rando, &1, &2);
     assert_eq!(res, Err(Ok(Error::Unauthorized)));
@@ -1522,21 +1558,33 @@ fn test_update_config_version_unauthorized() {
 fn test_incompatible_config_blocks_operations() {
     let (env, client, admin) = setup();
     client.create(&admin);
-    
+
     // Migrate config version to 2 (making it incompatible with logic version 1)
     client.update_config_version(&admin, &1, &2);
-    
+
     let alice = Address::generate(&env);
-    
+
     // core mutations should fail
     assert_eq!(client.try_join(&alice), Err(Ok(Error::IncompatibleConfig)));
-    assert_eq!(client.try_deposit(&alice, &100), Err(Ok(Error::IncompatibleConfig)));
-    assert_eq!(client.try_withdraw(&alice), Err(Ok(Error::IncompatibleConfig)));
-    assert_eq!(client.try_claim_reward(&alice), Err(Ok(Error::IncompatibleConfig)));
-    
+    assert_eq!(
+        client.try_deposit(&alice, &100),
+        Err(Ok(Error::IncompatibleConfig))
+    );
+    assert_eq!(
+        client.try_withdraw(&alice),
+        Err(Ok(Error::IncompatibleConfig))
+    );
+    assert_eq!(
+        client.try_claim_reward(&alice),
+        Err(Ok(Error::IncompatibleConfig))
+    );
+
     // admin operations should fail
     let token = Address::generate(&env);
-    assert_eq!(client.try_set_token(&admin, &token), Err(Ok(Error::IncompatibleConfig)));
+    assert_eq!(
+        client.try_set_token(&admin, &token),
+        Err(Ok(Error::IncompatibleConfig))
+    );
 }
 
 // ── #532: Strategy Rotation Tests ──────────────────────────────────────────
@@ -1549,13 +1597,26 @@ impl MockStrategy {
     pub fn interface_version(_env: Env) -> u32 {
         1
     }
-    pub fn deposit(_env: Env, _from: Address, _asset: Address, _amount: i128) -> Result<(), vaultquest_common::ContractError> {
+    pub fn deposit(
+        _env: Env,
+        _from: Address,
+        _asset: Address,
+        _amount: i128,
+    ) -> Result<(), vaultquest_common::ContractError> {
         Ok(())
     }
-    pub fn redeem(_env: Env, _to: Address, _asset: Address, amount: i128) -> Result<i128, vaultquest_common::ContractError> {
+    pub fn redeem(
+        _env: Env,
+        _to: Address,
+        _asset: Address,
+        amount: i128,
+    ) -> Result<i128, vaultquest_common::ContractError> {
         Ok(amount)
     }
-    pub fn harvest(_env: Env, _asset: Address) -> Result<vaultquest_common::StrategyReport, vaultquest_common::ContractError> {
+    pub fn harvest(
+        _env: Env,
+        _asset: Address,
+    ) -> Result<vaultquest_common::StrategyReport, vaultquest_common::ContractError> {
         Ok(vaultquest_common::StrategyReport {
             realized_yield: 0,
             realized_loss: 0,
@@ -1575,13 +1636,26 @@ impl BadVersionStrategy {
     pub fn interface_version(_env: Env) -> u32 {
         99
     }
-    pub fn deposit(_env: Env, _from: Address, _asset: Address, _amount: i128) -> Result<(), vaultquest_common::ContractError> {
+    pub fn deposit(
+        _env: Env,
+        _from: Address,
+        _asset: Address,
+        _amount: i128,
+    ) -> Result<(), vaultquest_common::ContractError> {
         Ok(())
     }
-    pub fn redeem(_env: Env, _to: Address, _asset: Address, amount: i128) -> Result<i128, vaultquest_common::ContractError> {
+    pub fn redeem(
+        _env: Env,
+        _to: Address,
+        _asset: Address,
+        amount: i128,
+    ) -> Result<i128, vaultquest_common::ContractError> {
         Ok(amount)
     }
-    pub fn harvest(_env: Env, _asset: Address) -> Result<vaultquest_common::StrategyReport, vaultquest_common::ContractError> {
+    pub fn harvest(
+        _env: Env,
+        _asset: Address,
+    ) -> Result<vaultquest_common::StrategyReport, vaultquest_common::ContractError> {
         Ok(vaultquest_common::StrategyReport {
             realized_yield: 0,
             realized_loss: 0,
@@ -1603,22 +1677,40 @@ impl RealTokenStrategy {
     pub fn interface_version(_env: Env) -> u32 {
         1
     }
-    pub fn deposit(env: Env, from: Address, asset: Address, amount: i128) -> Result<(), vaultquest_common::ContractError> {
+    pub fn deposit(
+        env: Env,
+        from: Address,
+        asset: Address,
+        amount: i128,
+    ) -> Result<(), vaultquest_common::ContractError> {
         let token = token::TokenClient::new(&env, &asset);
         token.transfer(&from, &env.current_contract_address(), &amount);
         Ok(())
     }
-    pub fn redeem(env: Env, to: Address, asset: Address, amount: i128) -> Result<i128, vaultquest_common::ContractError> {
+    pub fn redeem(
+        env: Env,
+        to: Address,
+        asset: Address,
+        amount: i128,
+    ) -> Result<i128, vaultquest_common::ContractError> {
         let token = token::TokenClient::new(&env, &asset);
         let available = token.balance(&env.current_contract_address());
-        let redeemed = if amount < available { amount } else { available };
+        let redeemed = if amount < available {
+            amount
+        } else {
+            available
+        };
         if redeemed > 0 {
             token.transfer(&env.current_contract_address(), &to, &redeemed);
         }
         Ok(redeemed)
     }
-    pub fn harvest(env: Env, asset: Address) -> Result<vaultquest_common::StrategyReport, vaultquest_common::ContractError> {
-        let balance = token::TokenClient::new(&env, &asset).balance(&env.current_contract_address());
+    pub fn harvest(
+        env: Env,
+        asset: Address,
+    ) -> Result<vaultquest_common::StrategyReport, vaultquest_common::ContractError> {
+        let balance =
+            token::TokenClient::new(&env, &asset).balance(&env.current_contract_address());
         Ok(vaultquest_common::StrategyReport {
             realized_yield: 0,
             realized_loss: 0,
@@ -1853,7 +1945,11 @@ fn epoch_bumps_on_threshold_change_and_invalidates_pending_proposal() {
         client.try_approve(&signer2, &pid),
         Err(Ok(Error::GovernanceEpochChanged))
     );
-    assert_eq!(client.pool().total_deposited, 500, "stale proposal must not execute");
+    assert_eq!(
+        client.pool().total_deposited,
+        500,
+        "stale proposal must not execute"
+    );
 }
 
 #[test]
@@ -2021,7 +2117,11 @@ fn fulfill_withdrawal_queue_pays_partial_then_completes_in_order() {
     assert_eq!(paid, 50);
     assert_eq!(token.balance(&alice), 50);
     assert_eq!(token.balance(&bob), 0);
-    assert_eq!(client.withdrawal_queue_head(), 0, "alice's request stays at head, partially paid");
+    assert_eq!(
+        client.withdrawal_queue_head(),
+        0,
+        "alice's request stays at head, partially paid"
+    );
 
     // Recall more liquidity from the strategy, then fulfill the rest.
     client.recall_from_strategy(&admin, &1_950);
@@ -2030,6 +2130,39 @@ fn fulfill_withdrawal_queue_pays_partial_then_completes_in_order() {
     assert_eq!(token.balance(&alice), 1_000);
     assert_eq!(token.balance(&bob), 1_000);
     assert_eq!(client.withdrawal_queue_head(), 2, "both requests fulfilled");
+}
+
+#[test]
+fn deterministic_solvency_model_conserves_principal_yield_and_reserves() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    issuer.mint(&alice, &1_000);
+    issuer.mint(&bob, &1_000);
+    issuer.mint(&admin, &100);
+
+    client.join(&alice);
+    client.join(&bob);
+    client.deposit(&alice, &600);
+    client.deposit(&bob, &400);
+    assert_eq!(client.pool().total_deposited, 1_000);
+    assert_eq!(token.balance(&env.current_contract_address()), 1_000);
+
+    client.add_yield(&admin, &100);
+    client.credit_yield(&admin, &alice, &40);
+    client.credit_yield(&admin, &bob, &60);
+    assert_eq!(client.claim(&alice), 40);
+    assert_eq!(client.claim(&bob), 60);
+
+    skip_lockup(&env);
+    assert_eq!(client.withdraw(&alice), 600);
+    assert_eq!(client.withdraw(&bob), 400);
+
+    assert_eq!(client.pool().total_deposited, 0);
+    assert_eq!(token.balance(&alice), 1_040);
+    assert_eq!(token.balance(&bob), 1_060);
+    assert_eq!(token.balance(&admin), 0);
+    assert_eq!(token.balance(&env.current_contract_address()), 0);
 }
 
 // ── Round-scoped accounting (#508) ──────────────────────────────────────────
@@ -2064,7 +2197,10 @@ fn open_round_unauthorized_fails() {
     let (env, client, admin) = setup();
     client.create(&admin);
     let stranger = Address::generate(&env);
-    assert_eq!(client.try_open_round(&stranger), Err(Ok(Error::Unauthorized)));
+    assert_eq!(
+        client.try_open_round(&stranger),
+        Err(Ok(Error::Unauthorized))
+    );
 }
 
 #[test]
@@ -2205,6 +2341,38 @@ fn settle_round_twice_fails() {
 }
 
 #[test]
+fn permissionless_finalize_round_after_deadline_is_idempotent() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let keeper = Address::generate(&env);
+    let alice = Address::generate(&env);
+
+    let round_id = client.open_round(&admin);
+    client.round_deposit(&alice, &round_id, &100);
+    env.ledger().set_timestamp(1_000);
+    client.lock_round(&admin, &round_id);
+
+    assert_eq!(
+        client.try_finalize_round(&keeper, &round_id),
+        Err(Ok(Error::RoundFinalizationTooEarly))
+    );
+
+    env.ledger()
+        .set_timestamp(1_000 + ROUND_PERMISSIONLESS_FINALIZE_DELAY_SECONDS + 1);
+    client.finalize_round(&keeper, &round_id);
+
+    let round = client.round(&round_id);
+    assert_eq!(round.status, RoundStatus::Settled);
+    assert_eq!(round.realized_yield, 0);
+    assert_eq!(round.prize_reserve, 0);
+    assert_eq!(client.round_claim(&alice, &round_id), 0);
+    assert_eq!(
+        client.try_finalize_round(&keeper, &round_id),
+        Err(Ok(Error::RoundAlreadySettled))
+    );
+}
+
+#[test]
 fn settling_round_does_not_affect_next_rounds_opening_balance() {
     // "settling a round doesn't affect the next round's opening balance"
     let (env, client, admin) = setup();
@@ -2218,7 +2386,10 @@ fn settling_round_does_not_affect_next_rounds_opening_balance() {
 
     let round_1 = client.open_round(&admin);
     let round_1_state = client.round(&round_1);
-    assert_eq!(round_1_state.principal_snapshot, 0, "round_1 opens with a zero balance");
+    assert_eq!(
+        round_1_state.principal_snapshot, 0,
+        "round_1 opens with a zero balance"
+    );
     assert_eq!(round_1_state.realized_yield, 0);
     assert_eq!(round_1_state.prize_reserve, 0);
 
@@ -2323,7 +2494,10 @@ fn round_claim_rounding_never_over_distributes() {
     let b = client.round_claim(&bob, &round_id);
     let c = client.round_claim(&carol, &round_id);
 
-    assert!(a + b + c <= 10, "distributed total must never exceed realized_yield");
+    assert!(
+        a + b + c <= 10,
+        "distributed total must never exceed realized_yield"
+    );
     assert_eq!(client.round(&round_id).claimed, a + b + c);
 }
 
@@ -2401,8 +2575,14 @@ fn test_unconfigured_token_fails_closed() {
 
     // Any value-changing call on an unconfigured pool must fail closed with TokenNotConfigured
     assert_eq!(client.try_join(&alice), Err(Ok(Error::TokenNotConfigured)));
-    assert_eq!(client.try_deposit(&alice, &100), Err(Ok(Error::TokenNotConfigured)));
-    assert_eq!(client.try_withdraw(&alice), Err(Ok(Error::TokenNotConfigured)));
+    assert_eq!(
+        client.try_deposit(&alice, &100),
+        Err(Ok(Error::TokenNotConfigured))
+    );
+    assert_eq!(
+        client.try_withdraw(&alice),
+        Err(Ok(Error::TokenNotConfigured))
+    );
     assert_eq!(client.try_claim(&alice), Err(Ok(Error::TokenNotConfigured)));
 }
 

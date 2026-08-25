@@ -1,0 +1,62 @@
+# Prometheus configuration for VaultQuest Backend monitoring
+# Copy this to prometheus.yml and adjust as needed
+
+global:
+  scrape_interval: 15s         # Default scrape interval
+  evaluation_interval: 15s     # How often to evaluate rules
+  external_labels:
+    monitor: 'vaultquest-backend'
+    environment: 'development'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - localhost:9093
+
+# Load rules for alerts
+rule_files:
+  # - "alerts.yml"
+
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # VaultQuest Backend
+  - job_name: 'vaultquest-backend'
+    static_configs:
+      - targets: ['localhost:3000']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    # Optional: add labels to all metrics from this job
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'backend-1'
+
+  # Node Exporter (system metrics)
+  - job_name: 'node'
+    static_configs:
+      - targets: ['localhost:9100']
+
+  # PostgreSQL (if using postgres_exporter)
+  # - job_name: 'postgres'
+  #   static_configs:
+  #     - targets: ['localhost:9187']
+
+  # Redis (if using redis_exporter)
+  # - job_name: 'redis'
+  #   static_configs:
+  #     - targets: ['localhost:9121']
+
+# For production, consider:
+# - Using service discovery (consul, kubernetes, etc.)
+# - Enabling TLS for scrape targets
+# - Adding authentication
+# - Using file-based service discovery for dynamic targets
+# - Adding recording rules for common queries
+# - Configuring remote storage for long-term retention

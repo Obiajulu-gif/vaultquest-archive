@@ -8,8 +8,13 @@ import {
   LobstrModule,
   WalletNetwork,
 } from "@creit.tech/stellar-wallets-kit";
-import { LedgerModule } from "@creit.tech/stellar-wallets-kit/modules/ledger.module";
+import { LedgerModule } from "@creit.tech/stellar-wallets-kit/modules/ledger";
 import { getFrontendEnv } from "./env.js";
+
+// Re-exported for the wallet layer (#rate-limits): the Horizon connection pool
+// balances on-chain reads across the nodes resolved here. The implementation
+// lives in horizonPool.ts to keep it free of the wallets-kit dependency.
+export { resolveHorizonNodes } from "./horizonPool.js";
 
 const resolveWalletNetwork = (networkPassphrase?: string): WalletNetwork => {
   const env = getFrontendEnv();

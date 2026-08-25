@@ -25,15 +25,19 @@ const WalletFundingModal = ({
     : `Your balance is ${balance.toFixed(2)} XLM. We recommend at least ${minRequired.toFixed(2)} XLM to ensure you can cover transaction fees.`;
 
   return (
-    <Modal onClose={onClose}>
+    <Modal
+      onClose={onClose}
+      ariaLabelledBy="funding-modal-title"
+      ariaDescribedBy="funding-modal-desc"
+    >
       <div className="flex flex-col items-center text-center gap-6">
         <div className="w-20 h-20 bg-red-600/20 rounded-full flex items-center justify-center text-red-500 border border-red-500/30 animate-pulse">
           {!exists ? <ShieldAlert size={40} /> : <Coins size={40} />}
         </div>
         
         <div className="space-y-2">
-          <h3 className="text-2xl font-bold text-white tracking-tight">{title}</h3>
-          <p className="text-gray-400 leading-relaxed text-sm">
+          <h3 id="funding-modal-title" className="text-2xl font-bold text-white tracking-tight">{title}</h3>
+          <p id="funding-modal-desc" className="text-gray-400 leading-relaxed text-sm">
             {message}
           </p>
         </div>
@@ -47,7 +51,7 @@ const WalletFundingModal = ({
 
         <button
           onClick={onClose}
-          className="w-full py-4 px-6 bg-red-600 hover:bg-red-700 text-white rounded-full font-bold text-lg shadow-lg shadow-red-900/20 transition-all transform hover:scale-[1.02] active:scale-[0.98]"
+          className="w-full py-4 px-6 bg-red-600 hover:bg-red-700 text-white rounded-full font-bold text-lg shadow-lg shadow-red-900/20 transition-all transform hover:scale-[1.02] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#1A0505]"
         >
           Got it
         </button>

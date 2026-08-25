@@ -63,6 +63,16 @@ const Modal: FC<ModalProps> = ({
     const last = focusables[focusables.length - 1];
     const active = document.activeElement;
 
+    if (!active || !root.contains(active)) {
+      event.preventDefault();
+      if (event.shiftKey) {
+        last.focus();
+      } else {
+        first.focus();
+      }
+      return;
+    }
+
     if (event.shiftKey && active === first) {
       event.preventDefault();
       last.focus();

@@ -1,0 +1,23 @@
+{
+  "eventType": "drip",
+  "valid": {
+    "topic": "drip",
+    "value": { "vault_id": "v1", "amount": "500", "round": 3, "version": 2 },
+    "successful": true
+  },
+  "malformed": {
+    "topic": "drip",
+    "rawValue": "null-ish garbage {{",
+    "successful": true
+  },
+  "legacyVersion": {
+    "topic": "drip",
+    "value": { "vault_id": "v1", "amount": "500", "version": 1 },
+    "successful": true
+  },
+  "unknownVersion": {
+    "topic": "drip",
+    "value": { "vault_id": "v1", "amount": "500", "version": 999 },
+    "successful": true
+  }
+}

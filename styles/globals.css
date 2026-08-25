@@ -1,0 +1,201 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --vq-bg: #f8fafc;
+  --vq-surface: rgba(255, 255, 255, 0.72);
+  --vq-text: #0f172a;
+  --vq-muted: #475569;
+  --vq-border: rgba(148, 163, 184, 0.45);
+  --vq-accent: #dc2626;
+  --vq-accent-glow: rgba(220, 38, 38, 0.35);
+  --vq-glass-gradient: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.92) 0%,
+    rgba(241, 245, 249, 0.75) 50%,
+    rgba(226, 232, 240, 0.55) 100%
+  );
+  --vq-shadow-glass: 0 8px 32px rgba(15, 23, 42, 0.08), 0 2px 8px rgba(15, 23, 42, 0.04);
+  --vq-shadow-glow: 0 0 0 1px rgba(220, 38, 38, 0.12), 0 0 24px rgba(220, 38, 38, 0.08);
+}
+
+.dark {
+  --vq-bg: #020617;
+  --vq-surface: rgba(15, 23, 42, 0.55);
+  --vq-text: #f8fafc;
+  --vq-muted: #94a3b8;
+  --vq-border: rgba(148, 163, 184, 0.2);
+  --vq-accent: #f87171;
+  --vq-accent-glow: rgba(248, 113, 113, 0.45);
+  --vq-glass-gradient: linear-gradient(
+    135deg,
+    rgba(30, 41, 59, 0.65) 0%,
+    rgba(15, 23, 42, 0.5) 50%,
+    rgba(2, 6, 23, 0.4) 100%
+  );
+  --vq-shadow-glass: 0 8px 32px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.25);
+  --vq-shadow-glow: 0 0 0 1px rgba(248, 113, 113, 0.25), 0 0 28px rgba(248, 113, 113, 0.12);
+}
+
+@layer base {
+  html {
+    @apply scroll-smooth;
+  }
+
+  body {
+    @apply min-h-screen bg-vault-bg text-vault-text antialiased transition-all duration-300;
+    background-image: radial-gradient(
+        ellipse 80% 50% at 50% -20%,
+        var(--vq-accent-glow),
+        transparent 70%
+      ),
+      radial-gradient(ellipse 60% 40% at 100% 100%, rgba(148, 163, 184, 0.08), transparent);
+  }
+}
+
+@layer components {
+  .vq-glass {
+    @apply rounded-2xl border border-vault-border bg-glass-gradient shadow-glass backdrop-blur-xl transition-all duration-300;
+  }
+
+  .vq-glass-hover {
+    @apply vq-glass hover:shadow-glow hover:border-red-400/30 dark:hover:border-red-400/25;
+  }
+
+  .vq-btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-red-600 px-5 py-2.5 text-sm font-semibold text-white shadow-md transition-all duration-300 hover:bg-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-2 focus-visible:ring-offset-vault-bg dark:bg-red-600 dark:hover:bg-red-500;
+  }
+
+  .vq-btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-vault-border bg-vault-surface px-4 py-2 text-sm font-medium text-vault-text backdrop-blur-md transition-all duration-300 hover:border-red-400/40 hover:shadow-glow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400;
+  }
+
+  .vq-accordion-content {
+    overflow: hidden;
+  }
+
+  .vq-accordion-content[data-state="open"] {
+    animation: vq-accordion-down 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .vq-accordion-content[data-state="closed"] {
+    animation: vq-accordion-up 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* FAQ body: ≥4.5:1 contrast on glass (WCAG AA normal text) */
+  .vq-faq-content {
+    @apply text-vault-text;
+  }
+
+  .vq-faq-content p,
+  .vq-faq-content li {
+    @apply text-slate-800 dark:text-slate-100;
+  }
+
+  .vq-faq-content strong {
+    @apply font-semibold text-slate-900 dark:text-white;
+  }
+}
+
+@keyframes vq-accordion-down {
+  from {
+    height: 0;
+  }
+  to {
+    height: var(--radix-accordion-content-height);
+  }
+}
+
+@keyframes vq-accordion-up {
+  from {
+    height: var(--radix-accordion-content-height);
+  }
+  to {
+    height: 0;
+  }
+}
+
+/* High-contrast mode (WCAG AAA: #000 / #fff / #ff0 borders) */
+html.high-contrast {
+  --vq-bg: #000000;
+  --vq-surface: #000000;
+  --vq-text: #ffffff;
+  --vq-muted: #ffffff;
+  --vq-border: #ffff00;
+  --vq-accent: #ffff00;
+  --vq-accent-glow: transparent;
+  --vq-glass-gradient: none;
+  --vq-shadow-glass: none;
+  --vq-shadow-glow: none;
+}
+
+html.high-contrast body {
+  background-image: none !important;
+  background-color: #000000;
+}
+
+html.high-contrast .vq-glass,
+html.high-contrast .vq-glass-hover,
+html.high-contrast [class*="backdrop-blur"] {
+  backdrop-filter: none !important;
+  background: #000000 !important;
+  background-image: none !important;
+  border: 3px solid #ffff00 !important;
+  box-shadow: none !important;
+}
+
+html.high-contrast .vq-btn-primary {
+  background: #ffff00 !important;
+  color: #000000 !important;
+  border: 3px solid #ffffff !important;
+  box-shadow: none !important;
+}
+
+html.high-contrast .vq-btn-ghost {
+  background: #000000 !important;
+  color: #ffffff !important;
+  border: 3px solid #ffff00 !important;
+  backdrop-filter: none !important;
+}
+
+html.high-contrast *:focus-visible {
+  outline: 3px solid #ffff00 !important;
+  outline-offset: 2px !important;
+  box-shadow: none !important;
+}
+
+html.high-contrast header,
+html.high-contrast main,
+html.high-contrast nav,
+html.high-contrast section {
+  background-color: #000000 !important;
+  background-image: none !important;
+  color: #ffffff !important;
+}
+
+html.high-contrast .text-vault-muted,
+html.high-contrast .text-vault-text,
+html.high-contrast .text-red-600,
+html.high-contrast .text-red-400,
+html.high-contrast .text-red-500,
+html.high-contrast p,
+html.high-contrast li,
+html.high-contrast h1,
+html.high-contrast h2,
+html.high-contrast h3,
+html.high-contrast span,
+html.high-contrast label {
+  color: #ffffff !important;
+}
+
+html.high-contrast a {
+  color: #ffff00 !important;
+  text-decoration: underline;
+}
+
+html.high-contrast .vq-faq-content p,
+html.high-contrast .vq-faq-content li,
+html.high-contrast .vq-faq-content strong {
+  color: #ffffff !important;
+}

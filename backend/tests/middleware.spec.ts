@@ -59,3 +59,41 @@ describe("service-auth middleware", () => {
     await app.close();
   });
 });
+
+describe("etag middleware", () => {
+  it("computes ETags for public GET routes and returns 304 on match", async () => {
+    const app = Fastify();
+    const { etagPlugin } = await import("../src/middleware/etag.js");
+    await app.register(etagPlugin);
+    app.get("/api/metrics", async () => ({ status: "ok", count: 42 }));
+    
+    // First request
+    const res1 = await app.inject({ method: "GET", url: "/api/metrics" });
+    expect(res1.statusCode).toBe(200);
+    const etag = res1.headers["etag"] as string;
+    expect(etag).toBeDefined();
+    expect(res1.headers["cache-control"]).toBe("public, no-cache");
+
+    // Second request with If-None-Match
+    const res2 = await app.inject({
+      method: "GET",
+      url: "/api/metrics",
+      headers: { "if-none-match": etag }
+    });
+    expect(res2.statusCode).toBe(304);
+    expect(res2.body).toBe("");
+    await app.close();
+  });
+
+  it("forces private cache headers for private GET routes", async () => {
+    const app = Fastify();
+    const { etagPlugin } = await import("../src/middleware/etag.js");
+    await app.register(etagPlugin);
+    app.get("/saved-pools", async () => ({ items: [] }));
+    const res = await app.inject({ method: "GET", url: "/saved-pools" });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["cache-control"]).toBe("private, no-store, no-cache, must-revalidate");
+    expect(res.headers["etag"]).toBeUndefined();
+    await app.close();
+  });
+});

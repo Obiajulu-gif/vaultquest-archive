@@ -1,6 +1,7 @@
 import { connectedPublicKey, connectedNetwork, isNetworkMismatch } from "./store.js";
 import { kit } from "./kit.js";
 import { getFrontendEnv } from "./env.js";
+import { resolveHorizonUrl } from "./horizonConfig.js";
 import type { ISupportedWallet } from "@creit.tech/stellar-wallets-kit";
 import {
   EXPECTED_NETWORK,
@@ -9,6 +10,8 @@ import {
   type WalletType,
   normalizeStellarNetwork,
 } from "../lib/wallets.js";
+import { HorizonPool } from "./horizonPool.js";
+import { vaultQueryClient } from "../vault/data/queryClient.js";
 
 export interface WalletConnectionResult {
   address: string;
@@ -48,6 +51,25 @@ const appWalletTypesByKitId: Record<string, WalletType> = {
   ledger: "ledger",
 };
 
+/**
+ * Lazily-initialised Horizon connection pool (#rate-limits). Balances on-chain
+ * read traffic across the configured public/private nodes, routes to the
+ * healthiest endpoint, and retries rate-limited requests with backoff.
+ */
+let _horizonPool: HorizonPool | undefined;
+
+function getHorizonPool(): HorizonPool {
+  if (!_horizonPool) {
+    _horizonPool = new HorizonPool({ nodes: resolveHorizonNodes() });
+  }
+  return _horizonPool;
+}
+
+/** Test/SSR seam to inject or reset the pool. */
+function setHorizonPool(pool: HorizonPool | undefined): void {
+  _horizonPool = pool;
+}
+
 function loadedPublicKey(): string | undefined {
   return connectionState.publicKey;
 }
@@ -71,8 +93,14 @@ function setConnection(publicKey: string, provider: string): void {
     throw new Error(`Unsupported Stellar wallet provider: ${provider}`);
   }
 
+  const previousPublicKey = connectionState.publicKey;
+
   connectionState.publicKey = publicKey;
   connectionState.provider = appProvider;
+
+  if (previousPublicKey && previousPublicKey !== publicKey) {
+    resetUserScopedState();
+  }
 
   if (typeof localStorage !== "undefined") {
     localStorage.setItem("publicKey", publicKey);
@@ -100,6 +128,8 @@ function disconnect(): void {
     localStorage.removeItem("walletProvider");
   }
 
+  resetUserScopedState();
+
   connectedPublicKey.set("");
   connectedNetwork.set(null);
   isNetworkMismatch.set(false);
@@ -108,6 +138,13 @@ function disconnect(): void {
 export async function checkAndNotifyFunding(): Promise<void> {
   // The product flow no longer opens the wallet funding modal automatically.
   return;
+}
+
+function resetUserScopedState(): void {
+  vaultQueryClient.clear();
+  if (typeof localStorage !== "undefined") {
+    localStorage.removeItem("vaultquest_pending_tx_state");
+  }
 }
 
 async function getWalletAvailability(provider: WalletType): Promise<{
@@ -223,14 +260,17 @@ async function getWalletHealth(): Promise<{
 }> {
   const publicKey = loadedPublicKey();
   const env = getFrontendEnv();
-  const horizonUrl =
-    (typeof process !== "undefined" ? env.NEXT_PUBLIC_HORIZON_URL : "") ||
-    STELLAR_NETWORKS[EXPECTED_NETWORK].horizonUrl;
+  const horizonUrl = resolveHorizonUrl(
+    env.NEXT_PUBLIC_HORIZON_URL,
+    STELLAR_NETWORKS[EXPECTED_NETWORK].horizonUrl,
+  );
 
-  if (!publicKey || !horizonUrl) return { exists: false, balances: { XLM: 0, USDC: 0 } };
+  if (!publicKey) return { exists: false, balances: { XLM: 0, USDC: 0 } };
 
   try {
-    const resp = await fetch(`${horizonUrl}/accounts/${publicKey}`, {
+    // Route through the connection pool: distributes the lookup across the
+    // configured Horizon nodes and retries on rate limits / node failures.
+    const resp = await getHorizonPool().request(`/accounts/${publicKey}`, {
       headers: { Accept: "application/json" },
     });
 
@@ -243,7 +283,7 @@ async function getWalletHealth(): Promise<{
     }
 
     const json = await resp.json();
-    
+
     // Fetch XLM (native)
     const native = (json.balances || []).find(
       (b: any) => b.asset_type === "native",
@@ -278,4 +318,6 @@ export {
   disconnect,
   initializeConnection,
   getWalletHealth,
+  getHorizonPool,
+  setHorizonPool,
 };

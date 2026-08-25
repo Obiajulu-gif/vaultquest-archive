@@ -2,6 +2,7 @@
 packages:
   - "."
   - "backend"
+  - "stellar-wallet-connect"
 allowBuilds:
   '@prisma/client': false
   '@prisma/engines': false

@@ -1,4 +1,4 @@
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, preHandlerHookHandler } from "fastify";
 import type { LedgerService } from "../services/ledger.js";
 import {
   createActionBody,
@@ -6,10 +6,10 @@ import {
   cancelBody,
   listQuery,
   dashboardQuery,
-  idempotencyKeySchema,
-  portfolioQuery
+  portfolioQuery,
   exportQuery,
-  idempotencyKeySchema
+  idempotencyKeySchema,
+  actionHistoryQuery
 } from "../schemas/actions.js";
 import { AppError } from "../errors.js";
 import { ok, page } from "../responses.js";
@@ -37,7 +37,10 @@ function serialize(row: Awaited<ReturnType<LedgerService["getAction"]>>) {
   };
 }
 
-export const actionsRoutes = (svc: LedgerService): FastifyPluginAsync =>
+export const actionsRoutes = (
+  svc: LedgerService,
+  apiKeyGuard: preHandlerHookHandler
+): FastifyPluginAsync =>
   async (app) => {
     app.post("/actions", async (req, reply) => {
       const keyHeader = req.headers["idempotency-key"];
@@ -67,7 +70,8 @@ export const actionsRoutes = (svc: LedgerService): FastifyPluginAsync =>
 
     app.patch<{ Params: { id: string } }>("/actions/:id/submitted", async (req) => {
       const body = attachTxBody.parse(req.body);
-      const result = await svc.attachTxHash(req.params.id, body.tx_hash);
+      const workerId = (req.headers["x-worker-id"] as string | undefined) ?? "anonymous";
+      const result = await svc.attachTxHash(req.params.id, body.tx_hash, { workerId });
       return ok(serialize(result));
     });
 
@@ -135,6 +139,9 @@ export const actionsRoutes = (svc: LedgerService): FastifyPluginAsync =>
       const q = portfolioQuery.parse(req.query);
       const summary = await svc.getPortfolioSummary(q.wallet);
       return ok(summary);
+    });
+
+    /**
      * GET /actions/export?wallet=...&format=json|csv&from=...&to=...&limit=...
      *
      * Activity export endpoint (#91): returns the authenticated wallet's full
@@ -150,14 +157,24 @@ export const actionsRoutes = (svc: LedgerService): FastifyPluginAsync =>
         walletAddress: q.wallet,
         from: q.from ? new Date(q.from) : undefined,
         to: q.to ? new Date(q.to) : undefined,
+        actionType: q.action_type,
         limit: q.limit
       });
 
       if (q.format === "csv") {
         const CSV_HEADERS = [
-          "id", "date", "action_type", "pool_id", "amount", "token",
+          "id", "date", "action_type", "pool_id", "asset", "amount",
           "status", "tx_hash", "error_code", "submitted_at", "confirmed_at"
         ];
+
+        if (rows.length === 0) {
+          const csv = CSV_HEADERS.join(",") + "\n";
+          const filename = `vaultquest-activity-${q.wallet.slice(0, 8)}.csv`;
+          reply
+            .header("Content-Type", "text/csv; charset=utf-8")
+            .header("Content-Disposition", `attachment; filename="${filename}"`);
+          return reply.send(csv);
+        }
 
         const csvRows = rows.map((r) => {
           const payload = (r.actionPayload as Record<string, unknown> | null) ?? {};
@@ -165,9 +182,9 @@ export const actionsRoutes = (svc: LedgerService): FastifyPluginAsync =>
             r.id,
             r.createdAt.toISOString(),
             r.actionType,
-            String(payload["vault_id"] ?? ""),
+            String(payload["vault_id"] ?? payload["pool_id"] ?? ""),
+            String(payload["token"] ?? payload["asset"] ?? ""),
             String(payload["amount"] ?? ""),
-            String(payload["token"] ?? ""),
             r.status,
             r.txHash ?? "",
             r.errorCode ?? "",
@@ -186,5 +203,17 @@ export const actionsRoutes = (svc: LedgerService): FastifyPluginAsync =>
       }
 
       return ok(rows.map(serialize));
+    });
+
+    app.get<{ Params: { walletAddress: string } }>("/api/actions/:walletAddress", { preHandler: apiKeyGuard }, async (req) => {
+      const q = actionHistoryQuery.parse(req.query);
+      const result = await svc.listActions({
+        walletAddress: req.params.walletAddress,
+        status: q.status,
+        type: q.type,
+        cursor: q.cursor ?? null,
+        limit: q.limit
+      });
+      return page(result.items.map(serialize), { nextCursor: result.nextCursor, limit: q.limit });
     });
   };

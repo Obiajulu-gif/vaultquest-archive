@@ -4,9 +4,9 @@ import {
   EmptyState,
   ErrorState,
   LoadingState,
-  StaleIndicator,
   WalletDisconnectedState,
 } from "../../components/FallbackStates";
+import { DataRefreshControl } from "../../components/DataRefreshControl";
 import type { RewardHistoryEntry, RewardOutcome } from "../contract/types";
 import { explorerTxUrl, formatAmount, formatDate, truncateAddress, type StellarNetwork } from "../lib/format";
 import { TransactionTimeline } from "../../components/TransactionTimeline";
@@ -33,6 +33,10 @@ export interface RewardHistoryProps {
   /** When provided, renders an inline claim transaction timeline and wires claim buttons. */
   claimFlow?: TxFlowResult;
   onClaim?: (entry: RewardHistoryEntry) => void;
+  updatedAt?: number | null;
+  fetching?: boolean;
+  partialError?: Error | null;
+  refetch?: () => void;
 }
 
 const OUTCOME_BADGE: Record<RewardOutcome, { label: string; className: string }> = {
@@ -52,15 +56,19 @@ const OutcomeBadge: FC<{ status: RewardOutcome }> = ({ status }) => {
 
 const TxLink: FC<{ txHash: string | null; network: StellarNetwork }> = ({ txHash, network }) =>
   txHash ? (
-    <a
-      href={explorerTxUrl(txHash, network)}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="inline-flex items-center gap-1 text-sm text-red-300 hover:text-red-200 hover:underline"
-    >
-      {truncateAddress(txHash)}
-      <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-    </a>
+    explorerTxUrl(txHash, network) ? (
+      <a
+        href={explorerTxUrl(txHash, network) ?? undefined}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center gap-1 text-sm text-red-300 hover:text-red-200 hover:underline"
+      >
+        {truncateAddress(txHash)}
+        <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+      </a>
+    ) : (
+      <span className="text-sm text-gray-300">{truncateAddress(txHash)}</span>
+    )
   ) : (
     <span className="text-sm text-gray-500">—</span>
   );
@@ -76,6 +84,10 @@ export const RewardHistory: FC<RewardHistoryProps> = ({
   onConnect,
   claimFlow,
   onClaim,
+  updatedAt = null,
+  fetching = false,
+  partialError = null,
+  refetch = () => {},
 }) => {
   if (!walletConnected) {
     return <WalletDisconnectedState onConnect={onConnect} />;
@@ -103,7 +115,13 @@ export const RewardHistory: FC<RewardHistoryProps> = ({
           <Trophy className="h-5 w-5 text-red-400" aria-hidden="true" />
           Reward history
         </h2>
-        {stale && <StaleIndicator />}
+        <DataRefreshControl
+          updatedAt={updatedAt}
+          stale={stale}
+          fetching={fetching}
+          partialError={partialError}
+          onRefresh={refetch}
+        />
       </header>
 
       {/* Desktop: table */}

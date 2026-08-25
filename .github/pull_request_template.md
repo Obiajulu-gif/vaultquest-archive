@@ -10,6 +10,8 @@
 
 - [ ] `npm run lint`
 - [ ] `npm run build`
+- [ ] `pnpm audit` run for dependencies
+- [ ] No raw secrets committed
 - [ ] Additional contract/backend checks listed below when applicable
 
 ## UI Evidence

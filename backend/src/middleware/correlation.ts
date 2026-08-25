@@ -14,6 +14,7 @@ const plugin: FastifyPluginAsync = async (app) => {
     const id = typeof incoming === "string" && incoming.length > 0 ? incoming : randomUUID();
     req.correlationId = id;
     reply.header("Correlation-Id", id);
+    req.log = req.log.child({ correlation_id: id });
   });
 };
 

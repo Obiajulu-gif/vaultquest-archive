@@ -17,7 +17,8 @@ Action ledger and reconciliation service for TrustQuest (issue #34).
 ```bash
 cp .env.example .env
 pnpm install
-pnpm exec prisma migrate deploy
+# Setup database (migrations and mock seed data)
+pnpm run db:setup
 pnpm test
 pnpm dev
 ```

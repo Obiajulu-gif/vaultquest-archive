@@ -44,7 +44,10 @@ describe("LedgerService.getPortfolioSummary Unit Tests (No Database Required)", 
         status: "confirmed",
         createdAt: new Date("2026-05-30T01:50:00Z"),
         txHash: "tx-claim",
-        actionPayload: { vault_id: "pool-A", amount: "30" }
+        actionPayload: { vault_id: "pool-A", amount: "30" },
+        // #509: claimable_amount trusts the finalized event's decoded
+        // payload for confirmed claims, not the client-supplied actionPayload.
+        verifiedPayload: { amount: "30" }
       },
       {
         id: "act-withdraw-1",
@@ -101,8 +104,83 @@ describe("LedgerService.getPortfolioSummary Unit Tests (No Database Required)", 
 
     // Verify recent activity is limited and properly ordered
     expect(summary.recent_activity).toHaveLength(5);
-    expect(summary.recent_activity[0].id).toBe("act-pending");
-    expect(summary.recent_activity[0].status).toBe("pending");
-    expect(summary.recent_activity[4].id).toBe("act-deposit-1");
+    expect(summary.recent_activity[0]?.id).toBe("act-pending");
+    expect(summary.recent_activity[0]?.status).toBe("pending");
+    expect(summary.recent_activity[4]?.id).toBe("act-deposit-1");
+  });
+
+  // #509: claimable_amount must come from the finalized event's decoded
+  // payload (verifiedPayload), not the client-supplied actionPayload, since
+  // actionPayload is mutable by anyone with database write access.
+  describe("#509 payout verification", () => {
+    it("uses verifiedPayload amount for a confirmed claim, not actionPayload", async () => {
+      const mockActions = [
+        {
+          id: "act-claim-verified",
+          walletAddress,
+          actionType: "claim",
+          status: "confirmed",
+          createdAt: new Date("2026-05-30T01:50:00Z"),
+          txHash: "tx-claim",
+          actionPayload: { vault_id: "pool-A", amount: "9999" }, // client claims a huge amount
+          verifiedPayload: { winner: "GABCDEF1234567890123456789012345678901234567890123456789", amount: "30" }
+        }
+      ];
+      const mockPrisma = {
+        actionLedger: { findMany: async () => mockActions }
+      } as any;
+
+      const svc = new LedgerService(mockPrisma);
+      const summary = await svc.getPortfolioSummary(walletAddress);
+
+      // Trusts the verified figure (30), not the claimed one (9999).
+      expect(summary.claimable_amount).toBe(30);
+    });
+
+    it("excludes a confirmed claim with no verifiedPayload from claimable_amount (fail closed)", async () => {
+      const mockActions = [
+        {
+          id: "act-claim-unverified",
+          walletAddress,
+          actionType: "claim",
+          status: "confirmed",
+          createdAt: new Date("2026-05-30T01:50:00Z"),
+          txHash: "tx-claim",
+          actionPayload: { vault_id: "pool-A", amount: "500" },
+          verifiedPayload: null
+        }
+      ];
+      const mockPrisma = {
+        actionLedger: { findMany: async () => mockActions }
+      } as any;
+
+      const svc = new LedgerService(mockPrisma);
+      const summary = await svc.getPortfolioSummary(walletAddress);
+
+      expect(summary.claimable_amount).toBe(0);
+    });
+
+    it("still trusts actionPayload for deposit/withdraw (wallet-signed, no third-party payout trust boundary)", async () => {
+      const mockActions = [
+        {
+          id: "act-deposit",
+          walletAddress,
+          actionType: "deposit",
+          status: "confirmed",
+          createdAt: new Date("2026-05-30T01:20:00Z"),
+          txHash: "tx-dep",
+          actionPayload: { vault_id: "pool-A", amount: "200" },
+          verifiedPayload: null
+        }
+      ];
+      const mockPrisma = {
+        actionLedger: { findMany: async () => mockActions }
+      } as any;
+
+      const svc = new LedgerService(mockPrisma);
+      const summary = await svc.getPortfolioSummary(walletAddress);
+
+      expect(summary.total_deposits).toBe(200);
+    });
   });
 });

@@ -15,6 +15,7 @@ remains withdrawable in full.
 | [`e2e/`](./e2e) | Playwright end-to-end tests |
 | [`docs/`](./docs) | Architecture, state model, testing notes |
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | Cross-stack architecture diagram and action/event flow |
+| [`docs/data-fetching.md`](./docs/data-fetching.md) | Client-side data fetching and hooks conventions |
 
 ## Quick start
 
@@ -22,6 +23,12 @@ remains withdrawable in full.
 git clone https://github.com/Obiajulu-gif/vaultquest.git
 cd vaultquest
 pnpm install
+
+# Setup database (migrations and mock seed data)
+pnpm db:setup
+
+# Start development
+pnpm dev
 ```
 
 For per-package setup, see the README inside each folder.
@@ -39,4 +46,6 @@ We welcome contributions from everyone. Before opening a PR, please read
 
 ## License
 
-See [LICENSE](./LICENSE).
+License details are managed separately.
+
+// Comment befire starting

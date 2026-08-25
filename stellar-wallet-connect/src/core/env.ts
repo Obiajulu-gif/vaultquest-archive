@@ -9,6 +9,13 @@ export interface FrontendEnv {
   TRUSTLESS_WORK_API_KEY?: string;
 }
 
+export interface ManifestAttestation {
+  verified: boolean;
+  version?: string;
+  environment?: string;
+  mismatches: Array<{ field: string; manifestValue: string; envValue: string }>;
+}
+
 const placeholderPattern = /PLACEHOLDER|YOUR_|CHANGE-ME|EXAMPLE|<.+?>/i;
 
 function isPresent(value: unknown): value is string {
@@ -134,4 +141,49 @@ export function getFrontendEnv(
   source: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env
 ): FrontendEnv {
   return parseFrontendEnv(source);
+}
+
+type ManifestLoader = () => { version: string; environment: string; network: { passphrase: string; sorobanRpcUrl: string; horizonUrl: string }; contracts: { dripPool: { contractId: string }; escrow?: { contractId: string } } };
+type ManifestValidator = (manifest: ReturnType<ManifestLoader>, env: Record<string, string | undefined>) => Array<{ field: string; manifestValue: string; envValue: string }>;
+
+let _loadManifest: ManifestLoader | null = null;
+let _validateManifest: ManifestValidator | null = null;
+let _manifestAttestation: ManifestAttestation | null = null;
+
+export function registerManifestLoader(
+  loadFn: ManifestLoader,
+  validateFn: ManifestValidator
+): void {
+  _loadManifest = loadFn;
+  _validateManifest = validateFn;
+}
+
+export function getManifestAttestation(): ManifestAttestation | null {
+  return _manifestAttestation;
+}
+
+export function attestManifest(
+  env: FrontendEnv,
+  source: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env
+): ManifestAttestation {
+  if (!_loadManifest || !_validateManifest) {
+    return { verified: false, mismatches: [] };
+  }
+
+  try {
+    const manifest = _loadManifest();
+    const mismatches = _validateManifest(manifest, source);
+
+    const attestation: ManifestAttestation = {
+      verified: mismatches.length === 0,
+      version: manifest.version,
+      environment: manifest.environment,
+      mismatches,
+    };
+
+    _manifestAttestation = attestation;
+    return attestation;
+  } catch {
+    return { verified: false, mismatches: [] };
+  }
 }

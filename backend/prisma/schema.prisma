@@ -251,6 +251,46 @@ model RepairAudit {
   @@map("repair_audits")
 }
 
+// #597 — dual-controlled, bounded, auditable reconciliation repair.
+// Detection (reconciler.ts detectDrift/buildRepairPlan) produces a plan;
+// that plan must be proposed, approved (by a distinct identity once above
+// the configured step/value thresholds), and only then executed. Execution
+// delegates to the existing idempotent applyRepairPlan, so a proposal
+// interrupted mid-execution resumes safely instead of repeating transfers.
+model RepairProposal {
+  id                String           @id @default(uuid()) @db.Uuid
+  planJson          Json             @map("plan_json")
+  /// sha256 of the canonicalized plan steps. Approvals and execution are
+  /// bound to this exact hash — any drift in the plan invalidates them.
+  diffHash          String           @map("diff_hash")
+  status            String           @default("pending")
+  proposerId        String           @map("proposer_id")
+  stepCount         Int              @map("step_count")
+  valueTotal        Float            @default(0) @map("value_total")
+  requiredApprovals Int              @default(1) @map("required_approvals")
+  executedBy        String?          @map("executed_by")
+  executedAt        DateTime?        @map("executed_at")
+  createdAt         DateTime         @default(now()) @map("created_at")
+  expiresAt         DateTime         @map("expires_at")
+  approvals         RepairApproval[]
+
+  @@index([status, expiresAt])
+  @@index([diffHash])
+  @@map("repair_proposals")
+}
+
+model RepairApproval {
+  id         String         @id @default(uuid()) @db.Uuid
+  proposalId String         @map("proposal_id") @db.Uuid
+  approverId String         @map("approver_id")
+  createdAt  DateTime       @default(now()) @map("created_at")
+  proposal   RepairProposal @relation(fields: [proposalId], references: [id])
+
+  @@unique([proposalId, approverId])
+  @@map("repair_approvals")
+}
+
+
 model WalletChallenge {
   challengeId   String    @id @map("challenge_id") @db.Uuid
   walletAddress String    @map("wallet_address")

@@ -58,6 +58,11 @@ pub enum ContractError {
     StrategyUnreconciledPrincipal = 58,
     ExposureCapExceeded = 59,
     StrategyAssetMismatch = 60,
+
+    // ── Strategy verification (61–70) ──────────────────────────────────────
+    StrategyCodeHashNotAllowed = 61,
+    BalanceVerificationFailed = 62,
+    TokenDecimalsNotConfigured = 63,
 }
 
 impl ContractError {
@@ -91,6 +96,9 @@ impl ContractError {
             ContractError::StrategyUnreconciledPrincipal => "active strategy has unreconciled principal",
             ContractError::ExposureCapExceeded => "deployment amount exceeds strategy exposure cap",
             ContractError::StrategyAssetMismatch => "strategy asset does not match pool asset",
+            ContractError::StrategyCodeHashNotAllowed => "strategy code hash is not on the allowlist",
+            ContractError::BalanceVerificationFailed => "strategy reported yield not backed by real balance delta",
+            ContractError::TokenDecimalsNotConfigured => "token decimals have not been configured",
         }
     }
 
@@ -145,6 +153,9 @@ mod tests {
             ContractError::NotPaused,
             ContractError::ProtocolPaused,
             ContractError::InvalidAddress,
+            ContractError::StrategyCodeHashNotAllowed,
+            ContractError::BalanceVerificationFailed,
+            ContractError::TokenDecimalsNotConfigured,
         ];
         for err in variants {
             assert!(!err.message().is_empty());

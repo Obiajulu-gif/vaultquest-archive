@@ -173,3 +173,8 @@ export function formatDateOnly(
   }).format(date);
 }
 
+// ── Exact amount formatting (#599) ─────────────────────────────────────────
+
+export { ExactAmount, fromContract, proRataShare, toBasisPoints } from "./safe-amount";
+export type { ExactAmount as ExactAmountType } from "./safe-amount";
+

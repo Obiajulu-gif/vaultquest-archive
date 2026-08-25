@@ -25,6 +25,32 @@ export const CONTRACT_ERRORS = {
   ProposalNotFound: 11,
   ProposalExpired: 12,
   InvalidAction: 13,
+  TokenNotConfigured: 14,
+  AssetMismatch: 15,
+  TransferFailed: 16,
+  ClaimDeadlinePassed: 17,
+  ClaimDeadlineNotReached: 18,
+  NoClaimDeadline: 19,
+  InvalidDeadline: 20,
+  InEmergency: 21,
+  NotInEmergency: 22,
+  Insolvent: 23,
+  IncompatibleConfig: 24,
+  GovernanceEpochChanged: 25,
+  TimelockNotElapsed: 26,
+  StrategyNotSet: 51,
+  StrategyVersionUnsupported: 52,
+  StrategyPaused: 53,
+  RedeemFailed: 54,
+  DepositFailed: 55,
+  StrategyRotationPending: 56,
+  StrategyRotationNotInProgress: 57,
+  StrategyUnreconciledPrincipal: 58,
+  ExposureCapExceeded: 59,
+  StrategyAssetMismatch: 60,
+  StrategyCodeHashNotAllowed: 76,
+  BalanceVerificationFailed: 77,
+  TokenDecimalsNotConfigured: 75,
 } as const;
 
 export type ContractErrorCode = keyof typeof CONTRACT_ERRORS;
@@ -244,6 +270,24 @@ export function validateContractMethod(method: string): string | null {
     "join", "deposit", "drip", "deposit_with_duration", "claim",
     "claim_reward", "withdraw", "withdraw_locked", "add_yield",
     "credit_yield", "draw_winner", "pool", "savings", "admins", "threshold",
+    "set_token_decimals", "token_decimals",
+    "allow_strategy_code_hash", "disallow_strategy_code_hash",
+    "allowed_strategy_code_hashes", "is_strategy_code_hash_allowed",
+    "set_strategy", "propose_strategy", "validate_strategy",
+    "drain_strategy", "reconcile_strategy", "activate_strategy",
+    "cancel_strategy_rotation", "deploy_to_strategy", "recall_from_strategy",
+    "harvest_strategy", "emergency_recall_strategy",
+    "set_min_idle_reserve", "min_idle_reserve",
+    "fulfill_withdrawal_queue", "cancel_withdrawal_request",
+    "withdrawal_request", "withdrawal_request_of",
+    "withdrawal_queue_head", "withdrawal_queue_tail",
+    "open_round", "round_deposit", "lock_round", "settle_round",
+    "finalize_round", "round_claim", "round", "round_deposit_of", "round_nonce",
+    "governance_epoch", "token", "claim_deadline", "claim_deadline_passed",
+    "unclaimed_swept", "renew_participant", "renew_instance", "renew_storage",
+    "emergency_withdraw", "is_emergency", "emergency_assets",
+    "execute_proposal", "set_claim_deadline", "sweep_unclaimed",
+    "config_version",
   ];
 
   if (!validMethods.includes(method)) {
@@ -258,8 +302,8 @@ export function validateContractMethod(method: string): string | null {
  * Returns null if valid, or an error message.
  */
 export function validateContractErrorCode(code: number): string | null {
-  if (code < 1 || code > 13) {
-    return `Invalid contract error code ${code}; expected 1-13`;
+  if (code < 1 || code > 77) {
+    return `Invalid contract error code ${code}; expected 1-77`;
   }
   return null;
 }

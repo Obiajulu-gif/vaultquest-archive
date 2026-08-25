@@ -70,7 +70,17 @@ const schema = z.object({
    */
   REMINDER_LEAD_HOURS: z.coerce.number().int().positive().default(24),
   SENDGRID_API_KEY: z.string().min(1).optional(),
-  EMAIL_FROM: z.string().email().optional()
+  EMAIL_FROM: z.string().email().optional(),
+  /**
+   * Critical-read quorum/freshness policy (issue #596). Applied to
+   * balance-critical Stellar RPC reads (withdrawals, admin repairs,
+   * reconciliation) via `services/criticalReadPolicy.ts`. Defaults are
+   * conservative but overridable per-environment.
+   */
+  CRITICAL_READ_MIN_QUORUM: z.coerce.number().int().positive().default(2),
+  CRITICAL_READ_MAX_FRESHNESS_MS: z.coerce.number().int().positive().default(15_000),
+  CRITICAL_READ_MAX_LEDGER_DIVERGENCE: z.coerce.number().int().nonnegative().default(2),
+  CRITICAL_READ_MAX_LATENCY_MS: z.coerce.number().int().positive().default(8_000)
 });
 
 export type Env = z.infer<typeof schema>;
@@ -110,7 +120,11 @@ export function getEnv(): Env {
       CATEGORIES_CACHE_TTL_SECONDS: Number(process.env.CATEGORIES_CACHE_TTL_SECONDS ?? 3600),
       REMINDER_LEAD_HOURS: Number(process.env.REMINDER_LEAD_HOURS ?? 24),
       SENDGRID_API_KEY: process.env.SENDGRID_API_KEY || undefined,
-      EMAIL_FROM: process.env.EMAIL_FROM || undefined
+      EMAIL_FROM: process.env.EMAIL_FROM || undefined,
+      CRITICAL_READ_MIN_QUORUM: Number(process.env.CRITICAL_READ_MIN_QUORUM ?? 2),
+      CRITICAL_READ_MAX_FRESHNESS_MS: Number(process.env.CRITICAL_READ_MAX_FRESHNESS_MS ?? 15_000),
+      CRITICAL_READ_MAX_LEDGER_DIVERGENCE: Number(process.env.CRITICAL_READ_MAX_LEDGER_DIVERGENCE ?? 2),
+      CRITICAL_READ_MAX_LATENCY_MS: Number(process.env.CRITICAL_READ_MAX_LATENCY_MS ?? 8_000)
     } satisfies Env;
   }
   return parseEnv();

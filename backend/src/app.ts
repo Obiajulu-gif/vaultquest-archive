@@ -30,6 +30,7 @@ import type { Logger } from "pino";
 import type { CacheService } from "./services/cacheService.js";
 import { walletAuthRoutes } from "./routes/walletAuth.js";
 import { WalletAuthService } from "./services/walletAuth.js";
+import { createRequireAdminSession } from "./middleware/auth.js";
 import { transactionMetricsRoutes } from "./routes/transactionMetrics.js";
 import { CategoryService } from "./services/categoryService.js";
 import { categoriesRoutes } from "./routes/categories.js";
@@ -49,6 +50,7 @@ export type AppDeps = {
   /** Reminder lead time (hours) for notification generation (issue #446). */
   reminderLeadHours?: number;
   emailService?: EmailService;
+  adminWalletAddresses?: string[];
 };
 
 export function buildApp(deps: AppDeps): FastifyInstance {
@@ -137,6 +139,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   const apiKeyGuard = requireApiKey(deps.apiKey);
 
   const walletAuthSvc = new WalletAuthService(deps.prisma);
+  const requireAdminSession = createRequireAdminSession(walletAuthSvc, deps.adminWalletAddresses ?? []);
   const categorySvc = new CategoryService(deps.prisma, deps.cacheService, deps.categoriesCacheTtlSeconds);
   const notificationSvc = new NotificationService(deps.prisma, deps.reminderLeadHours);
 
@@ -161,7 +164,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.register(transactionMetricsRoutes(deps.prisma, apiKeyGuard));
   app.register(categoriesRoutes(categorySvc, apiKeyGuard));
   app.register(notificationsRoutes(notificationSvc));
-  app.register(auditRoutes(auditSvc));
+  app.register(auditRoutes(auditSvc, requireAdminSession));
 
   // Central Error Handler Middleware
   app.setErrorHandler(errorHandler);

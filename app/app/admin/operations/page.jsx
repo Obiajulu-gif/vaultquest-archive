@@ -1,6 +1,5 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import { useAccount } from "wagmi";
 import { Shield, Activity } from "lucide-react";
 import IndexerReplayControl from "@/components/app/IndexerReplayControl";
@@ -9,23 +8,12 @@ import { ADMIN_ADDRESSES } from "../admin-config";
 
 export default function AdminOperationsPage() {
   const { address, isConnected } = useAccount();
-  const [isMockConnected, setIsMockConnected] = useState(false);
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search);
-      if (params.get("mockConnected") === "true") {
-        setIsMockConnected(true);
-      }
-    }
-  }, []);
 
   const isAdmin =
     (isConnected &&
       ADMIN_ADDRESSES.some(
         (addr) => addr.toLowerCase() === address?.toLowerCase(),
-      )) ||
-    isMockConnected;
+      ));
 
   return (
     <div className="space-y-8">
@@ -41,7 +29,7 @@ export default function AdminOperationsPage() {
         </p>
       </header>
 
-      {!isConnected && !isMockConnected ? (
+      {!isConnected ? (
         <div className="vq-glass flex flex-col items-center px-6 py-16 text-center">
           <Shield className="h-16 w-16 text-vault-muted" aria-hidden="true" />
           <h2 className="mt-6 text-xl font-semibold text-vault-text">

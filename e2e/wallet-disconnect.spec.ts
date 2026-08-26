@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { injectMockWallet } from './helpers/wallet-mock';
+import { injectConnectedMockWallet, injectMockWallet } from './helpers/wallet-mock';
 
 test.describe('Wallet Disconnect UI Updates', () => {
   /**
@@ -54,7 +54,8 @@ test.describe('Wallet Disconnect UI Updates', () => {
   });
 
   test('Account page shows connect prompt after disconnect', async ({ page }) => {
-    await page.goto('/app/account?mockConnected=true');
+    await injectConnectedMockWallet(page);
+    await page.goto('/app/account');
     
     // Initially should show account content
     await expect(page.locator('text=Your profile')).toBeVisible({ timeout: 10000 });
@@ -137,7 +138,8 @@ test.describe('Wallet Disconnect UI Updates', () => {
   });
 
   test('Reconnect guidance appears after disconnect', async ({ page }) => {
-    await page.goto('/app/account?mockConnected=true');
+    await injectConnectedMockWallet(page);
+    await page.goto('/app/account');
     
     // Wait for account page to load with connected state
     await expect(page.locator('text=Your profile')).toBeVisible({ timeout: 10000 });
@@ -189,7 +191,8 @@ test.describe('Wallet Disconnect UI Updates', () => {
   });
 
   test('Balance information is removed after disconnect', async ({ page }) => {
-    await page.goto('/app/account?mockConnected=true');
+    await injectConnectedMockWallet(page);
+    await page.goto('/app/account');
     
     // Wait for account page with balances to load
     await expect(page.locator('text=Your profile')).toBeVisible({ timeout: 10000 });

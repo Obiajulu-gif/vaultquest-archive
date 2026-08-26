@@ -78,7 +78,11 @@ const app = buildApp({
   logger,
   cacheService,
   categoriesCacheTtlSeconds: env.CATEGORIES_CACHE_TTL_SECONDS,
-  reminderLeadHours: env.REMINDER_LEAD_HOURS
+  reminderLeadHours: env.REMINDER_LEAD_HOURS,
+  adminWalletAddresses: (env.ADMIN_WALLET_ADDRESSES ?? "")
+    .split(",")
+    .map((wallet) => wallet.trim())
+    .filter(Boolean)
 });
 
 // Periodic write-behind sync task: sync checkpoint from cache to PostgreSQL database every 15 seconds

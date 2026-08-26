@@ -7,27 +7,63 @@ import type { FastifyInstance } from "fastify";
 describe("admin audit routes", () => {
   let db: TestDb;
   let app: FastifyInstance;
+  const adminWallet = "GADMIN";
 
   beforeAll(async () => {
     db = await startTestDb();
-    app = buildApp({ prisma: db.prisma, internalSecret: "test-secret" });
+    app = buildApp({
+      prisma: db.prisma,
+      internalSecret: "test-secret",
+      adminWalletAddresses: [adminWallet]
+    });
   });
   afterAll(async () => {
-    await app.close();
-    await db.stop();
+    await app?.close();
+    await db?.stop();
   });
   beforeEach(async () => {
     await resetDb(db.prisma);
   });
 
-  function authHeaders(token = "test-auth-token") {
+  async function createSession(walletAddress = adminWallet) {
+    const session = await db.prisma.walletSession.create({
+      data: {
+        walletAddress,
+        publicKey: walletAddress,
+        network: "TESTNET",
+        token: randomUUID(),
+        refreshToken: randomUUID(),
+        expiresAt: new Date(Date.now() + 60_000)
+      }
+    });
+    return session.token;
+  }
+
+  async function authHeaders(walletAddress = adminWallet) {
+    const token = await createSession(walletAddress);
     return { authorization: `Bearer ${token}`, "content-type": "application/json" };
   }
+
+  it("rejects requests without a server-verified wallet session", async () => {
+    const res = await app.inject({
+      method: "GET", url: "/admin/audit",
+      headers: { authorization: "Bearer forged-client-token" }
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("rejects non-admin wallet sessions", async () => {
+    const res = await app.inject({
+      method: "GET", url: "/admin/audit",
+      headers: await authHeaders("GNOTADMIN")
+    });
+    expect(res.statusCode).toBe(403);
+  });
 
   it("GET /admin/audit returns empty list when no records", async () => {
     const res = await app.inject({
       method: "GET", url: "/admin/audit",
-      headers: authHeaders()
+      headers: await authHeaders()
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -38,7 +74,7 @@ describe("admin audit routes", () => {
   it("POST /admin/audit creates an audit record", async () => {
     const res = await app.inject({
       method: "POST", url: "/admin/audit",
-      headers: authHeaders(),
+      headers: await authHeaders(),
       payload: {
         parameter_name: "max_deposit",
         previous_value: 1000,
@@ -60,7 +96,7 @@ describe("admin audit routes", () => {
   it("POST /admin/audit rejects missing required fields", async () => {
     const res = await app.inject({
       method: "POST", url: "/admin/audit",
-      headers: authHeaders(),
+      headers: await authHeaders(),
       payload: { parameter_name: "max_deposit" }
     });
     expect(res.statusCode).toBe(400);
@@ -70,7 +106,7 @@ describe("admin audit routes", () => {
     for (let i = 0; i < 5; i++) {
       await app.inject({
         method: "POST", url: "/admin/audit",
-        headers: authHeaders(),
+        headers: await authHeaders(),
         payload: {
           parameter_name: `param_${i}`,
           previous_value: 0,
@@ -81,7 +117,7 @@ describe("admin audit routes", () => {
     }
     const res = await app.inject({
       method: "GET", url: "/admin/audit?limit=3",
-      headers: authHeaders()
+      headers: await authHeaders()
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -91,7 +127,7 @@ describe("admin audit routes", () => {
 
     const next = await app.inject({
       method: "GET", url: `/admin/audit?limit=3&cursor=${body.meta.pagination.next_cursor}`,
-      headers: authHeaders()
+      headers: await authHeaders()
     });
     expect(next.statusCode).toBe(200);
     const nextBody = next.json();
@@ -102,17 +138,17 @@ describe("admin audit routes", () => {
   it("GET /admin/audit filters by parameter_name", async () => {
     await app.inject({
       method: "POST", url: "/admin/audit",
-      headers: authHeaders(),
+      headers: await authHeaders(),
       payload: { parameter_name: "fee_rate", previous_value: 0.05, new_value: 0.03, actor: "GADMIN" }
     });
     await app.inject({
       method: "POST", url: "/admin/audit",
-      headers: authHeaders(),
+      headers: await authHeaders(),
       payload: { parameter_name: "max_deposit", previous_value: 1000, new_value: 5000, actor: "GADMIN" }
     });
     const res = await app.inject({
       method: "GET", url: "/admin/audit?parameter_name=fee_rate",
-      headers: authHeaders()
+      headers: await authHeaders()
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().data).toHaveLength(1);
@@ -122,12 +158,12 @@ describe("admin audit routes", () => {
   it("GET /admin/audit/export returns CSV", async () => {
     await app.inject({
       method: "POST", url: "/admin/audit",
-      headers: authHeaders(),
+      headers: await authHeaders(),
       payload: { parameter_name: "fee_rate", previous_value: 0.05, new_value: 0.03, actor: "GADMIN" }
     });
     const res = await app.inject({
       method: "GET", url: "/admin/audit/export",
-      headers: authHeaders()
+      headers: await authHeaders()
     });
     expect(res.statusCode).toBe(200);
     expect(res.headers["content-type"]).toContain("text/csv");
@@ -140,7 +176,7 @@ describe("admin audit routes", () => {
   it("GET /admin/audit/export returns empty CSV when no data", async () => {
     const res = await app.inject({
       method: "GET", url: "/admin/audit/export",
-      headers: authHeaders()
+      headers: await authHeaders()
     });
     expect(res.statusCode).toBe(200);
     const lines = res.body.split("\n").filter((l: string) => l.length > 0);

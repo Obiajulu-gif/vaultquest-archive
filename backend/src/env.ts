@@ -44,6 +44,12 @@ const schema = z.object({
     })
     .optional(),
   /**
+   * Comma-separated wallet addresses that may access admin-only backend routes.
+   * These are validated against server-side wallet sessions; the public
+   * frontend allowlist is only a display hint.
+   */
+  ADMIN_WALLET_ADDRESSES: z.string().optional(),
+  /**
    * Automated database backup configuration (issue #275).
    * BACKUP_DIR: absolute path where pg_dump files are written.
    *   When unset, the backup cron is not started.
@@ -113,6 +119,7 @@ export function getEnv(): Env {
       NETWORK_PASSPHRASE: process.env.NETWORK_PASSPHRASE || undefined,
       DEPLOYMENT_MANIFEST_PATH: process.env.DEPLOYMENT_MANIFEST_PATH || undefined,
       API_KEY: process.env.API_KEY || undefined,
+      ADMIN_WALLET_ADDRESSES: process.env.ADMIN_WALLET_ADDRESSES || undefined,
       BACKUP_DIR: process.env.BACKUP_DIR || undefined,
       BACKUP_RETAIN_DAYS: Number(process.env.BACKUP_RETAIN_DAYS ?? 7),
       BACKUP_SCHEDULE: process.env.BACKUP_SCHEDULE ?? "0 2 * * *",

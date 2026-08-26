@@ -4,10 +4,15 @@ import { Page } from '@playwright/test';
  * Injects a mock Ethereum wallet into the page for testing.
  * @param page - Playwright page object
  * @param address - Mock wallet address (default: 0x1234567890123456789012345678901234567890)
+ * @param options.connected - Start with eth_accounts already connected.
  */
-export async function injectMockWallet(page: Page, address: string = '0x1234567890123456789012345678901234567890') {
-  await page.addInitScript((mockAddress) => {
-    let isConnected = false;
+export async function injectMockWallet(
+  page: Page,
+  address: string = '0x1234567890123456789012345678901234567890',
+  options: { connected?: boolean } = {}
+) {
+  await page.addInitScript(({ mockAddress, connected }) => {
+    let isConnected = connected;
     const listeners: Record<string, Function[]> = {};
 
     (window as any).ethereum = {
@@ -53,7 +58,14 @@ export async function injectMockWallet(page: Page, address: string = '0x12345678
         }
       },
     };
-  }, address);
+  }, { mockAddress: address, connected: options.connected === true });
+}
+
+export async function injectConnectedMockWallet(
+  page: Page,
+  address: string = '0x1234567890123456789012345678901234567890'
+) {
+  await injectMockWallet(page, address, { connected: true });
 }
 
 /**

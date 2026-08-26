@@ -1,5 +1,4 @@
 import type { PrismaClient, ProtocolAudit } from "@prisma/client";
-import type { ListActionsResult } from "./ledger.js";
 
 export type CreateAuditInput = {
   parameterName: string;
@@ -14,6 +13,11 @@ export type ListAuditsParams = {
   actor?: string;
   cursor?: string | null;
   limit: number;
+};
+
+export type ListAuditsResult = {
+  items: ProtocolAudit[];
+  nextCursor: string | null;
 };
 
 export class AuditService {
@@ -32,7 +36,7 @@ export class AuditService {
     return record;
   }
 
-  async list(params: ListAuditsParams): Promise<ListActionsResult> {
+  async list(params: ListAuditsParams): Promise<ListAuditsResult> {
     const { parameterName, actor, cursor, limit } = params;
 
     const where = {

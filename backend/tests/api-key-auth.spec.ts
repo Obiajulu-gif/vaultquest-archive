@@ -62,6 +62,19 @@ describe("API key auth — guard enabled", () => {
     await app.close();
   });
 
+  it("rejects /api/actions/:wallet with a near-miss key (last char differs) → 401 — issue #584", async () => {
+    const app = buildApp({ prisma: getMockPrisma(), internalSecret: "secret", apiKey: VALID_API_KEY });
+    const almostRight = VALID_API_KEY.slice(0, -1) + "b";
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/actions/GWALLET",
+      headers: { "x-api-key": almostRight }
+    });
+    expect(res.statusCode).toBe(401);
+    expect(res.json().error.code).toBe("UNAUTHORIZED");
+    await app.close();
+  });
+
   it("allows /api/actions/:wallet with correct key → 200", async () => {
     const app = buildApp({ prisma: getMockPrisma(), internalSecret: "secret", apiKey: VALID_API_KEY });
     const res = await app.inject({

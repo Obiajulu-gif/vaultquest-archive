@@ -6,14 +6,11 @@ test.describe('Wallet Disconnect UI Updates', () => {
    * Helper function to connect the wallet using the mock wallet
    */
   async function connectWallet(page: Page) {
-    // Inject mock wallet before navigation
     await injectMockWallet(page);
-    
+
     const connectBtn = page.locator('text=Connect wallet').first();
     if (await connectBtn.isVisible({ timeout: 5000 })) {
       await connectBtn.click();
-      
-      // Wait for connection to complete
       await page.waitForTimeout(500);
     }
   }
@@ -22,12 +19,10 @@ test.describe('Wallet Disconnect UI Updates', () => {
    * Helper function to disconnect the wallet by clicking the disconnect button
    */
   async function disconnectWallet(page: Page) {
-    // Look for the disconnect button (X icon button in header)
     const disconnectBtn = page.locator('button[aria-label*="Disconnect wallet"]');
-    
+
     if (await disconnectBtn.isVisible({ timeout: 5000 })) {
       await disconnectBtn.click();
-      // Wait for disconnect to complete
       await page.waitForTimeout(500);
     }
   }
@@ -210,23 +205,79 @@ test.describe('Wallet Disconnect UI Updates', () => {
 
   test('Connect wallet button is clickable after disconnect', async ({ page }) => {
     await page.goto('/app');
-    
-    // Connect wallet first
+
     await connectWallet(page);
     await expect(page.locator('text=View All Prizes')).toBeVisible({ timeout: 10000 });
-    
-    // Disconnect wallet
+
     await disconnectWallet(page);
-    
-    // Find and verify connect wallet button is enabled
+
     const connectBtn = page.locator('button:has-text("Connect wallet")').first();
     await expect(connectBtn).toBeVisible({ timeout: 10000 });
     await expect(connectBtn).toBeEnabled();
-    
-    // Click the button to ensure it's interactive
+
     await connectBtn.click();
-    
-    // Some modal or action should occur (depending on implementation)
     await page.waitForTimeout(500);
+  });
+
+  test('Disconnect maintains state after page refresh', async ({ page }) => {
+    await page.goto('/app');
+
+    await connectWallet(page);
+    await expect(page.locator('text=View All Prizes')).toBeVisible({ timeout: 10000 });
+
+    await disconnectWallet(page);
+
+    const startSavingBtn = page.locator('text=Start Saving');
+    const connectWalletBtn = page.locator('text=Connect wallet');
+    await expect(startSavingBtn.or(connectWalletBtn).first()).toBeVisible({ timeout: 10000 });
+
+    await page.reload();
+    await page.waitForLoadState('networkidle');
+
+    await expect(startSavingBtn.or(connectWalletBtn).first()).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('text=View All Prizes')).not.toBeVisible();
+  });
+
+  test('No console errors during disconnect flow', async ({ page }) => {
+    const errors: string[] = [];
+    page.on('console', (msg) => {
+      if (msg.type() === 'error') {
+        errors.push(msg.text());
+      }
+    });
+
+    await page.goto('/app');
+    await connectWallet(page);
+    await expect(page.locator('text=View All Prizes')).toBeVisible({ timeout: 10000 });
+
+    await disconnectWallet(page);
+    await expect(page.locator('text=Connect wallet')).toBeVisible({ timeout: 10000 });
+
+    const walletErrors = errors.filter(
+      (e) => !e.includes('wallet') && !e.includes('MetaMask') && !e.includes('provider')
+    );
+    expect(walletErrors).toHaveLength(0);
+  });
+
+  test('Disconnect clears connected UI elements from header', async ({ page }) => {
+    await page.goto('/app');
+
+    await connectWallet(page);
+    await page.waitForTimeout(1000);
+
+    await disconnectWallet(page);
+
+    const headerDisconnectBtn = page.locator(
+      'header button[aria-label*="Disconnect wallet"]'
+    );
+    await expect(headerDisconnectBtn).not.toBeVisible({ timeout: 10000 });
+
+    const walletBadge = page.locator(
+      'header [class*="connected"], header [data-testid*="wallet"]'
+    );
+    const badgeCount = await walletBadge.count();
+    for (let i = 0; i < badgeCount; i++) {
+      await expect(walletBadge.nth(i)).not.toBeVisible();
+    }
   });
 });

@@ -8,6 +8,7 @@ import {
   computeTicketWeightsHash,
   computePoolHash,
   computeWinnerProofHash,
+  signProof,
   verifyProofIntegrity,
   assembleDrawProof,
   type DrawProof,
@@ -27,6 +28,8 @@ const WEIGHTS: TicketWeight[] = [
   { address: "addr-b", weight: "1500000" },
   { address: "addr-c", weight: "1000000" },
 ];
+
+const SIGNING_SECRET = "draw-proof-test-secret";
 
 /** Builds a valid DrawProofInput with a real commit(seed) = sha256(seed) binding. */
 async function makeInput(overrides: Partial<DrawProofInput> = {}): Promise<DrawProofInput> {
@@ -52,6 +55,14 @@ async function makeInput(overrides: Partial<DrawProofInput> = {}): Promise<DrawP
     contractSpecHash: "spec_v1",
     ...overrides,
   };
+}
+
+async function assembleSignedProof(input: DrawProofInput): Promise<DrawProof> {
+  return assembleDrawProof(input, { signatureSecret: SIGNING_SECRET });
+}
+
+function expectField(result: Awaited<ReturnType<typeof verifyProofIntegrity>>, name: string, status: "pass" | "fail" | "unverified") {
+  expect(result.fields).toContainEqual(expect.objectContaining({ name, status }));
 }
 
 function makeProof(overrides: Partial<DrawProof> = {}): DrawProof {
@@ -166,6 +177,17 @@ describe("computeProofHash", () => {
   });
 });
 
+describe("signProof", () => {
+  it("uses HMAC-SHA256 rather than hashing canonical + secret", async () => {
+    const proof = await assembleDrawProof(await makeInput());
+    const { signature, ...body } = proof;
+    const hmacSignature = await signProof(body, SIGNING_SECRET);
+    const naiveSignature = await computeHash(`${canonicalize(body)}:${SIGNING_SECRET}`);
+
+    expect(hmacSignature).toHaveLength(64);
+    expect(hmacSignature).not.toBe(naiveSignature);
+  });
+});
 describe("computeDrawId", () => {
   it("returns deterministic draw ID", async () => {
     const a = await computeDrawId("C123", 1, 1000);
@@ -259,40 +281,72 @@ describe("computeWinnerProofHash", () => {
 });
 
 describe("verifyProofIntegrity", () => {
-  it("passes for a properly assembled proof with real commitment evidence", async () => {
-    const proof = await assembleDrawProof(await makeInput());
+
+  it("marks a signed 1.1.0 proof unverified when no HMAC secret is provided", async () => {
+    const proof = await assembleSignedProof(await makeInput());
     const result = await verifyProofIntegrity(proof);
+    expect(result.verified).toBe(false);
+    expectField(result, "document_integrity", "unverified");
+  });
+
+  it("keeps legacy 1.0.0 document-hash signatures explicitly verifiable", async () => {
+    const proof = await assembleDrawProof(await makeInput());
+    proof.version = "1.0.0";
+    const { signature, ...body } = proof;
+    proof.signature = await computeProofHash(body);
+
+    const result = await verifyProofIntegrity(proof);
+    expect(result.verified).toBe(true);
+    expectField(result, "document_integrity", "pass");
+  });
+
+  it("marks a missing signature unverified rather than failed", async () => {
+    const proof = await assembleSignedProof(await makeInput());
+    delete proof.signature;
+
+    const result = await verifyProofIntegrity(proof, SIGNING_SECRET);
+    expect(result.verified).toBe(false);
+    expectField(result, "document_integrity", "unverified");
+    expect(result.fields.some((f) => f.name === "document_integrity" && f.status === "fail")).toBe(false);
+  });
+
+  it("passes for a properly assembled proof with real commitment evidence", async () => {
+    const proof = await assembleSignedProof(await makeInput());
+    const result = await verifyProofIntegrity(proof, SIGNING_SECRET);
     expect(result.verified).toBe(true);
     expect(result.fields.every((f) => f.status === "pass")).toBe(true);
   });
 
   it("fails when seedHash is tampered", async () => {
-    const proof = await assembleDrawProof(await makeInput());
+    const proof = await assembleSignedProof(await makeInput());
     proof.randomness.seedHash = "tampered_hash";
-    const result = await verifyProofIntegrity(proof);
+    const result = await verifyProofIntegrity(proof, SIGNING_SECRET);
     expect(result.verified).toBe(false);
-    expect(result.fields.some((f) => f.status === "fail")).toBe(true);
+    expectField(result, "seed_hash", "fail");
   });
 
   it("fails when winner proofHash is tampered", async () => {
-    const proof = await assembleDrawProof(await makeInput());
+    const proof = await assembleSignedProof(await makeInput());
     proof.winnerSelection.proofHash = "tampered_proof_hash";
-    const result = await verifyProofIntegrity(proof);
+    const result = await verifyProofIntegrity(proof, SIGNING_SECRET);
     expect(result.verified).toBe(false);
+    expectField(result, "winner_proof_hash", "fail");
   });
 
   it("fails when winnerAddress is changed after proofHash was set", async () => {
-    const proof = await assembleDrawProof(await makeInput());
+    const proof = await assembleSignedProof(await makeInput());
     proof.winnerSelection.winnerAddress = "addr-b";
-    const result = await verifyProofIntegrity(proof);
+    const result = await verifyProofIntegrity(proof, SIGNING_SECRET);
     expect(result.verified).toBe(false);
+    expectField(result, "winner_proof_hash", "fail");
   });
 
   it("fails when participantsHash is tampered", async () => {
-    const proof = await assembleDrawProof(await makeInput());
+    const proof = await assembleSignedProof(await makeInput());
     proof.snapshot.participantsHash = "tampered";
-    const result = await verifyProofIntegrity(proof);
+    const result = await verifyProofIntegrity(proof, SIGNING_SECRET);
     expect(result.verified).toBe(false);
+    expectField(result, "winner_proof_hash", "fail");
   });
 
   it("fails when randomness evidence is missing (schema rejects deterministic_placeholder source)", async () => {
@@ -307,59 +361,61 @@ describe("verifyProofIntegrity", () => {
         drawnAtLedger: 1000,
       },
     });
-    const result = await verifyProofIntegrity(proof);
+    const result = await verifyProofIntegrity(proof, SIGNING_SECRET);
     expect(result.verified).toBe(false);
+    expectField(result, "randomness_evidence", "fail");
   });
 
   it("fails when the revealed seed doesn't match the commitment (substituted evidence)", async () => {
-    const proof = await assembleDrawProof(await makeInput());
+    const proof = await assembleSignedProof(await makeInput());
     proof.randomness.seed = "a-different-seed-entirely";
     proof.randomness.seedHash = await computeHash(proof.randomness.seed);
     // seedHash now matches seed (self-consistent) but no longer matches the
     // original on-chain commitment — the substitution must still be caught.
-    const result = await verifyProofIntegrity(proof);
+    const result = await verifyProofIntegrity(proof, SIGNING_SECRET);
     expect(result.verified).toBe(false);
-    expect(result.fields.some((f) => f.name === "randomness_commitment" && f.status === "fail")).toBe(true);
+    expectField(result, "randomness_commitment", "fail");
   });
 
   it("fails when randomness evidence is bound to another round (fork/replay)", async () => {
     // Randomness evidence generated for round 2, spliced onto a round 1 proof.
     const roundTwoInput = await makeInput({ roundId: 2 });
-    const roundTwoProof = await assembleDrawProof(roundTwoInput);
+    const roundTwoProof = await assembleSignedProof(roundTwoInput);
 
     const roundOneInput = await makeInput({ roundId: 1 });
-    const roundOneProof = await assembleDrawProof(roundOneInput);
+    const roundOneProof = await assembleSignedProof(roundOneInput);
     roundOneProof.randomness = roundTwoProof.randomness;
 
-    const result = await verifyProofIntegrity(roundOneProof);
+    const result = await verifyProofIntegrity(roundOneProof, SIGNING_SECRET);
     expect(result.verified).toBe(false);
-    expect(result.fields.some((f) => f.name === "winner_proof_hash" && f.status === "fail")).toBe(true);
+    expectField(result, "winner_proof_hash", "fail");
   });
 
   it("fails when randomness evidence is bound to another contract", async () => {
     const otherContractInput = await makeInput({ contractId: "C_OTHER" });
-    const otherContractProof = await assembleDrawProof(otherContractInput);
+    const otherContractProof = await assembleSignedProof(otherContractInput);
 
-    const proof = await assembleDrawProof(await makeInput({ contractId: "C123" }));
+    const proof = await assembleSignedProof(await makeInput({ contractId: "C123" }));
     proof.randomness = otherContractProof.randomness;
 
-    const result = await verifyProofIntegrity(proof);
+    const result = await verifyProofIntegrity(proof, SIGNING_SECRET);
     expect(result.verified).toBe(false);
+    expectField(result, "winner_proof_hash", "fail");
   });
 
   it("fails when the commitment was recorded after the draw ledger (withheld-reveal / late-choice bias)", async () => {
-    const proof = await assembleDrawProof(await makeInput({ commitmentLedgerSeq: 1500, drawnAtLedger: 1000 }));
-    const result = await verifyProofIntegrity(proof);
+    const proof = await assembleSignedProof(await makeInput({ commitmentLedgerSeq: 1500, drawnAtLedger: 1000 }));
+    const result = await verifyProofIntegrity(proof, SIGNING_SECRET);
     expect(result.verified).toBe(false);
-    expect(result.fields.some((f) => f.name === "randomness_commitment" && f.status === "fail")).toBe(true);
+    expectField(result, "randomness_commitment", "fail");
   });
 });
 
 describe("assembleDrawProof", () => {
   it("produces a valid proof with correct hash chain", async () => {
-    const proof = await assembleDrawProof(await makeInput({ payoutTxHash: "tx_hash" }));
+    const proof = await assembleSignedProof(await makeInput({ payoutTxHash: "tx_hash" }));
 
-    expect(proof.version).toBe("1.0.0");
+    expect(proof.version).toBe("1.1.0");
     expect(proof.drawId).toMatch(/^draw-[0-9a-f]{16}$/);
     expect(proof.roundId).toBe(1);
     expect(proof.contractId).toBe("C123");
@@ -371,7 +427,7 @@ describe("assembleDrawProof", () => {
   });
 
   it("computes correct total weight from deposit * lockup_multiplier", async () => {
-    const proof = await assembleDrawProof(
+    const proof = await assembleSignedProof(
       await makeInput({ payoutAmount: "100", payoutAsset: "XLM", payoutConfirmed: false })
     );
 
@@ -384,20 +440,20 @@ describe("assembleDrawProof", () => {
   });
 
   it("always uses weighted_random method (no placeholder method remains)", async () => {
-    const proof = await assembleDrawProof(await makeInput());
+    const proof = await assembleSignedProof(await makeInput());
     expect(proof.randomness.source).toBe("soroban_prng");
     expect(proof.winnerSelection.method).toBe("weighted_random");
   });
 
   it("carries external_beacon source through unchanged", async () => {
-    const proof = await assembleDrawProof(await makeInput({ randomnessSource: "external_beacon" }));
+    const proof = await assembleSignedProof(await makeInput({ randomnessSource: "external_beacon" }));
     expect(proof.randomness.source).toBe("external_beacon");
     expect(proof.winnerSelection.method).toBe("weighted_random");
   });
 
   it("handles single participant", async () => {
     const single = [PARTICIPANTS[0]];
-    const proof = await assembleDrawProof(
+    const proof = await assembleSignedProof(
       await makeInput({
         participants: single,
         poolState: {},
@@ -409,7 +465,7 @@ describe("assembleDrawProof", () => {
     );
 
     expect(proof.snapshot.participantCount).toBe(1);
-    const result = await verifyProofIntegrity(proof);
+    const result = await verifyProofIntegrity(proof, SIGNING_SECRET);
     expect(result.verified).toBe(true);
   });
 });

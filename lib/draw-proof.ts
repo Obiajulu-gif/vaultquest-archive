@@ -50,8 +50,10 @@ const MetadataSchema = z.object({
   contractSpecHash: z.string().min(1),
 });
 
+const DrawProofVersionSchema = z.union([z.literal("1.0.0"), z.literal("1.1.0")]);
+
 export const DrawProofSchema = z.object({
-  version: z.literal("1.0.0"),
+  version: DrawProofVersionSchema,
   drawId: z.string().min(1),
   roundId: z.number().int().nonnegative(),
   contractId: z.string().min(1),
@@ -89,6 +91,27 @@ async function sha256Hex(data: string): Promise<string> {
 
 export { sha256Hex as computeHash };
 
+async function hmacSha256Hex(secret: string, data: string): Promise<string> {
+  const encoder = new TextEncoder();
+
+  if (typeof globalThis.crypto !== "undefined" && globalThis.crypto.subtle) {
+    const key = await globalThis.crypto.subtle.importKey(
+      "raw",
+      encoder.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    const signature = await globalThis.crypto.subtle.sign("HMAC", key, encoder.encode(data));
+    return Array.from(new Uint8Array(signature))
+      .map((b) => HEX_CHARS[b >> 4] + HEX_CHARS[b & 0x0f])
+      .join("");
+  }
+
+  const { createHmac } = await import("crypto");
+  return createHmac("sha256", secret).update(data, "utf-8").digest("hex");
+}
+
 // ─── Canonicalization ─────────────────────────────────────────────────────────
 
 function sortKeys(obj: unknown): unknown {
@@ -119,8 +142,7 @@ export async function signProof(
   secret: string
 ): Promise<string> {
   const canonical = canonicalize(proof);
-  const payload = canonical + ":" + secret;
-  return sha256Hex(payload);
+  return hmacSha256Hex(secret, canonical);
 }
 
 // ─── Deterministic Draw ID ────────────────────────────────────────────────────
@@ -205,6 +227,10 @@ export interface VerificationResult {
   verifiedAt: string;
 }
 
+export interface VerifyProofIntegrityOptions {
+  signatureSecret?: string;
+}
+
 function fieldPass(name: string): VerificationField {
   return { name, status: "pass" };
 }
@@ -218,9 +244,11 @@ function fieldUnverified(name: string, detail: string): VerificationField {
 }
 
 export async function verifyProofIntegrity(
-  proof: DrawProof
+  proof: DrawProof,
+  options: VerifyProofIntegrityOptions | string = {}
 ): Promise<VerificationResult> {
   const fields: VerificationField[] = [];
+  const signatureSecret = typeof options === "string" ? options : options.signatureSecret;
 
   // Schema gate first: a proof with missing/predictable/malformed randomness
   // evidence (e.g. no commitment, or the legacy "deterministic_placeholder"
@@ -233,12 +261,23 @@ export async function verifyProofIntegrity(
 
   const { signature, ...proofBody } = proof;
   const expectedDocHash = await computeProofHash(proofBody);
-  if (proof.signature && expectedDocHash === proof.signature) {
-    fields.push(fieldPass("document_integrity"));
-  } else if (!proof.signature) {
+  if (!proof.signature) {
     fields.push(fieldUnverified("document_integrity", "No signature stored in document"));
+  } else if (proof.version === "1.0.0") {
+    if (expectedDocHash === proof.signature) {
+      fields.push(fieldPass("document_integrity"));
+    } else {
+      fields.push(fieldFail("document_integrity", `expected legacy document hash ${expectedDocHash}, got ${proof.signature}`));
+    }
+  } else if (!signatureSecret) {
+    fields.push(fieldUnverified("document_integrity", "No HMAC signing secret provided for proof version 1.1.0"));
   } else {
-    fields.push(fieldFail("document_integrity", `expected ${expectedDocHash}, got ${proof.signature}`));
+    const expectedSignature = await signProof(proofBody, signatureSecret);
+    if (expectedSignature === proof.signature) {
+      fields.push(fieldPass("document_integrity"));
+    } else {
+      fields.push(fieldFail("document_integrity", `expected HMAC-SHA256 signature ${expectedSignature}, got ${proof.signature}`));
+    }
   }
 
   const expectedWinnerHash = await computeWinnerProofHash(
@@ -320,8 +359,13 @@ export interface DrawProofInput {
   contractSpecHash: string;
 }
 
+export interface AssembleDrawProofOptions {
+  signatureSecret?: string;
+}
+
 export async function assembleDrawProof(
-  input: DrawProofInput
+  input: DrawProofInput,
+  options: AssembleDrawProofOptions = {}
 ): Promise<DrawProof> {
   const participantsHash = await computeParticipantsHash(input.participants);
   const poolHash = await computePoolHash(input.poolState);
@@ -362,7 +406,7 @@ export async function assembleDrawProof(
   const snapshotLedgerTime = new Date().toISOString();
 
   const proof: Omit<DrawProof, "signature"> = {
-    version: "1.0.0",
+    version: "1.1.0",
     drawId,
     roundId: input.roundId,
     contractId: input.contractId,
@@ -405,6 +449,8 @@ export async function assembleDrawProof(
     },
   };
 
-  const docHash = await computeProofHash(proof);
-  return { ...proof, signature: docHash } as DrawProof;
+  const signature = options.signatureSecret
+    ? await signProof(proof, options.signatureSecret)
+    : undefined;
+  return { ...proof, signature } as DrawProof;
 }

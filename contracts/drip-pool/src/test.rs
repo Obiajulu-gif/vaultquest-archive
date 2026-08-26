@@ -2564,6 +2564,196 @@ fn cancel_withdrawal_request_preserves_claim_for_a_later_withdraw() {
     assert_eq!(token.balance(&alice), 1_000);
 }
 
+// ── #579: Withdrawal queue near u32::MAX boundary ──────────────────────────
+//
+// Test-only storage shortcuts that directly write WithdrawalQueueHead /
+// WithdrawalQueueTail to near-u32::MAX values without looping through
+// millions of real calls. This verifies the FIFO logic still behaves
+// correctly at the boundary.
+
+/// Test-only helper: set the queue head/tail to a near-u32::MAX value
+/// via direct storage manipulation, bypassing enqueue_withdrawal.
+fn seed_queue_near_max(env: &Env, head: u32, tail: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::WithdrawalQueueHead, &head);
+    env.storage()
+        .instance()
+        .set(&DataKey::WithdrawalQueueTail, &tail);
+}
+
+#[test]
+fn test_enqueue_near_u32_max_succeeds() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+    client.deposit(&alice, &1_000);
+
+    let strategy = env.register_contract(None, RealTokenStrategy);
+    client.set_strategy(&admin, &strategy);
+    client.deploy_to_strategy(&admin, &900);
+
+    // Seed head at u32::MAX - 1, tail at u32::MAX - 1 (empty queue).
+    seed_queue_near_max(&env, u32::MAX - 1, u32::MAX - 1);
+    assert_eq!(client.withdrawal_queue_head(), u32::MAX - 1);
+    assert_eq!(client.withdrawal_queue_tail(), u32::MAX - 1);
+
+    skip_lockup(&env);
+    // Enqueue at tail = u32::MAX - 1 should succeed; tail wraps to u32::MAX.
+    let result = client.withdraw(&alice);
+    assert_eq!(result, 0);
+    assert_eq!(client.withdrawal_queue_tail(), u32::MAX);
+
+    let qid = client.withdrawal_request_of(&alice).unwrap();
+    assert_eq!(qid, u32::MAX - 1);
+    let request = client.withdrawal_request(&qid);
+    assert_eq!(request.amount, 1_000);
+    assert_eq!(request.status, WithdrawalRequestStatus::Pending);
+}
+
+#[test]
+fn test_enqueue_wrapping_past_u32_max() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.join(&alice);
+    client.join(&bob);
+    issuer.mint(&alice, &1_000);
+    issuer.mint(&bob, &1_000);
+    client.deposit(&alice, &1_000);
+    client.deposit(&bob, &1_000);
+
+    let strategy = env.register_contract(None, RealTokenStrategy);
+    client.set_strategy(&admin, &strategy);
+    client.deploy_to_strategy(&admin, &1_950);
+
+    // Seed head and tail at u32::MAX - 1 so the first enqueue fills slot
+    // u32::MAX - 1 and advances tail to u32::MAX. The second enqueue fills
+    // slot u32::MAX and wraps tail to 0.
+    seed_queue_near_max(&env, u32::MAX - 1, u32::MAX - 1);
+
+    skip_lockup(&env);
+    // Alice enqueues at u32::MAX - 1, tail → u32::MAX
+    assert_eq!(client.withdraw(&alice), 0);
+    assert_eq!(client.withdrawal_queue_tail(), u32::MAX);
+
+    // Bob enqueues at u32::MAX, tail wraps to 0
+    assert_eq!(client.withdraw(&bob), 0);
+    assert_eq!(client.withdrawal_queue_tail(), 0);
+
+    // Both have valid pending requests.
+    let qid_alice = client.withdrawal_request_of(&alice).unwrap();
+    assert_eq!(qid_alice, u32::MAX - 1);
+    let qid_bob = client.withdrawal_request_of(&bob).unwrap();
+    assert_eq!(qid_bob, u32::MAX);
+
+    // Fulfill: head starts at u32::MAX - 1, processes Alice then Bob.
+    // head should advance from u32::MAX - 1 → u32::MAX → 0 (wrapping).
+    let paid = client.fulfill_withdrawal_queue(&admin, &10);
+    assert_eq!(paid, 1_950);
+    assert_eq!(token.balance(&alice), 1_000);
+    assert_eq!(token.balance(&bob), 1_000);
+    // Head wraps to 0 after processing both slots.
+    assert_eq!(client.withdrawal_queue_head(), 0);
+}
+
+#[test]
+fn test_fulfill_at_boundary_partial_payment_preserves_head() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+    client.deposit(&alice, &1_000);
+
+    let strategy = env.register_contract(None, RealTokenStrategy);
+    client.set_strategy(&admin, &strategy);
+    client.deploy_to_strategy(&admin, &950);
+
+    // Place head/tail at u32::MAX so the request is at slot u32::MAX.
+    seed_queue_near_max(&env, u32::MAX, u32::MAX);
+
+    skip_lockup(&env);
+    assert_eq!(client.withdraw(&alice), 0);
+    assert_eq!(client.withdrawal_queue_tail(), 0); // wraps past u32::MAX
+
+    // Only 50 idle — partial payment at head (u32::MAX).
+    let paid = client.fulfill_withdrawal_queue(&admin, &10);
+    assert_eq!(paid, 50);
+    assert_eq!(token.balance(&alice), 50);
+
+    // Head must stay at u32::MAX (request partially paid, not yet fulfilled).
+    assert_eq!(client.withdrawal_queue_head(), u32::MAX);
+
+    // The request is still pending with reduced amount.
+    let request = client.withdrawal_request(u32::MAX);
+    assert_eq!(request.amount, 950);
+    assert_eq!(request.status, WithdrawalRequestStatus::Pending);
+}
+
+#[test]
+fn test_cancel_request_at_u32_max_slot() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+    client.deposit(&alice, &1_000);
+
+    let strategy = env.register_contract(None, RealTokenStrategy);
+    client.set_strategy(&admin, &strategy);
+    client.deploy_to_strategy(&admin, &900);
+
+    seed_queue_near_max(&env, u32::MAX, u32::MAX);
+
+    skip_lockup(&env);
+    assert_eq!(client.withdraw(&alice), 0);
+    assert_eq!(client.withdrawal_queue_tail(), 0);
+
+    // Cancel the request at slot u32::MAX.
+    let refunded = client.cancel_withdrawal_request(&alice);
+    assert_eq!(refunded, 1_000);
+    assert_eq!(client.savings(&alice).withdrawn_principal, 0);
+
+    // Request is cancelled, participant queue entry is cleared.
+    assert!(client.withdrawal_request_of(&alice).is_none());
+    let request = client.withdrawal_request(u32::MAX);
+    assert_eq!(request.status, WithdrawalRequestStatus::Cancelled);
+}
+
+#[test]
+fn test_withdraw_after_wrap_reserves_first_slot() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.join(&alice);
+    client.join(&bob);
+    issuer.mint(&alice, &1_000);
+    issuer.mint(&bob, &1_000);
+    client.deposit(&alice, &1_000);
+    client.deposit(&bob, &1_000);
+
+    let strategy = env.register_contract(None, RealTokenStrategy);
+    client.set_strategy(&admin, &strategy);
+    client.deploy_to_strategy(&admin, &1_950);
+
+    // Seed near boundary: tail at u32::MAX so the first enqueue fills
+    // slot u32::MAX and wraps tail to 0.
+    seed_queue_near_max(&env, u32::MAX, u32::MAX);
+
+    skip_lockup(&env);
+    assert_eq!(client.withdraw(&alice), 0);
+    assert_eq!(client.withdraw(&bob), 0);
+
+    // Head starts at u32::MAX, processes Alice's slot u32::MAX, advances
+    // to 0 (wrap), then processes Bob's slot 0.
+    let paid = client.fulfill_withdrawal_queue(&admin, &10);
+    assert_eq!(paid, 1_950);
+    assert_eq!(token.balance(&alice), 1_000);
+    assert_eq!(token.balance(&bob), 1_000);
+    // Head should be 1 after processing both (0 + 1).
+    assert_eq!(client.withdrawal_queue_head(), 1);
+}
+
 // ── #524: Security — Fail closed when token is unconfigured ────────────────
 
 #[test]

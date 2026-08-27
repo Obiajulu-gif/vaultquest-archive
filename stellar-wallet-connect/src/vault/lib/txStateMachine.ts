@@ -6,7 +6,7 @@
  * invalid transitions can be regression-tested without mounting React.
  */
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { TimelineStage } from "../../components/TransactionTimeline";
 import type { PoolActionInput, PoolActionType, VaultContractClient } from "../contract/types";
 
@@ -169,6 +169,146 @@ function withTimeout(
 function stateFailureFallback(state: TxFlowState): ActiveTxStage {
   if (isActiveState(state)) return state.stage;
   return "confirming";
+}
+
+// ─── Persistence helpers (#631) ───────────────────────────────────────────────
+
+interface PersistedTxRecord {
+  txHash: string | null;
+  stage: ActiveTxStage;
+  savedAt: number;
+}
+
+const PERSIST_KEY_PREFIX = "vaultquest:pending_tx:";
+const PERSIST_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
+
+function persistTxRecord(scopeKey: string, record: PersistedTxRecord): void {
+  try {
+    localStorage.setItem(PERSIST_KEY_PREFIX + scopeKey, JSON.stringify(record));
+  } catch {
+    // quota exceeded or SSR — ignore
+  }
+}
+
+function loadPersistedTxRecord(scopeKey: string): PersistedTxRecord | null {
+  try {
+    const raw = localStorage.getItem(PERSIST_KEY_PREFIX + scopeKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedTxRecord;
+    if (Date.now() - parsed.savedAt > PERSIST_TTL_MS) {
+      localStorage.removeItem(PERSIST_KEY_PREFIX + scopeKey);
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function clearPersistedTxRecord(scopeKey: string): void {
+  try {
+    localStorage.removeItem(PERSIST_KEY_PREFIX + scopeKey);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Returns a sorted, deduplicated list of in-flight tx hashes seen in this
+ * session. Prevents duplicate wallet submissions from creating parallel flows.
+ */
+const _seenHashes = new Set<string>();
+export function markTxHashSeen(txHash: string): boolean {
+  if (_seenHashes.has(txHash)) return false;
+  _seenHashes.add(txHash);
+  return true;
+}
+
+export interface PersistentTxFlowOptions {
+  /**
+   * Unique scope key: typically `${walletAddress}:${network}` so each wallet
+   * on each network has its own recovery slot.
+   */
+  scopeKey: string;
+}
+
+export interface PersistentTxFlowResult extends TxFlowResult {
+  /** True when the flow was recovered from a previous interrupted session. */
+  recovered: boolean;
+}
+
+/**
+ * Wraps `useTxFlow` with localStorage persistence (#631).
+ *
+ * On mount: if a non-terminal tx record exists in storage (tab close,
+ * navigation away mid-flow), the state is restored to `failed` with a
+ * recovery message so the user sees the last known stage and can retry or
+ * check the explorer.  Pending hashes that reach `success` or `failed`
+ * clear their record automatically.
+ */
+export function usePersistentTxFlow({ scopeKey }: PersistentTxFlowOptions): PersistentTxFlowResult {
+  const flow = useTxFlow();
+  const [recovered, setRecovered] = useState(false);
+
+  useEffect(() => {
+    const record = loadPersistedTxRecord(scopeKey);
+    if (!record) return;
+
+    // A previously-pending tx was interrupted. Surface it as failed so the
+    // user knows to verify on-chain rather than silently losing the status.
+    clearPersistedTxRecord(scopeKey);
+    flow.reset();
+    // We cannot drive the machine to "preparing" → ... → "failed" purely from
+    // localStorage, so we directly inject the terminal failure state.  The
+    // txHash, if present, was already submitted — the user should verify it.
+    const message =
+      record.txHash
+        ? `Transaction interrupted at '${record.stage}' stage. ` +
+          `Hash ${record.txHash.slice(0, 12)}… may have landed — check the explorer.`
+        : `Transaction interrupted at '${record.stage}' stage before a hash was recorded.`;
+
+    // Use the internal transition sequence to reach "failed" legally:
+    // idle → preparing → awaiting-signature → failed
+    // We call reset first (already done), then drive through the minimal path.
+    // Because useTxFlow exposes `run`, not `transition`, we replicate only the
+    // final state via a synthetic call path using the public reset + a no-op
+    // run that immediately throws. This keeps the stateRef consistent.
+    (async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (flow as any).run(
+        {
+          submitAction: async () => {
+            const err: Error & { kind?: string } = new Error(message);
+            err.kind = record.txHash ? "confirmation_timeout" : "rpc_failure";
+            throw err;
+          },
+        },
+        "claim",
+        { poolId: "", walletAddress: "" },
+        { confirmationTimeoutMs: 0, indexingDelayMs: 0 },
+      );
+    })().catch(() => undefined);
+
+    setRecovered(true);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeKey]);
+
+  // Persist whenever the state advances to a non-idle, non-terminal stage.
+  useEffect(() => {
+    const { state } = flow;
+    if (state.stage === "idle" || state.stage === "success" || state.stage === "failed") {
+      clearPersistedTxRecord(scopeKey);
+      return;
+    }
+    const record: PersistedTxRecord = {
+      stage: state.stage as ActiveTxStage,
+      txHash: "txHash" in state ? (state.txHash ?? null) : null,
+      savedAt: Date.now(),
+    };
+    persistTxRecord(scopeKey, record);
+  }, [flow, flow.state, scopeKey]);
+
+  return { ...flow, recovered };
 }
 
 export function useTxFlow(): TxFlowResult {

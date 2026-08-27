@@ -45,6 +45,18 @@ export interface UserPosition {
 
 export type RewardOutcome = "won" | "no_win" | "pending";
 
+/**
+ * Proof reconciliation status attached to a reward entry (#634).
+ *
+ * - `verified`   — draw proof exists and all integrity checks pass.
+ * - `tampered`   — proof exists but one or more hash checks failed.
+ * - `missing`    — no proof record found for this round/draw.
+ * - `pending`    — proof not yet available (draw not finalised).
+ * - `unverified` — proof present but optional fields (e.g. HMAC secret) were
+ *                  not supplied, so full verification could not complete.
+ */
+export type ProofStatus = "verified" | "tampered" | "missing" | "pending" | "unverified";
+
 export interface RewardHistoryEntry {
   id: string;
   poolId: string;
@@ -58,6 +70,29 @@ export interface RewardHistoryEntry {
   winnerAddress: string | null;
   /** On-chain reference for explorer links, when available. */
   txHash: string | null;
+  /**
+   * Round ID on-chain (links to draw proof). Added in #634.
+   * Absent on legacy entries that pre-date proof recording.
+   */
+  roundId?: number;
+  /**
+   * Draw proof integrity status resolved at display time (#634).
+   * Absent when the proof system is not enabled for this environment.
+   */
+  proofStatus?: ProofStatus;
+  /**
+   * Human-readable detail about the proof check (first failing field or
+   * "verified" for a clean proof). Used for tooltip/ARIA descriptions.
+   */
+  proofDetail?: string;
+  /**
+   * Wallet claim status cross-checked against wallet/indexer data (#634).
+   * - `claimed`   — txHash confirmed on-chain as successful
+   * - `pending`   — txHash present but not yet confirmed
+   * - `unclaimed` — won but no claim tx recorded
+   * - `failed`    — claim tx found but reverted/failed
+   */
+  claimStatus?: "claimed" | "pending" | "unclaimed" | "failed";
 }
 
 export type PoolActionType = "create" | "join" | "drip" | "claim" | "withdraw";

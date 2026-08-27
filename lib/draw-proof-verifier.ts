@@ -191,6 +191,94 @@ export async function verifyDrawProofClient(
   };
 }
 
+// ─── Reward Entry Reconciliation (#634) ──────────────────────────────────────
+
+export type ProofStatus = "verified" | "tampered" | "missing" | "pending" | "unverified";
+export type ClaimStatus = "claimed" | "pending" | "unclaimed" | "failed";
+
+export interface RewardReconciliation {
+  proofStatus: ProofStatus;
+  proofDetail: string;
+  claimStatus: ClaimStatus;
+}
+
+export interface ReconcileRewardEntryInput {
+  /** Round ID to match against draw proof's roundId. */
+  roundId: number;
+  /** Draw proof fetched from storage, or null/undefined if not found. */
+  proof: DrawProof | null | undefined;
+  /** Whether the cycle outcome is won. */
+  isWon: boolean;
+  /**
+   * On-chain tx hash for the claim, if any.  Absence means unclaimed (for a
+   * won entry) or irrelevant (for a no_win/pending entry).
+   */
+  claimTxHash: string | null;
+  /**
+   * Result of fetching the claim tx from the indexer/RPC.  Undefined when no
+   * claimTxHash exists.  Truthy means confirmed-successful.
+   */
+  claimTxSuccessful?: boolean;
+}
+
+/**
+ * Pure reconciliation of one reward entry against its draw proof and claim
+ * transaction data (#634).  All RPC calls are done by the caller; this
+ * function only interprets the pre-fetched data so it is synchronous and
+ * testable in isolation.
+ */
+export async function reconcileRewardEntry(
+  input: ReconcileRewardEntryInput,
+): Promise<RewardReconciliation> {
+  // ── Proof reconciliation ─────────────────────────────────────────────────
+  let proofStatus: ProofStatus;
+  let proofDetail: string;
+
+  if (!input.proof) {
+    proofStatus = input.isWon ? "missing" : "pending";
+    proofDetail = input.isWon
+      ? "No draw proof found for this round"
+      : "Draw proof not yet available";
+  } else if (input.proof.roundId !== input.roundId) {
+    proofStatus = "tampered";
+    proofDetail = `Round ID mismatch: proof.roundId=${input.proof.roundId}, expected=${input.roundId}`;
+  } else {
+    const result = await verifyProofIntegrity(input.proof);
+    const failingField = result.fields.find((f) => f.status === "fail");
+    const unverifiedField = result.fields.find((f) => f.status === "unverified");
+
+    if (failingField) {
+      proofStatus = "tampered";
+      proofDetail = `${failingField.name}: ${failingField.detail ?? "check failed"}`;
+    } else if (unverifiedField) {
+      proofStatus = "unverified";
+      proofDetail = `${unverifiedField.name}: ${unverifiedField.detail ?? "could not verify"}`;
+    } else {
+      proofStatus = "verified";
+      proofDetail = "All proof integrity checks passed";
+    }
+  }
+
+  // ── Claim reconciliation ─────────────────────────────────────────────────
+  let claimStatus: ClaimStatus;
+
+  if (!input.isWon) {
+    // Non-winning entries never have a claim.
+    claimStatus = "unclaimed";
+  } else if (!input.claimTxHash) {
+    claimStatus = "unclaimed";
+  } else if (input.claimTxSuccessful === undefined) {
+    // txHash exists but we couldn't fetch the result (RPC unavailable or still indexing).
+    claimStatus = "pending";
+  } else if (input.claimTxSuccessful) {
+    claimStatus = "claimed";
+  } else {
+    claimStatus = "failed";
+  }
+
+  return { proofStatus, proofDetail, claimStatus };
+}
+
 // ─── Fetch-based RPC Client ───────────────────────────────────────────────────
 
 export function createFetchRpcClient(rpcUrl: string): StellarRpcClient {

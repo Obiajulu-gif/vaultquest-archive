@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import {
   canonicalize,
   computeHash,
@@ -467,5 +467,94 @@ describe("assembleDrawProof", () => {
     expect(proof.snapshot.participantCount).toBe(1);
     const result = await verifyProofIntegrity(proof, SIGNING_SECRET);
     expect(result.verified).toBe(true);
+  });
+});
+
+// ─── reconcileRewardEntry (#634) ──────────────────────────────────────────────
+
+import { reconcileRewardEntry } from "@/lib/draw-proof-verifier";
+
+describe("reconcileRewardEntry", () => {
+  let baseProof: DrawProof;
+
+  beforeAll(async () => {
+    baseProof = await assembleSignedProof(
+      await makeInput({
+        participants: PARTICIPANTS,
+        poolState: {},
+        winnerAddress: PARTICIPANTS[0].address,
+        payoutAmount: "50",
+        payoutAsset: "USDC",
+        payoutConfirmed: true,
+      })
+    );
+  });
+
+  it("verifies a clean proof and a confirmed claim tx", async () => {
+    const result = await reconcileRewardEntry({
+      roundId: 1,
+      proof: baseProof,
+      isWon: true,
+      claimTxHash: "tx-abc",
+      claimTxSuccessful: true,
+    });
+    expect(result.proofStatus).toBe("verified");
+    expect(result.claimStatus).toBe("claimed");
+  });
+
+  it("reports tampered when round ID does not match", async () => {
+    const result = await reconcileRewardEntry({
+      roundId: 999,
+      proof: baseProof,
+      isWon: true,
+      claimTxHash: null,
+      claimTxSuccessful: undefined,
+    });
+    expect(result.proofStatus).toBe("tampered");
+    expect(result.proofDetail).toMatch(/round id mismatch/i);
+    expect(result.claimStatus).toBe("unclaimed");
+  });
+
+  it("reports missing when no proof provided for a won entry", async () => {
+    const result = await reconcileRewardEntry({
+      roundId: 1,
+      proof: null,
+      isWon: true,
+      claimTxHash: null,
+    });
+    expect(result.proofStatus).toBe("missing");
+    expect(result.claimStatus).toBe("unclaimed");
+  });
+
+  it("reports pending proof for a pending (not-won) entry", async () => {
+    const result = await reconcileRewardEntry({
+      roundId: 1,
+      proof: undefined,
+      isWon: false,
+      claimTxHash: null,
+    });
+    expect(result.proofStatus).toBe("pending");
+  });
+
+  it("reports claim pending when txHash exists but result unknown", async () => {
+    const result = await reconcileRewardEntry({
+      roundId: 1,
+      proof: baseProof,
+      isWon: true,
+      claimTxHash: "tx-pending",
+      claimTxSuccessful: undefined,
+    });
+    expect(result.claimStatus).toBe("pending");
+  });
+
+  it("reports claim failed when tx was unsuccessful", async () => {
+    const result = await reconcileRewardEntry({
+      roundId: 1,
+      proof: baseProof,
+      isWon: true,
+      claimTxHash: "tx-failed",
+      claimTxSuccessful: false,
+    });
+    expect(result.claimStatus).toBe("failed");
   });
 });

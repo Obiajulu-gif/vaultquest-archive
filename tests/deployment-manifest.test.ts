@@ -5,6 +5,8 @@ import {
   assertContractSpecNotDeprecated,
   DEPRECATED_CONTRACT_SPEC_HASHES,
   clearManifestCache,
+  validateManifestGovernance,
+  assertGovernanceValid,
   type DeploymentManifest,
 } from "@/lib/deployment-manifest";
 
@@ -373,5 +375,101 @@ describe("rotation scenarios", () => {
     };
     const mismatches = validateManifestAgainstEnv(VALID_MANIFEST, env);
     expect(mismatches.some((m) => m.field === "network.passphrase")).toBe(true);
+  });
+});
+
+// ─── Governance validation (#632) ─────────────────────────────────────────────
+
+const GOVERNANCE_MANIFEST: DeploymentManifest = {
+  ...VALID_MANIFEST,
+  governance: {
+    signerThreshold: 2,
+    adminAuthority: "GADMIN1234567890ABCDEF",
+    upgradeAuthority: "GUPGRADE1234567890ABCDEF",
+    pauseAuthority: "GPAUSE1234567890ABCDEF",
+  },
+};
+
+describe("validateManifestGovernance", () => {
+  it("returns empty array when no governance block is present (non-mainnet)", () => {
+    const violations = validateManifestGovernance(VALID_MANIFEST, {});
+    expect(violations).toHaveLength(0);
+  });
+
+  it("throws for mainnet manifest missing governance block", () => {
+    const mainnetManifest: DeploymentManifest = {
+      ...VALID_MANIFEST,
+      network: { ...VALID_MANIFEST.network, name: "mainnet" },
+    };
+    expect(() => validateManifestGovernance(mainnetManifest, {})).toThrow(/required for mainnet/i);
+  });
+
+  it("returns empty array when env vars are not set (no expected values to compare)", () => {
+    const violations = validateManifestGovernance(GOVERNANCE_MANIFEST, {});
+    expect(violations).toHaveLength(0);
+  });
+
+  it("reports violation when adminAuthority does not match EXPECTED_ADMIN_AUTHORITY", () => {
+    const env = { EXPECTED_ADMIN_AUTHORITY: "GDIFFERENT1234567890ABCDEF" };
+    const violations = validateManifestGovernance(GOVERNANCE_MANIFEST, env);
+    const v = violations.find((x) => x.field === "governance.adminAuthority");
+    expect(v).toBeTruthy();
+    expect(v?.manifestValue).toBe("GADMIN1234567890ABCDEF");
+    expect(v?.expectedValue).toBe("GDIFFERENT1234567890ABCDEF");
+  });
+
+  it("reports violation when signerThreshold does not match EXPECTED_SIGNER_THRESHOLD", () => {
+    const env = { EXPECTED_SIGNER_THRESHOLD: "3" };
+    const violations = validateManifestGovernance(GOVERNANCE_MANIFEST, env);
+    const v = violations.find((x) => x.field === "governance.signerThreshold");
+    expect(v).toBeTruthy();
+    expect(v?.manifestValue).toBe("2");
+  });
+
+  it("passes when all authority env vars match manifest values", () => {
+    const env = {
+      EXPECTED_ADMIN_AUTHORITY: "GADMIN1234567890ABCDEF",
+      EXPECTED_UPGRADE_AUTHORITY: "GUPGRADE1234567890ABCDEF",
+      EXPECTED_PAUSE_AUTHORITY: "GPAUSE1234567890ABCDEF",
+      EXPECTED_SIGNER_THRESHOLD: "2",
+    };
+    const violations = validateManifestGovernance(GOVERNANCE_MANIFEST, env);
+    expect(violations).toHaveLength(0);
+  });
+});
+
+describe("assertGovernanceValid", () => {
+  it("throws when violations are found", () => {
+    const env = { EXPECTED_ADMIN_AUTHORITY: "GWRONG" };
+    expect(() => assertGovernanceValid(GOVERNANCE_MANIFEST, env)).toThrow(/Governance authority validation failed/);
+  });
+
+  it("does not throw when all checks pass", () => {
+    const env = {
+      EXPECTED_ADMIN_AUTHORITY: "GADMIN1234567890ABCDEF",
+      EXPECTED_UPGRADE_AUTHORITY: "GUPGRADE1234567890ABCDEF",
+      EXPECTED_SIGNER_THRESHOLD: "2",
+    };
+    expect(() => assertGovernanceValid(GOVERNANCE_MANIFEST, env)).not.toThrow();
+  });
+});
+
+describe("DeploymentManifestSchema – governance field", () => {
+  it("accepts a manifest with a valid governance block", () => {
+    const result = DeploymentManifestSchema.safeParse(GOVERNANCE_MANIFEST);
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects governance with signerThreshold below 1", () => {
+    const result = DeploymentManifestSchema.safeParse({
+      ...GOVERNANCE_MANIFEST,
+      governance: { ...GOVERNANCE_MANIFEST.governance!, signerThreshold: 0 },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts a manifest without governance (optional field)", () => {
+    const result = DeploymentManifestSchema.safeParse(VALID_MANIFEST);
+    expect(result.success).toBe(true);
   });
 });

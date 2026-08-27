@@ -7,7 +7,7 @@ import {
   WalletDisconnectedState,
 } from "../../components/FallbackStates";
 import { DataRefreshControl } from "../../components/DataRefreshControl";
-import type { RewardHistoryEntry, RewardOutcome } from "../contract/types";
+import type { RewardHistoryEntry, RewardOutcome, ProofStatus } from "../contract/types";
 import { explorerTxUrl, formatAmount, formatDate, truncateAddress, type StellarNetwork } from "../lib/format";
 import { TransactionTimeline } from "../../components/TransactionTimeline";
 import type { TxFlowResult } from "../lib/txStateMachine";
@@ -49,6 +49,43 @@ const OutcomeBadge: FC<{ status: RewardOutcome }> = ({ status }) => {
   const badge = OUTCOME_BADGE[status];
   return (
     <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${badge.className}`}>
+      {badge.label}
+    </span>
+  );
+};
+
+const PROOF_BADGE: Record<ProofStatus, { label: string; className: string; title: string }> = {
+  verified: { label: "Proof ✓", className: "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30", title: "Draw proof verified" },
+  tampered: { label: "Proof ✗", className: "bg-red-500/10 text-red-400 border border-red-500/30", title: "Draw proof integrity check failed" },
+  missing: { label: "No proof", className: "bg-gray-500/10 text-gray-400 border border-gray-600/30", title: "No draw proof found for this round" },
+  pending: { label: "Proof pending", className: "bg-amber-500/10 text-amber-400 border border-amber-500/30", title: "Draw proof not yet available" },
+  unverified: { label: "Proof ?", className: "bg-gray-500/10 text-gray-400 border border-gray-600/30", title: "Proof present but could not be fully verified" },
+};
+
+const CLAIM_STATUS_BADGE: Record<string, { label: string; className: string }> = {
+  claimed: { label: "Claimed", className: "bg-emerald-500/10 text-emerald-400" },
+  pending: { label: "Claim pending", className: "bg-amber-500/10 text-amber-400" },
+  unclaimed: { label: "Unclaimed", className: "bg-gray-500/10 text-gray-300" },
+  failed: { label: "Claim failed", className: "bg-red-500/10 text-red-400" },
+};
+
+const ProofBadge: FC<{ proofStatus: ProofStatus; detail?: string }> = ({ proofStatus, detail }) => {
+  const badge = PROOF_BADGE[proofStatus];
+  return (
+    <span
+      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${badge.className}`}
+      title={detail || badge.title}
+      aria-label={detail || badge.title}
+    >
+      {badge.label}
+    </span>
+  );
+};
+
+const ClaimStatusBadge: FC<{ claimStatus: string }> = ({ claimStatus }) => {
+  const badge = CLAIM_STATUS_BADGE[claimStatus] ?? { label: claimStatus, className: "bg-gray-500/10 text-gray-400" };
+  return (
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${badge.className}`}>
       {badge.label}
     </span>
   );
@@ -134,6 +171,8 @@ export const RewardHistory: FC<RewardHistoryProps> = ({
               <th scope="col" className="px-4 py-3 font-medium">Reward</th>
               <th scope="col" className="px-4 py-3 font-medium">Winner</th>
               <th scope="col" className="px-4 py-3 font-medium">Status</th>
+              <th scope="col" className="px-4 py-3 font-medium">Proof</th>
+              <th scope="col" className="px-4 py-3 font-medium">Claim</th>
               <th scope="col" className="px-4 py-3 font-medium">Tx</th>
               {onClaim && <th scope="col" className="px-4 py-3 font-medium">Action</th>}
             </tr>
@@ -148,6 +187,20 @@ export const RewardHistory: FC<RewardHistoryProps> = ({
                   {entry.winnerAddress ? truncateAddress(entry.winnerAddress) : "—"}
                 </td>
                 <td className="px-4 py-3"><OutcomeBadge status={entry.status} /></td>
+                <td className="px-4 py-3">
+                  {entry.proofStatus ? (
+                    <ProofBadge proofStatus={entry.proofStatus} detail={entry.proofDetail} />
+                  ) : (
+                    <span className="text-gray-600 text-xs">—</span>
+                  )}
+                </td>
+                <td className="px-4 py-3">
+                  {entry.claimStatus ? (
+                    <ClaimStatusBadge claimStatus={entry.claimStatus} />
+                  ) : (
+                    <span className="text-gray-600 text-xs">—</span>
+                  )}
+                </td>
                 <td className="px-4 py-3"><TxLink txHash={entry.txHash} network={network} /></td>
                 {onClaim && (
                   <td className="px-4 py-3">
@@ -192,6 +245,18 @@ export const RewardHistory: FC<RewardHistoryProps> = ({
                   {entry.winnerAddress ? truncateAddress(entry.winnerAddress) : "—"}
                 </dd>
               </div>
+              {entry.proofStatus && (
+                <div className="flex justify-between gap-2">
+                  <dt className="text-gray-400">Proof</dt>
+                  <dd><ProofBadge proofStatus={entry.proofStatus} detail={entry.proofDetail} /></dd>
+                </div>
+              )}
+              {entry.claimStatus && (
+                <div className="flex justify-between gap-2">
+                  <dt className="text-gray-400">Claim</dt>
+                  <dd><ClaimStatusBadge claimStatus={entry.claimStatus} /></dd>
+                </div>
+              )}
               <div className="flex justify-between gap-2">
                 <dt className="text-gray-400">Tx</dt>
                 <dd><TxLink txHash={entry.txHash} network={network} /></dd>

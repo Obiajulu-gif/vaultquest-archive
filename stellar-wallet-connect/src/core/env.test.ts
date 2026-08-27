@@ -1,27 +1,33 @@
 import { describe, it, expect } from "vitest";
 import { parseFrontendEnv } from "./env.js";
 
+// Valid Stellar account ID used across tests (G + 55 base32 chars).
+const VALID_ISSUER = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+
+const BASE_ENV = {
+  NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: "wallet-id-123",
+  NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015",
+  NEXT_PUBLIC_HORIZON_URL: "https://horizon-testnet.stellar.org",
+  NEXT_PUBLIC_SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org",
+  NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID: "CA1234DRIPPOOL",
+  NEXT_PUBLIC_VAULT_ASSET_CODE: "USDC",
+  NEXT_PUBLIC_VAULT_ASSET_ISSUER: VALID_ISSUER,
+};
+
 describe("parseFrontendEnv", () => {
   it("accepts valid env", () => {
-    const env = parseFrontendEnv({
-      NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: "wallet-id-123",
-      NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015",
-      NEXT_PUBLIC_HORIZON_URL: "https://horizon-testnet.stellar.org",
-      NEXT_PUBLIC_SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org",
-      NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID: "CA1234DRIPPOOL"
-    });
-
+    const env = parseFrontendEnv(BASE_ENV);
     expect(env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID).toBe("wallet-id-123");
     expect(env.NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID).toBe("CA1234DRIPPOOL");
+    expect(env.NEXT_PUBLIC_VAULT_ASSET_CODE).toBe("USDC");
+    expect(env.NEXT_PUBLIC_VAULT_ASSET_ISSUER).toBe(VALID_ISSUER);
   });
 
   it("rejects missing required values", () => {
     expect(() =>
       parseFrontendEnv({
-        NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015",
-        NEXT_PUBLIC_HORIZON_URL: "https://horizon-testnet.stellar.org",
-        NEXT_PUBLIC_SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org",
-        NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID: "CA1234DRIPPOOL"
+        ...BASE_ENV,
+        NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: "",
       })
     ).toThrow(/NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID/);
   });
@@ -29,11 +35,8 @@ describe("parseFrontendEnv", () => {
   it("rejects placeholder values", () => {
     expect(() =>
       parseFrontendEnv({
+        ...BASE_ENV,
         NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: "YOUR_PROJECT_ID",
-        NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015",
-        NEXT_PUBLIC_HORIZON_URL: "https://horizon-testnet.stellar.org",
-        NEXT_PUBLIC_SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org",
-        NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID: "CA_PLACEHOLDER_DRIP_POOL_CONTRACT_ID"
       })
     ).toThrow(/placeholder/i);
   });
@@ -41,13 +44,42 @@ describe("parseFrontendEnv", () => {
   it("rejects invalid URLs", () => {
     expect(() =>
       parseFrontendEnv({
-        NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: "wallet-id-123",
-        NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015",
+        ...BASE_ENV,
         NEXT_PUBLIC_HORIZON_URL: "not-a-url",
-        NEXT_PUBLIC_SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org",
-        NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID: "CA1234DRIPPOOL"
       })
     ).toThrow(/NEXT_PUBLIC_HORIZON_URL/);
+  });
+
+  // ── Asset issuer allow-list tests (#638) ──────────────────────────────────
+
+  it("rejects a missing vault asset issuer", () => {
+    expect(() =>
+      parseFrontendEnv({ ...BASE_ENV, NEXT_PUBLIC_VAULT_ASSET_ISSUER: "" })
+    ).toThrow(/NEXT_PUBLIC_VAULT_ASSET_ISSUER/);
+  });
+
+  it("rejects a placeholder vault asset issuer", () => {
+    expect(() =>
+      parseFrontendEnv({ ...BASE_ENV, NEXT_PUBLIC_VAULT_ASSET_ISSUER: "YOUR_ISSUER_ADDRESS" })
+    ).toThrow(/placeholder/i);
+  });
+
+  it("rejects an issuer that is not a valid Stellar account ID (wrong prefix)", () => {
+    expect(() =>
+      parseFrontendEnv({ ...BASE_ENV, NEXT_PUBLIC_VAULT_ASSET_ISSUER: "XBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5" })
+    ).toThrow(/Stellar account ID/i);
+  });
+
+  it("rejects an issuer that is too short", () => {
+    expect(() =>
+      parseFrontendEnv({ ...BASE_ENV, NEXT_PUBLIC_VAULT_ASSET_ISSUER: "GBBD47IF6LWK7" })
+    ).toThrow(/Stellar account ID/i);
+  });
+
+  it("rejects a missing vault asset code", () => {
+    expect(() =>
+      parseFrontendEnv({ ...BASE_ENV, NEXT_PUBLIC_VAULT_ASSET_CODE: "" })
+    ).toThrow(/NEXT_PUBLIC_VAULT_ASSET_CODE/);
   });
 });
 

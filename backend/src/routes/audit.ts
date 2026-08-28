@@ -2,7 +2,9 @@ import type { FastifyPluginAsync } from "fastify";
 import type { preHandlerHookHandler } from "fastify";
 import { z } from "zod";
 import type { AuditService } from "../services/auditService.js";
+import type { AdminSessionService } from "../services/adminSessionService.js";
 import { requireAuth } from "../middleware/auth.js";
+import { createRequireAdminSessionAuth } from "../middleware/admin-session.js";
 import { ok, page } from "../responses.js";
 
 function serialize(row: any) {
@@ -19,9 +21,13 @@ function serialize(row: any) {
 
 export const auditRoutes = (
   svc: AuditService,
+  adminSessionService?: AdminSessionService,
   requireAdmin: preHandlerHookHandler = requireAuth
 ): FastifyPluginAsync =>
   async (app) => {
+    const requireAdminSession = adminSessionService
+      ? createRequireAdminSessionAuth(adminSessionService)
+      : requireAdmin;
     const recordBody = z.object({
       parameter_name: z.string().min(1).max(128),
       previous_value: z.unknown(),
@@ -38,14 +44,15 @@ export const auditRoutes = (
     });
 
     app.post("/admin/audit", {
-      preHandler: [requireAdmin],
+      preHandler: [requireAdminSession],
     }, async (req, reply) => {
+      const adminSession = (req as any).adminSession;
       const body = recordBody.parse(req.body);
       const record = await svc.record({
         parameterName: body.parameter_name,
         previousValue: body.previous_value,
         newValue: body.new_value,
-        actor: body.actor,
+        actor: adminSession?.walletAddress || body.actor,
         txHash: body.tx_hash,
       });
       reply.status(201);
@@ -53,7 +60,7 @@ export const auditRoutes = (
     });
 
     app.get("/admin/audit", {
-      preHandler: [requireAdmin],
+      preHandler: [requireAdminSession],
     }, async (req) => {
       const q = listQuery.parse(req.query);
       const result = await svc.list({
@@ -66,7 +73,7 @@ export const auditRoutes = (
     });
 
     app.get("/admin/audit/export", {
-      preHandler: [requireAdmin],
+      preHandler: [requireAdminSession],
     }, async (req, reply) => {
       const q = listQuery.parse(req.query);
       const result = await svc.list({

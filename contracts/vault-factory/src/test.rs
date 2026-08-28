@@ -81,7 +81,71 @@ fn deploy_pool_succeeds_and_registers_metadata() {
     assert_eq!(meta.admin, pool_admin);
     assert_eq!(meta.asset, approved_asset);
     assert_eq!(meta.wasm_hash, wasm_hash);
+    assert_eq!(meta.accepted_asset, approved_asset);
+    assert_eq!(meta.risk_tier, symbol_short!("medium"));
+    assert_eq!(meta.strategy, symbol_short!("default"));
+    assert_eq!(meta.operational_status, symbol_short!("active"));
+    assert_eq!(meta.metadata_version, 1);
     assert!(meta.active);
+}
+
+#[test]
+fn update_pool_metadata_versions_and_audits_changes() {
+    let (env, client, admin, _wasm_hash) = setup();
+    let pool_admin = Address::generate(&env);
+    let approved_asset = Address::generate(&env);
+    client.approve_asset(&admin, &approved_asset);
+
+    let s = salt(&env, 3);
+    client.deploy_pool(&admin, &s, &pool_admin, &approved_asset);
+
+    let update = PoolMetadataUpdate {
+        risk_tier: symbol_short!("low"),
+        strategy: symbol_short!("stable"),
+        lockup_days: 7,
+        fee_bps: 125,
+        accepted_asset: approved_asset.clone(),
+        operational_status: symbol_short!("paused"),
+        expected_version: 1,
+    };
+
+    client.update_pool_metadata(&admin, &s, &update);
+    let meta = client.get_pool(&s);
+
+    assert_eq!(meta.risk_tier, symbol_short!("low"));
+    assert_eq!(meta.strategy, symbol_short!("stable"));
+    assert_eq!(meta.lockup_days, 7);
+    assert_eq!(meta.fee_bps, 125);
+    assert_eq!(meta.accepted_asset, approved_asset);
+    assert_eq!(meta.operational_status, symbol_short!("paused"));
+    assert_eq!(meta.metadata_version, 2);
+    assert!(meta.metadata_updated_at_ledger >= meta.deployed_at_ledger);
+}
+
+#[test]
+fn update_pool_metadata_rejects_stale_versions() {
+    let (env, client, admin, _wasm_hash) = setup();
+    let pool_admin = Address::generate(&env);
+    let approved_asset = Address::generate(&env);
+    client.approve_asset(&admin, &approved_asset);
+
+    let s = salt(&env, 9);
+    client.deploy_pool(&admin, &s, &pool_admin, &approved_asset);
+
+    let stale = PoolMetadataUpdate {
+        risk_tier: symbol_short!("low"),
+        strategy: symbol_short!("stable"),
+        lockup_days: 30,
+        fee_bps: 50,
+        accepted_asset: approved_asset.clone(),
+        operational_status: symbol_short!("active"),
+        expected_version: 99,
+    };
+
+    assert_eq!(
+        client.try_update_pool_metadata(&admin, &s, &stale),
+        Err(Ok(Error::MetadataStale))
+    );
 }
 
 #[test]

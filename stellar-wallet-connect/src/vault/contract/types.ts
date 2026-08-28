@@ -26,6 +26,14 @@ export interface PoolSummary {
   opensAt: string | null;
   locksAt: string | null;
   drawsAt: string | null;
+  /** Canonical discoverable vault metadata from the factory/indexer. */
+  riskTier?: string;
+  strategy?: string;
+  lockupDays?: number;
+  feeBps?: number;
+  acceptedAsset?: string;
+  operationalStatus?: string;
+  metadataVersion?: number;
 }
 
 export interface SavedPoolEntry extends PoolSummary {

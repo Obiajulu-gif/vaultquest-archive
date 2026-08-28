@@ -126,6 +126,20 @@ The frontend is authoritative for:
 - Wallet connection state and signed transaction submission.
 - Local view state until the backend or contract confirms final results.
 
+### Canonical vault metadata
+
+Vault discovery metadata is sourced from the factory registry and indexed event stream, not from local mock data. The canonical fields are:
+
+- `risk_tier`
+- `strategy`
+- `lockup_days`
+- `fee_bps`
+- `accepted_asset`
+- `operational_status`
+- `metadata_version`
+
+The factory persists this metadata with each pool record and increments a version whenever the metadata is updated. Indexers and the API layer only surface the latest versioned record so stale snapshots are rejected during reconciliation and rendered as out-of-date instead of silently replacing the canonical metadata.
+
 ## Configuration boundaries
 
 VaultQuest deployments are boundary-driven by configuration:

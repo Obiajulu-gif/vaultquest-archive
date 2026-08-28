@@ -6,6 +6,7 @@ import { useConnectModal } from "@rainbow-me/rainbowkit";
 import { useAccount } from "wagmi";
 import { useTranslation } from "next-i18next";
 import { Sparkles } from "lucide-react";
+import { VaultApiClient } from "@vaultquest/stellar-wallet-connect/src/vault/data/apiClient";
 import OnboardingCards from "@/components/app/OnboardingCards";
 import PublicStatsBar from "@/components/app/PublicStatsBar";
 import VaultMetricsCards from "@/components/app/VaultMetricsCards";
@@ -101,9 +102,28 @@ export default function AppDashboardPage() {
   const [hasJoinedVault] = useState(false);
   const [onboardingForceOpen, setOnboardingForceOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const [vaultMetadata, setVaultMetadata] = useState([]);
 
   useEffect(() => {
     setMounted(true);
+    const client = new VaultApiClient();
+    let active = true;
+
+    client.listVaultMetadata()
+      .then((records) => {
+        if (active) {
+          setVaultMetadata(records.slice(0, 3));
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setVaultMetadata([]);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   const isWinner = false;
@@ -163,6 +183,35 @@ export default function AppDashboardPage() {
 
       {/* Vault Metrics (full-width, below hero) */}
       <VaultMetricsCards />
+
+      {vaultMetadata.length > 0 && (
+        <section className="vq-glass p-6">
+          <div className="flex items-center justify-between gap-4 pb-4 border-b border-vault-border/30">
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] text-vault-muted">Canonical vault metadata</p>
+              <h2 className="mt-2 text-xl font-semibold text-vault-text">Factory-backed discovery signals</h2>
+            </div>
+          </div>
+          <div className="mt-5 grid gap-3 md:grid-cols-3">
+            {vaultMetadata.map((item) => (
+              <div key={item.id} className="rounded-xl border border-vault-border bg-vault-surface/60 p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-semibold text-vault-text">{item.id}</span>
+                  <span className="rounded-full bg-vault-accent/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-vault-accent">
+                    v{item.metadata_version ?? 1}
+                  </span>
+                </div>
+                <dl className="mt-3 space-y-2 text-sm text-vault-muted">
+                  <div className="flex justify-between gap-3"><dt>Risk</dt><dd className="font-medium text-vault-text">{item.risk_tier ?? "unknown"}</dd></div>
+                  <div className="flex justify-between gap-3"><dt>Strategy</dt><dd className="font-medium text-vault-text">{item.strategy ?? "unknown"}</dd></div>
+                  <div className="flex justify-between gap-3"><dt>Asset</dt><dd className="font-medium text-vault-text">{item.accepted_asset ?? "unknown"}</dd></div>
+                  <div className="flex justify-between gap-3"><dt>Status</dt><dd className="font-medium text-vault-text">{item.operational_status ?? "unknown"}</dd></div>
+                </dl>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Main Grid */}
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">

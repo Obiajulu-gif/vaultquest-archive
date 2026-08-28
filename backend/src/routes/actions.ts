@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { loadManifest } from "../../../lib/deployment-manifest.js";
 import type { FastifyPluginAsync, preHandlerHookHandler } from "fastify";
 import type { LedgerService } from "../services/ledger.js";
 import {
@@ -161,48 +163,99 @@ export const actionsRoutes = (
         limit: q.limit
       });
 
+      // Obtain network passphrase securely
+      let networkPassphrase = process.env.NETWORK_PASSPHRASE || process.env.NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE;
+      if (!networkPassphrase) {
+        try {
+          const manifest = loadManifest();
+          networkPassphrase = manifest.network.passphrase || manifest.network.name;
+        } catch {
+          networkPassphrase = "standalone";
+        }
+      }
+
+      // Filter and map only public/non-sensitive fields
+      const cleanRecords = rows.map((r) => {
+        const payload = (r.actionPayload as Record<string, unknown> | null) ?? {};
+        return {
+          id: r.id,
+          date: r.createdAt.toISOString(),
+          action_type: r.actionType,
+          pool_id: String(payload["vault_id"] ?? payload["pool_id"] ?? ""),
+          asset: String(payload["token"] ?? payload["asset"] ?? ""),
+          amount: String(payload["amount"] ?? ""),
+          status: r.status,
+          tx_hash: r.txHash ?? "",
+          error_code: r.errorCode ?? "",
+          submitted_at: r.submittedAt?.toISOString() ?? "",
+          confirmed_at: r.confirmedAt?.toISOString() ?? ""
+        };
+      });
+
+      const generatedAt = new Date().toISOString();
+      const range = {
+        from: q.from || null,
+        to: q.to || null
+      };
+
       if (q.format === "csv") {
         const CSV_HEADERS = [
           "id", "date", "action_type", "pool_id", "asset", "amount",
           "status", "tx_hash", "error_code", "submitted_at", "confirmed_at"
         ];
 
-        if (rows.length === 0) {
-          const csv = CSV_HEADERS.join(",") + "\n";
-          const filename = `vaultquest-activity-${q.wallet.slice(0, 8)}.csv`;
-          reply
-            .header("Content-Type", "text/csv; charset=utf-8")
-            .header("Content-Disposition", `attachment; filename="${filename}"`);
-          return reply.send(csv);
-        }
-
-        const csvRows = rows.map((r) => {
-          const payload = (r.actionPayload as Record<string, unknown> | null) ?? {};
+        const csvRows = cleanRecords.map((r) => {
           return [
             r.id,
-            r.createdAt.toISOString(),
-            r.actionType,
-            String(payload["vault_id"] ?? payload["pool_id"] ?? ""),
-            String(payload["token"] ?? payload["asset"] ?? ""),
-            String(payload["amount"] ?? ""),
+            r.date,
+            r.action_type,
+            r.pool_id,
+            r.asset,
+            r.amount,
             r.status,
-            r.txHash ?? "",
-            r.errorCode ?? "",
-            r.submittedAt?.toISOString() ?? "",
-            r.confirmedAt?.toISOString() ?? ""
+            r.tx_hash,
+            r.error_code,
+            r.submitted_at,
+            r.confirmed_at
           ].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",");
         });
 
-        const csv = [CSV_HEADERS.join(","), ...csvRows].join("\n");
-        const filename = `vaultquest-activity-${q.wallet.slice(0, 8)}.csv`;
+        const dataContent = [CSV_HEADERS.join(","), ...csvRows].join("\n");
+        const checksum = createHash("sha256").update(dataContent).digest("hex");
 
+        const csv = [
+          `# wallet: ${q.wallet}`,
+          `# network: ${networkPassphrase}`,
+          `# range: from=${range.from || "all"} to=${range.to || "all"}`,
+          `# generatedAt: ${generatedAt}`,
+          `# checksum: ${checksum}`,
+          dataContent
+        ].join("\n") + "\n";
+
+        const filename = `vaultquest-activity-${q.wallet.slice(0, 8)}.csv`;
         reply
           .header("Content-Type", "text/csv; charset=utf-8")
           .header("Content-Disposition", `attachment; filename="${filename}"`);
         return reply.send(csv);
       }
 
-      return ok(rows.map(serialize));
+      // Format is JSON
+      const recordsString = JSON.stringify(cleanRecords);
+      const checksum = createHash("sha256").update(recordsString).digest("hex");
+
+      const metadata = {
+        wallet: q.wallet,
+        network: networkPassphrase,
+        range,
+        generatedAt,
+        checksum
+      };
+
+      const filename = `vaultquest-activity-${q.wallet.slice(0, 8)}.json`;
+      reply
+        .header("Content-Type", "application/json; charset=utf-8")
+        .header("Content-Disposition", `attachment; filename="${filename}"`);
+      return reply.send(JSON.stringify({ metadata, data: cleanRecords }, null, 2) + "\n");
     });
 
     app.get<{ Params: { walletAddress: string } }>("/api/actions/:walletAddress", { preHandler: apiKeyGuard }, async (req) => {

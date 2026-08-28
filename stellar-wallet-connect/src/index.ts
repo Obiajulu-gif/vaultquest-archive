@@ -3,6 +3,7 @@ export * from "./core/store";
 export * from "./core/kit";
 export * from "./core/horizonPool";
 export * from "./core/stellarRpcPool";
+export * from "./core/env";
 export { default as WalletFundingModal } from "./components/WalletFundingModal";
 export { default as WalletFundingWrapper } from "./components/WalletFundingWrapper";
 export { StellarWalletIndicator } from "./components/StellarWalletIndicator";

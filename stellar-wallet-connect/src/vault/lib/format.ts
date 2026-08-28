@@ -8,11 +8,11 @@
 import {
   formatAssetAmount,
   formatDateOnly,
-} from "../../../../../lib/formatting";
+} from "../../../../lib/formatting";
 import {
   explorerTransactionUrl,
   type StellarExplorerNetwork,
-} from "../../../../../lib/stellar-explorer";
+} from "../../../../lib/stellar-explorer";
 
 export type StellarNetwork = StellarExplorerNetwork;
 

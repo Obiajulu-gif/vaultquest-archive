@@ -7,7 +7,8 @@
  * `fetch` or raw Soroban bindings directly.
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { getFrontendEnv } from "../core/env.js";
 import type {
   PoolActionInput,
   PoolActionType,
@@ -233,17 +234,89 @@ export function useSavedPools(
   baseUrl = defaultVaultDataConfig.apiBaseUrl,
 ): SavedPoolsResource {
   const api = useMemo(() => createApiClient(baseUrl), [baseUrl]);
+
+  const env = useMemo(() => {
+    try {
+      return getFrontendEnv();
+    } catch {
+      return {
+        NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE: "standalone",
+        NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID: "unknown",
+      };
+    }
+  }, []);
+
+  const network = env.NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE || "standalone";
+  const contractId = env.NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID || "unknown";
+  const storageKey = `vaultquest_watchlist_${network}_${contractId}_${walletAddress}`;
+
+  // Safe migration of legacy configurations
+  useEffect(() => {
+    if (
+      typeof window === "undefined" ||
+      typeof localStorage === "undefined" ||
+      typeof localStorage.getItem !== "function" ||
+      !walletAddress
+    )
+      return;
+    const legacyKeys = ["vaultquest_watchlist", "vaultquest_saved_pools"];
+    for (const key of legacyKeys) {
+      const oldRaw = localStorage.getItem(key);
+      if (oldRaw) {
+        try {
+          const oldData = JSON.parse(oldRaw);
+          // Only migrate if we don't already have scoped cache
+          if (!localStorage.getItem(storageKey)) {
+            localStorage.setItem(storageKey, JSON.stringify(oldData));
+          }
+          localStorage.removeItem(key);
+        } catch {
+          localStorage.removeItem(key);
+        }
+      }
+    }
+  }, [walletAddress, storageKey]);
+
   const query = useVaultQuery({
-    key: vaultQueryKeys.savedPools(walletAddress),
+    key: vaultQueryKeys.savedPools(walletAddress, network, contractId),
     enabled: Boolean(walletAddress),
     staleTimeMs: 30_000,
-    fetcher: async (opts) => (walletAddress ? api.listSavedPools(walletAddress, { signal: opts.signal }) : []),
+    fetcher: async (opts) => {
+      if (!walletAddress) return [];
+      try {
+        const fetched = await api.listSavedPools(walletAddress, { signal: opts.signal });
+        if (
+          typeof window !== "undefined" &&
+          typeof localStorage !== "undefined" &&
+          typeof localStorage.setItem === "function"
+        ) {
+          localStorage.setItem(storageKey, JSON.stringify(fetched));
+        }
+        return fetched;
+      } catch (err) {
+        if (
+          typeof window !== "undefined" &&
+          typeof localStorage !== "undefined" &&
+          typeof localStorage.getItem === "function"
+        ) {
+          const cached = localStorage.getItem(storageKey);
+          if (cached) {
+            try {
+              return JSON.parse(cached) as SavedPoolEntry[];
+            } catch {
+              // ignore
+            }
+          }
+        }
+        throw err;
+      }
+    },
   });
 
   const invalidateSavedPools = useCallback(() => {
-    vaultQueryClient.invalidateQueries(vaultQueryKeys.savedPools(walletAddress));
+    vaultQueryClient.invalidateQueries(vaultQueryKeys.savedPools(walletAddress, network, contractId));
     vaultQueryClient.invalidateQueries(vaultQueryKeys.account(walletAddress));
-  }, [walletAddress]);
+  }, [walletAddress, network, contractId]);
 
   const savePool = useCallback(
     async (pool: PoolSummary) => {

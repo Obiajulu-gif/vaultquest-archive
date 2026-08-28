@@ -218,8 +218,8 @@ export class QuestService {
    * progress or status actually changed are written. Returns the current
    * progress snapshot.
    */
-  async evaluateWallet(walletAddress: string): Promise<QuestProgress[]> {
-    const metrics = await this.computeMetrics(walletAddress);
+  async evaluateWallet(walletAddress: string, precomputedMetrics?: QuestMetrics): Promise<QuestProgress[]> {
+    const metrics = precomputedMetrics ?? await this.computeMetrics(walletAddress);
     const projected = this.projectProgress(metrics);
 
     const existing = await this.prisma.userQuest.findMany({
@@ -341,10 +341,13 @@ export class QuestService {
 
     const walletAddresses = rows.map((r) => r.walletAddress);
     let poisoned = 0;
+    const precomputedMetrics = new Map<string, QuestMetrics>();
 
     for (const walletAddress of walletAddresses) {
       try {
-        await this.evaluateWallet(walletAddress);
+        const metrics = await this.computeMetrics(walletAddress);
+        precomputedMetrics.set(walletAddress, metrics);
+        await this.evaluateWallet(walletAddress, metrics);
       } catch (err) {
         poisoned++;
         // eslint-disable-next-line no-console -- no injected logger available in this service; surfaced loudly rather than silently dropped.
@@ -359,7 +362,7 @@ export class QuestService {
     // these wallets' recent updates were reorg/refund reversions that
     // invalidate an already-granted reward.
     if (walletAddresses.length > 0) {
-      await this.flagGrantsForReorgedActions(walletAddresses).catch((err) => {
+      await this.flagGrantsForReorgedActions(walletAddresses, precomputedMetrics).catch((err) => {
         // eslint-disable-next-line no-console -- see note above.
         console.error("[QuestService.evaluateRecent] failed to flag grants for reorged actions:", err);
       });
@@ -444,10 +447,13 @@ export class QuestService {
    * — it's a completed payout whose underlying justification changed
    * after the fact) and recording why in `lastError`.
    */
-  async flagGrantsForReorgedActions(walletAddresses: string[]): Promise<{ flagged: number }> {
+  async flagGrantsForReorgedActions(
+    walletAddresses: string[],
+    precomputedMetrics?: Map<string, QuestMetrics>
+  ): Promise<{ flagged: number }> {
     let flagged = 0;
     for (const walletAddress of walletAddresses) {
-      const metrics = await this.computeMetrics(walletAddress);
+      const metrics = precomputedMetrics?.get(walletAddress) ?? await this.computeMetrics(walletAddress);
       const projected = this.projectProgress(metrics);
       const stillCompleted = new Set(
         projected.filter((p) => p.status === "completed").map((p) => p.questId)

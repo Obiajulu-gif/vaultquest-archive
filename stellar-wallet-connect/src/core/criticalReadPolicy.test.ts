@@ -98,4 +98,65 @@ describe("CriticalReadPolicy (wallet-connect)", () => {
 
     expect(decision.quarantined).toContainEqual(expect.objectContaining({ provider: "c", reason: "flapping" }));
   });
+
+  describe("confidence level (#658)", () => {
+    it("reports 'verified' when all providers agree and quorum/freshness/ledger checks pass", () => {
+      const policy = makePolicy();
+      const decision = policy.evaluate(
+        [sample("horizon-a", "100"), sample("horizon-b", "100"), sample("soroban-a", "100")],
+        equalStrings,
+      );
+
+      expect(decision.confidence).toBe("verified");
+    });
+
+    it("reports 'degraded' when a provider fails and the remaining ones can't reach quorum", () => {
+      const policy = makePolicy({ minQuorum: 2 });
+      const decision = policy.evaluate(
+        [
+          sample("horizon-a", "100"),
+          { provider: "horizon-b", value: "", ledgerSequence: 0, ledgerCloseTime: 0, error: new Error("RPC unreachable") },
+        ],
+        equalStrings,
+      );
+
+      expect(decision.ok).toBe(false);
+      expect(decision.confidence).toBe("degraded");
+    });
+
+    it("reports 'degraded' (not 'conflicting') when no sample is in-policy at all", () => {
+      const policy = makePolicy();
+      const decision = policy.evaluate(
+        [
+          { provider: "horizon-a", value: "", ledgerSequence: 0, ledgerCloseTime: 0, error: new Error("timeout") },
+        ],
+        equalStrings,
+      );
+
+      expect(decision.confidence).toBe("degraded");
+    });
+
+    it("reports 'conflicting' when a live provider disagrees with the majority value", () => {
+      const policy = makePolicy();
+      const decision = policy.evaluate(
+        [sample("horizon-a", "100"), sample("horizon-b", "100"), sample("horizon-c", "999")],
+        equalStrings,
+      );
+
+      expect(decision.confidence).toBe("conflicting");
+      // Conflict takes priority in the summary even though quorum is still met.
+      expect(decision.ok).toBe(true);
+    });
+
+    it("reports 'conflicting' even when the disagreement also breaks quorum", () => {
+      const policy = makePolicy({ minQuorum: 3 });
+      const decision = policy.evaluate(
+        [sample("horizon-a", "100"), sample("horizon-b", "100"), sample("horizon-c", "999")],
+        equalStrings,
+      );
+
+      expect(decision.ok).toBe(false);
+      expect(decision.confidence).toBe("conflicting");
+    });
+  });
 });

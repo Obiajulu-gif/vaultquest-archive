@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { startTestDb, resetDb, type TestDb } from "./helpers/db.js";
-import { makeIntentInput } from "./helpers/factory.js";
+import { makeIntentInput, seedAction } from "./helpers/factory.js";
 import { LedgerService } from "../src/services/ledger.js";
 import { AppError } from "../src/errors.js";
 
@@ -578,5 +578,81 @@ describe("LedgerService.scrubWallet", () => {
     const untouched = await db.prisma.actionLedger.findUnique({ where: { id: other.id } });
     expect(untouched?.actionPayload).not.toBeNull();
     expect(untouched?.redactedAt).toBeNull();
+  });
+});
+
+describe("LedgerService.reconcileEvents (#588 batch)", () => {
+  let db: TestDb;
+  let svc: LedgerService;
+
+  beforeAll(async () => {
+    db = await startTestDb();
+    svc = new LedgerService(db.prisma);
+  });
+  afterAll(async () => {
+    await db.stop();
+  });
+  beforeEach(async () => {
+    await resetDb(db.prisma);
+  });
+
+  it("reconciles a mixed batch with per-event-equivalent outcomes", async () => {
+    const matched = await seedAction(db.prisma, { status: "submitted", txHash: "tx_match" });
+    const terminal = await seedAction(db.prisma, { status: "confirmed", txHash: "tx_done" });
+
+    const outcomes = await svc.reconcileEvents([
+      { txHash: "tx_match", sorobanEventId: "e1", eventPayload: { type: "deposit" }, statusHint: "confirmed" },
+      { txHash: "tx_new", sorobanEventId: "e2", eventPayload: { type: "withdraw" }, statusHint: "confirmed" },
+      { txHash: "tx_done", sorobanEventId: "e3", eventPayload: { type: "deposit" }, statusHint: "confirmed" }
+    ]);
+
+    expect(outcomes).toEqual([
+      { txHash: "tx_match", matched: true },
+      { txHash: "tx_new", matched: false },
+      { txHash: "tx_done", matched: true }
+    ]);
+
+    const refreshed = await db.prisma.actionLedger.findUnique({ where: { id: matched.id } });
+    expect(refreshed?.status).toBe("confirmed");
+    expect(refreshed?.verifiedPayload).toEqual({ type: "deposit" });
+
+    // Terminal rows are skipped untouched (same no-op as reconcileEvent).
+    const terminalRefreshed = await db.prisma.actionLedger.findUnique({ where: { id: terminal.id } });
+    expect(terminalRefreshed?.status).toBe("confirmed");
+    expect(terminalRefreshed?.sorobanEventId).toBeNull();
+
+    const parked = await db.prisma.pendingEvent.findUnique({ where: { txHash: "tx_new" } });
+    expect(parked).not.toBeNull();
+  });
+
+  it("marks a reverted hint as reverted and releases the action lease", async () => {
+    const action = await seedAction(db.prisma, { status: "submitted", txHash: "tx_rev_b" });
+    await db.prisma.actionLease.create({
+      data: { actionId: action.id, workerId: "w1", expiresAt: new Date(Date.now() + 60_000) }
+    });
+
+    await svc.reconcileEvents([
+      { txHash: "tx_rev_b", sorobanEventId: "e1", eventPayload: { type: "deposit" }, statusHint: "reverted" }
+    ]);
+
+    const refreshed = await db.prisma.actionLedger.findUnique({ where: { id: action.id } });
+    expect(refreshed?.status).toBe("reverted");
+    expect(refreshed?.errorCode).toBe("REVERTED_ON_CHAIN");
+    const leases = await db.prisma.actionLease.findMany({ where: { actionId: action.id } });
+    expect(leases).toHaveLength(0);
+  });
+
+  it("is idempotent across re-delivered batches", async () => {
+    const input = {
+      txHash: "tx_again",
+      sorobanEventId: "e1",
+      eventPayload: { type: "deposit" },
+      statusHint: "confirmed" as const
+    };
+    await svc.reconcileEvents([input]);
+    await svc.reconcileEvents([input]);
+
+    const parked = await db.prisma.pendingEvent.findMany({ where: { txHash: "tx_again" } });
+    expect(parked).toHaveLength(1);
   });
 });

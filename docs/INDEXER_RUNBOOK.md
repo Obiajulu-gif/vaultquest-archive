@@ -6,7 +6,7 @@ This document details the operational procedures, metrics, alarm thresholds, and
 
 ## 1. System Overview
 
-The Event Indexer is a background service that polls the Stellar/Soroban ledger for contract events emitted by VaultQuest pool contracts. These events are parsed and dispatched to the VaultQuest backend via the protected internal reconciliation endpoint (`POST /internal/reconcile`), which resolves transaction statuses in the database.
+The Event Indexer is a background service that polls the Stellar/Soroban ledger for contract events emitted by VaultQuest pool contracts. These events are parsed and dispatched to the VaultQuest backend via the protected internal reconciliation endpoint (`POST /internal/reconcile`), which resolves transaction statuses in the database. (For background drift detection, automated/dual-controlled repair plans, and quarantine incident response, see [`RECONCILIATION.md`](RECONCILIATION.md)).
 
 To keep track of sync progress and diagnose processing delays, the indexer periodically reports its checkpoint to:
 * **Endpoint:** `POST /internal/checkpoint`

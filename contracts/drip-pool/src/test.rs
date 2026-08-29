@@ -3142,3 +3142,219 @@ fn test_validate_strategy_rejects_inflated_total_assets() {
         .unwrap();
     assert_ne!(phase, vaultquest_common::strategy::StrategyRotationPhase::Idle);
 }
+
+// ── #557: Strategy rotation edge-case tests ─────────────────────────────────
+
+/// Proposing a second rotation while one is already pending must be rejected.
+#[test]
+fn test_propose_second_rotation_while_pending_fails() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let s1 = env.register_contract(None, MockStrategy);
+    let s2 = env.register_contract(None, MockStrategy);
+    let s3 = env.register_contract(None, MockStrategy);
+
+    client.set_strategy(&admin, &s1);
+    client.propose_strategy(&admin, &s2, &500);
+
+    // Second propose while first is still in Proposed phase — must fail.
+    assert_eq!(
+        client.try_propose_strategy(&admin, &s3, &600),
+        Err(Ok(Error::StrategyRotationPending))
+    );
+}
+
+/// Cancelling a pending rotation clears ProposedStrategy, ProposedExposureCap,
+/// and StrategyRotationReadyAt, and the phase returns to Idle.
+#[test]
+fn test_cancel_rotation_clears_proposed_state() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let s1 = env.register_contract(None, MockStrategy);
+    let s2 = env.register_contract(None, MockStrategy);
+
+    client.set_strategy(&admin, &s1);
+    client.propose_strategy(&admin, &s2, &500);
+
+    // Confirm rotation is pending.
+    let phase: vaultquest_common::strategy::StrategyRotationPhase = env
+        .storage()
+        .instance()
+        .get(&DataKey::StrategyRotationPhase)
+        .unwrap();
+    assert_eq!(phase, vaultquest_common::strategy::StrategyRotationPhase::Proposed);
+
+    let proposed: Option<Address> = env
+        .storage()
+        .instance()
+        .get(&DataKey::ProposedStrategy)
+        .flatten();
+    assert!(proposed.is_some());
+
+    client.cancel_strategy_rotation(&admin);
+
+    // Phase returns to Idle.
+    let phase_after: vaultquest_common::strategy::StrategyRotationPhase = env
+        .storage()
+        .instance()
+        .get(&DataKey::StrategyRotationPhase)
+        .unwrap();
+    assert_eq!(phase_after, vaultquest_common::strategy::StrategyRotationPhase::Idle);
+
+    // Proposed state is cleared.
+    let proposed_after: Option<Address> = env
+        .storage()
+        .instance()
+        .get(&DataKey::ProposedStrategy)
+        .flatten();
+    assert!(proposed_after.is_none());
+
+    let cap_after: Option<i128> = env
+        .storage()
+        .instance()
+        .get(&DataKey::ProposedExposureCap);
+    assert!(cap_after.is_none());
+
+    let ready: Option<u32> = env
+        .storage()
+        .instance()
+        .get(&DataKey::StrategyRotationReadyAt);
+    assert!(ready.is_none());
+}
+
+/// An admin set change (bumping GovernanceEpoch) while a rotation is pending
+/// does NOT invalidate the rotation — strategy rotation does not snapshot the
+/// governance epoch (unlike multisig proposals). The rotation can still
+/// activate once its timelock elapses.
+#[test]
+fn test_admin_epoch_change_does_not_invalidate_pending_rotation() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let signer2 = Address::generate(&env);
+    client.seed_admin(&admin, &signer2);
+
+    let s1 = env.register_contract(None, MockStrategy);
+    let s2 = env.register_contract(None, MockStrategy);
+
+    client.set_strategy(&admin, &s1);
+    client.propose_strategy(&admin, &s2, &500);
+
+    // Bump governance epoch via SetThreshold (high-risk, delayed).
+    let set_pid = client.propose(&admin, &ProposalAction::SetThreshold(1));
+    client.approve(&signer2, &set_pid);
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&signer2, &set_pid);
+    assert!(client.governance_epoch() > 0);
+
+    // Rotation is still pending — strategy rotation doesn't use epoch checks.
+    let phase: vaultquest_common::strategy::StrategyRotationPhase = env
+        .storage()
+        .instance()
+        .get(&DataKey::StrategyRotationPhase)
+        .unwrap();
+    assert_eq!(phase, vaultquest_common::strategy::StrategyRotationPhase::Proposed);
+
+    // After timelock, activate still works.
+    skip_high_risk_delay(&env);
+    client.activate_strategy(&admin);
+    let pool = client.pool();
+    assert_eq!(pool.strategy, Some(s2));
+}
+
+// ── #558: RoundDeposit pruning tests ────────────────────────────────────────
+
+/// Pruning a fully settled round with all claims done succeeds and removes
+/// the RoundDeposit entries and the Round itself.
+#[test]
+fn test_prune_round_removes_entries() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    let round_id = client.open_round(&admin);
+    client.round_deposit(&alice, &round_id, &100);
+    client.round_deposit(&bob, &round_id, &200);
+    client.lock_round(&admin, &round_id);
+    client.settle_round(&admin, &round_id, &50, &0);
+
+    // Both participants claim.
+    client.round_claim(&alice, &round_id);
+    client.round_claim(&bob, &round_id);
+
+    // Deposits are now zero.
+    assert_eq!(client.round_deposit_of(&alice, &round_id), 0);
+    assert_eq!(client.round_deposit_of(&bob, &round_id), 0);
+
+    // Prune succeeds.
+    let participants = vec![&env, alice.clone(), bob.clone()];
+    client.prune_round(&admin, &round_id, &participants);
+
+    // Round entry is removed.
+    assert_eq!(
+        client.try_round(&round_id),
+        Err(Ok(Error::RoundNotFound))
+    );
+}
+
+/// Pruning a round with outstanding unclaimed deposits is rejected.
+#[test]
+fn test_prune_round_rejects_outstanding_deposits() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let alice = Address::generate(&env);
+
+    let round_id = client.open_round(&admin);
+    client.round_deposit(&alice, &round_id, &100);
+    client.lock_round(&admin, &round_id);
+    client.settle_round(&admin, &round_id, &50, &0);
+
+    // Alice has NOT claimed yet — her deposit is still 100.
+    assert_eq!(client.round_deposit_of(&alice, &round_id), 100);
+
+    let participants = vec![&env, alice.clone()];
+    assert_eq!(
+        client.try_prune_round(&admin, &round_id, &participants),
+        Err(Ok(Error::RoundHasOutstandingDeposits))
+    );
+}
+
+/// Pruning a round that is not Settled is rejected.
+#[test]
+fn test_prune_round_rejects_non_settled() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let round_id = client.open_round(&admin);
+    let participants = vec![&env];
+    assert_eq!(
+        client.try_prune_round(&admin, &round_id, &participants),
+        Err(Ok(Error::RoundNotFound))
+    );
+}
+
+/// Pruning by a non-signer is rejected.
+#[test]
+fn test_prune_round_unauthorized() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let alice = Address::generate(&env);
+    let round_id = client.open_round(&admin);
+    client.round_deposit(&alice, &round_id, &100);
+    client.lock_round(&admin, &round_id);
+    client.settle_round(&admin, &round_id, &50, &0);
+    client.round_claim(&alice, &round_id);
+
+    let rando = Address::generate(&env);
+    let participants = vec![&env, alice.clone()];
+    assert_eq!(
+        client.try_prune_round(&rando, &round_id, &participants),
+        Err(Ok(Error::Unauthorized))
+    );
+}

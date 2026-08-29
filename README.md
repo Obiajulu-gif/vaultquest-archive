@@ -47,5 +47,3 @@ We welcome contributions from everyone. Before opening a PR, please read
 ## License
 
 License details are managed separately.
-
-// Comment befire starting

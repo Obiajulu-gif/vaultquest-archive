@@ -129,3 +129,43 @@ export function getPoolStatusMeta(status?: string | null): PoolStatusMeta {
 export function getPoolStatusClassName(status?: string | null): string {
   return TONE_CLASSES[getPoolStatusMeta(status).tone];
 }
+
+// ─── Round status ─────────────────────────────────────────────────────────────
+// A round is the active lifecycle window of a vault (open → pending → closed).
+// Round status is a strict subset of pool status — `active`, `pending`, and
+// `completed` all exist in POOL_STATUS above. This used to live in a separate
+// `lib/vault-status.js` module that duplicated the status-derivation concern;
+// it is consolidated here so there is a single canonical status module.
+
+export const ROUND_STATUS = {
+  ACTIVE: "active",
+  PENDING: "pending",
+  COMPLETED: "completed",
+} as const;
+
+export type RoundStatus = (typeof ROUND_STATUS)[keyof typeof ROUND_STATUS];
+
+export interface RoundStatusMeta {
+  label: string;
+  tone: "neutral" | "info" | "success" | "warning" | "danger";
+}
+
+const ROUND_STATUS_META: Record<RoundStatus, RoundStatusMeta> = {
+  [ROUND_STATUS.ACTIVE]: { label: "Active Round", tone: "success" },
+  [ROUND_STATUS.PENDING]: { label: "Pending Round", tone: "warning" },
+  [ROUND_STATUS.COMPLETED]: { label: "Completed Round", tone: "neutral" },
+};
+
+/**
+ * Returns the consistent label/tone for a round status, used by both
+ * vault cards and the vault detail page so status text never drifts.
+ * Unknown/malformed statuses fall back to `pending` (same behavior as the
+ * original `lib/vault-status.js`).
+ */
+export function getRoundStatusMeta(status?: string | null): RoundStatusMeta {
+  const normalized = normalizePoolStatus(status);
+  return (
+    ROUND_STATUS_META[normalized as RoundStatus] ??
+    ROUND_STATUS_META[ROUND_STATUS.PENDING]
+  );
+}

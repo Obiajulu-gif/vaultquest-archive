@@ -2,8 +2,6 @@ import {
   type DrawProof,
   type VerificationResult,
   type VerificationField,
-  computeHash,
-  computeWinnerProofHash,
   verifyProofIntegrity,
 } from "./draw-proof";
 
@@ -41,26 +39,6 @@ function fieldFail(name: string, detail: string): VerificationField {
 
 function fieldUnverified(name: string, detail: string): VerificationField {
   return { name, status: "unverified", detail };
-}
-
-async function verifyDocumentIntegrity(proof: DrawProof): Promise<VerificationField> {
-  const result = await verifyProofIntegrity(proof);
-  const docField = result.fields.find((f) => f.name === "document_integrity");
-  return docField ?? fieldFail("document_integrity", "missing from integrity check");
-}
-
-async function verifyWinnerHashChain(proof: DrawProof): Promise<VerificationField> {
-  const result = await verifyProofIntegrity(proof);
-  const winnerField = result.fields.find((f) => f.name === "winner_proof_hash");
-  return winnerField ?? fieldFail("winner_proof_hash", "missing from integrity check");
-}
-
-async function verifySeedHash(proof: DrawProof): Promise<VerificationField> {
-  const recomputed = await computeHash(proof.randomness.seed);
-  if (recomputed === proof.randomness.seedHash) {
-    return fieldPass("seed_hash");
-  }
-  return fieldFail("seed_hash", `expected ${recomputed}, got ${proof.randomness.seedHash}`);
 }
 
 /**
@@ -160,9 +138,14 @@ export async function verifyDrawProofClient(
 ): Promise<ClientVerificationResult> {
   const fields: VerificationField[] = [];
 
-  fields.push(await verifyDocumentIntegrity(proof));
-  fields.push(await verifyWinnerHashChain(proof));
-  fields.push(await verifySeedHash(proof));
+  // Surface the FULL per-field output of the document-only integrity engine
+  // (#572) instead of collapsing it to a single boolean: every check —
+  // document_integrity, winner_proof_hash, seed_hash, randomness_commitment
+  // (and randomness_evidence on schema failure) — is forwarded verbatim so
+  // the UI can render each one with its pass/fail/unverified state and the
+  // `detail` string explaining *why* a check failed.
+  const integrity = await verifyProofIntegrity(proof);
+  fields.push(...integrity.fields);
 
   if (rpc) {
     fields.push(await verifySnapshotLedger(proof, rpc));

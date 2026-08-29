@@ -20,6 +20,14 @@ import type { PrismaClient } from "@prisma/client";
 import { ERROR_CODES } from "../constants.js";
 import { AppError } from "../errors.js";
 import type { LedgerService } from "./ledger.js";
+import { createLogger } from "../logger.js";
+import { getPrometheusMetrics } from "./prometheusMetrics.js";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const STALE_ORPHAN_THRESHOLD_DAYS = 7;
+const STALE_ORPHAN_ESCALATION_DAYS = 30;
+
+const logger = createLogger(process.env.LOG_LEVEL ?? "info");
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -75,6 +83,17 @@ export interface ReconciliationResult {
   stepsApplied: number;
   quarantined: number;
   plan: RepairPlan;
+}
+
+/**
+ * Age bucket for a stale_orphan drift. Orphans older than 30 days escalate
+ * to the "30d" bucket (operator intervention required); the rest are "7d".
+ */
+export type StaleOrphanBucket = "7d" | "30d";
+
+export function staleOrphanBucket(updatedAt: Date): StaleOrphanBucket {
+  const ageMs = Date.now() - updatedAt.getTime();
+  return ageMs > STALE_ORPHAN_ESCALATION_DAYS * DAY_MS ? "30d" : "7d";
 }
 
 // ─── Drift detection ──────────────────────────────────────────────────────────
@@ -359,7 +378,37 @@ export function buildRepairPlan(drifts: DriftRecord[], dryRun: boolean): RepairP
 
       case "stale_orphan": {
         // Already orphaned. No further action needed — operator can review.
-        // Just log it.
+        // Surface it loudly: structured warning/error log + Prometheus metric,
+        // so an operator doesn't have to know to query reconciliation output.
+        const updatedAt = new Date(drift.details.updatedAt as string);
+        const ageMs = Date.now() - updatedAt.getTime();
+        const ageDays = Math.max(0, Math.floor(ageMs / DAY_MS));
+        const bucket = staleOrphanBucket(updatedAt);
+
+        const metrics = getPrometheusMetrics();
+        metrics.incStaleOrphan(bucket);
+
+        const logFields = {
+          event: "reconciliation.stale_orphan",
+          recordId: drift.recordId,
+          txHash: drift.details.txHash ?? null,
+          errorCode: drift.details.errorCode ?? null,
+          ageDays,
+          bucket
+        };
+
+        if (bucket === "30d") {
+          // Escalated: orphaned for > 30 days — needs operator intervention.
+          logger.error(
+            logFields,
+            `stale_orphan: action ${drift.recordId} orphaned for ${ageDays} days (>${STALE_ORPHAN_ESCALATION_DAYS}d escalation)`
+          );
+        } else {
+          logger.warn(
+            logFields,
+            `stale_orphan: action ${drift.recordId} orphaned for ${ageDays} days (exceeds ${STALE_ORPHAN_THRESHOLD_DAYS}d threshold)`
+          );
+        }
         break;
       }
 
@@ -533,6 +582,24 @@ export async function reconcileAll(
   const dryRun = opts.dryRun ?? false;
 
   const drifts = await detectDrift(prisma);
+
+  // Keep the current stale-orphan gauge in sync with what this run actually
+  // found, so it reflects current state rather than cumulative history.
+  const metrics = getPrometheusMetrics();
+  let staleOrphan7d = 0;
+  let staleOrphan30d = 0;
+  for (const drift of drifts) {
+    if (drift.type !== "stale_orphan") continue;
+    const updatedAt = new Date(drift.details.updatedAt as string);
+    if (staleOrphanBucket(updatedAt) === "30d") {
+      staleOrphan30d += 1;
+    } else {
+      staleOrphan7d += 1;
+    }
+  }
+  metrics.setStaleOrphans("7d", staleOrphan7d);
+  metrics.setStaleOrphans("30d", staleOrphan30d);
+
   const plan = buildRepairPlan(drifts, dryRun);
 
   let stepsApplied = 0;

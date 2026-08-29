@@ -35,7 +35,34 @@ Sync lag is calculated dynamically by checking the last successful sync time and
 
 ---
 
-## 3. Troubleshooting & Recovery Procedures
+## 3. Stale Orphan Alert
+
+### What triggers it
+
+The background reconciliation engine (`reconciler.ts`) flags actions stuck in `orphaned` status for more than **7 days** as `stale_orphan` drifts. Each detected drift emits a structured log line (`event: "reconciliation.stale_orphan"`) and updates two Prometheus metrics (see `backend/PROMETHEUS_SETUP.md`):
+
+* `stale_orphans_current{bucket="7d"|"30d"}` — current count per age bucket, as of the last reconciliation run.
+* `stale_orphans_total{bucket=...}` — cumulative drifts produced.
+
+| Alert | Condition | Severity |
+|---|---|---|
+| `StaleOrphansPresent` | `stale_orphans_current{bucket="7d"} > 0` for 30m | Warning |
+| `StaleOrphansEscalated` | `stale_orphans_current{bucket="30d"} > 0` for 10m | Page (operator intervention) |
+
+### Recommended response
+
+1. **Confirm the drift.** Query the log for the offending `recordId`/`txHash`:
+   ```bash
+   kubectl logs -l app=vaultquest-backend | grep stale_orphan
+   ```
+2. **Investigate the orphaned action.** The action is a deposit/withdraw whose on-chain evidence never resolved. Check the tx on Stellar Expert / Horizon using the `txHash` from the log line.
+3. **Resolve or quarantine.** If the chain evidence exists but the DB row is stale, reconcile the action status manually (`POST /internal/reconcile` or the reconciliation admin route). If the action is unrecoverable, quarantine it (see `RECONCILIATION.md`) so it stops re-appearing in every run.
+4. **Escalated (30d+) orphans** indicate a systemic gap (e.g. indexer down, RPC outages, fee-bump exhaustion) — treat as an incident and check the indexer health endpoint (`/health/indexer`) and sync-lag section above before resolving individual rows.
+5. **Confirm recovery.** After resolution, the next reconciliation run should drop `stale_orphans_current` to `0` for that bucket.
+
+---
+
+## 4. Troubleshooting & Recovery Procedures
 
 If the indexer reports a `lagging` or `degraded` state, follow these diagnostic steps sequentially:
 
@@ -84,7 +111,7 @@ Example Degraded Output:
 
 ---
 
-## 4. Operational Commands (Manual Interventions)
+## 5. Operational Commands (Manual Interventions)
 
 ### View Current Checkpoint in Database
 Connect to the database via `psql` or Prisma Studio and query the database directly:
@@ -108,7 +135,7 @@ If the indexer needs to re-process transactions from a past block due to missing
 
 ---
 
-## 5. Security & Access Control
+## 6. Security & Access Control
 
 * The `/internal/checkpoint` and `/internal/reconcile` routes MUST always be guarded by a secure service auth key.
 * Ensure that the `X-Service-Auth` token configured in the indexer matches `INTERNAL_SECRET` in the backend environment. Never expose this key in client-side bundles.

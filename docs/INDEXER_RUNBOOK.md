@@ -112,3 +112,12 @@ If the indexer needs to re-process transactions from a past block due to missing
 
 * The `/internal/checkpoint` and `/internal/reconcile` routes MUST always be guarded by a secure service auth key.
 * Ensure that the `X-Service-Auth` token configured in the indexer matches `INTERNAL_SECRET` in the backend environment. Never expose this key in client-side bundles.
+
+---
+
+## 6. Deterministic Event Ordering & Replay Verification (#648)
+
+To guarantee activity feed stability across indexer restarts and replay operations:
+- **Canonical Sorting Key:** `(ledgerSequence ASC, txIndex ASC, opIndex ASC, eventIndex ASC)`
+- **Stable Deduplication Key:** `${ledgerSequence}:${txIndex}:${opIndex}:${eventIndex}`
+- Replay tests verify that shuffled event ingestion produces an identical deterministic history stream.

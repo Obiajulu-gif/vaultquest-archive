@@ -221,3 +221,12 @@ If your wallet does not connect:
 - Open an issue on the [GitHub repository](https://github.com/Obiajulu-gif/vaultquest/issues)
 - Check the [FAQ section](/app/vaults) in the app for common questions
 - Review the [ARCHITECTURE.md](./ARCHITECTURE.md) for technical details
+
+---
+
+## Entrant Eligibility & Anti-Abuse Rules (#647)
+
+VaultQuest includes configurable anti-abuse guidelines to maintain fairness across prize draws:
+- **Sybil Resistance:** Monitored via clustering heuristics (tracking suspicious deposit splitting across linked addresses).
+- **Default Policy:** Monitoring and flagging signals are reported without blocking legitimate users by default.
+- **Configurable Rules:** Governance parameters allow customizing eligibility thresholds and audit checks per pool.

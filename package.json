@@ -15,13 +15,8 @@
     "docs:validate": "node ./scripts/validate-docs.js",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "test:e2e:headed": "playwright test --headed"
-    "test:conformance": "cd contracts/drip-pool && npx vitest run",
-    "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui",
     "test:e2e:headed": "playwright test --headed",
-    "check:terms": "node ./scripts/check-product-terms.js",
-    "docs:validate": "node ./scripts/validate-docs.js",
+    "test:conformance": "cd contracts/drip-pool && npx vitest run",
     "generate:manifest": "npx tsx scripts/generate-manifest.ts",
     "fixtures:regenerate": "node scripts/regenerate-fixtures.js"
   },

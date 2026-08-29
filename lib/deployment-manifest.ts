@@ -183,3 +183,17 @@ export function validateManifestAgainstEnv(
 
   return mismatches;
 }
+
+/**
+ * Returns true when the loaded manifest's version differs from the
+ * compiled NEXT_PUBLIC_APP_VERSION env var (#660).
+ * Used by the stale-client refresh prompt.
+ */
+export function isStaleClient(manifest: DeploymentManifest): boolean {
+  const compiledVersion =
+    typeof process !== "undefined"
+      ? process.env.NEXT_PUBLIC_APP_VERSION
+      : undefined;
+  if (!compiledVersion) return false;
+  return manifest.version !== compiledVersion;
+}

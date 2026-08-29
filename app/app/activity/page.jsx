@@ -170,7 +170,24 @@ function EmptyActivity() {
 export default function ActivityPage() {
   const { isConnected, address } = useAccount();
   const [historyOpen, setHistoryOpen] = useState(false);
-  const enrichedTx = useMemo(() => DEMO_TRANSACTIONS.map((tx) => ({ ...tx })), []);
+  const enrichedTx = useMemo(() => {
+    const seen = new Set();
+    const result = [];
+    for (const tx of DEMO_TRANSACTIONS) {
+      const key = tx.eventKey || `${tx.ledger || 0}:${tx.txIndex || 0}:${tx.opIndex || 0}:${tx.eventIndex || 0}:${tx.id}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        result.push({ ...tx, eventKey: key });
+      }
+    }
+    return result.sort((a, b) => {
+      if (a.ledger !== b.ledger) return (b.ledger || 0) - (a.ledger || 0);
+      if (a.txIndex !== b.txIndex) return (b.txIndex || 0) - (a.txIndex || 0);
+      if (a.opIndex !== b.opIndex) return (b.opIndex || 0) - (a.opIndex || 0);
+      if (a.eventIndex !== b.eventIndex) return (b.eventIndex || 0) - (a.eventIndex || 0);
+      return new Date(b.date).getTime() - new Date(a.date).getTime();
+    });
+  }, []);
 
   const summary = useMemo(() => {
     if (!isConnected) return null;

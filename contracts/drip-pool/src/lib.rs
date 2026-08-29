@@ -899,6 +899,18 @@ impl DripPool {
     pub fn token(env: Env) -> Result<Address, Error> {
         Self::get_token_address(&env)
     }
+
+    /// Check entrant eligibility with sybil anti-abuse rules (#647).
+    pub fn check_eligibility(env: Env, who: Address) -> bool {
+        if !Self::has_participant(&env, &who) {
+            return false;
+        }
+        if let Ok(p) = Self::load_participant(&env, &who) {
+            p.deposited > 0
+        } else {
+            false
+        }
+    }
 }
 
 #[cfg(test)]

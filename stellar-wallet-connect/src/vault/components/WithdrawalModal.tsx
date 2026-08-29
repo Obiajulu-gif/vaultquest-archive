@@ -1,6 +1,6 @@
 import type { FC } from "react";
 import { useState, useCallback } from "react";
-import { AlertTriangle, Check, Loader2 } from "lucide-react";
+import { AlertTriangle, Check, Clock, Loader2 } from "lucide-react";
 import Modal from "../../components/Modal";
 import type { PoolSummary, UserPosition } from "../contract/types";
 import { formatAmount } from "../lib/format";
@@ -9,10 +9,24 @@ type Step = "input" | "review" | "broadcasting" | "success";
 
 const QUICK_AMOUNTS = [25, 50, 75] as const;
 
+/**
+ * Outcome of a submitted withdrawal (#654). The contract's `withdraw()`
+ * enqueues a FIFO request (returning `0`, event `wq queued`) instead of
+ * paying out immediately when idle pool liquidity can't cover it -- e.g.
+ * because principal is deployed to a yield strategy. Callers that can tell
+ * the two apart (a queued vs. immediately fulfilled withdrawal) should
+ * report it here so the UI doesn't call a queued request "Confirmed."
+ * Omitting this (or resolving with `undefined`) preserves the previous
+ * always-immediate behavior for callers that can't yet distinguish them.
+ */
+export interface WithdrawalOutcome {
+  queued: boolean;
+}
+
 export interface WithdrawalModalProps {
   pool: PoolSummary;
   position: UserPosition;
-  onWithdraw: (amount: string) => Promise<void>;
+  onWithdraw: (amount: string) => Promise<WithdrawalOutcome | void>;
   onClose: () => void;
 }
 
@@ -20,6 +34,7 @@ export const WithdrawalModal: FC<WithdrawalModalProps> = ({ pool, position, onWi
   const [step, setStep] = useState<Step>("input");
   const [amount, setAmount] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [queued, setQueued] = useState(false);
 
   const depositedNum = parseFloat(position.deposited);
   const amountNum = parseFloat(amount) || 0;
@@ -49,7 +64,8 @@ export const WithdrawalModal: FC<WithdrawalModalProps> = ({ pool, position, onWi
     setStep("broadcasting");
     setError(null);
     try {
-      await onWithdraw(amount);
+      const outcome = await onWithdraw(amount);
+      setQueued(outcome?.queued ?? false);
       setStep("success");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Transaction failed");
@@ -218,14 +234,22 @@ export const WithdrawalModal: FC<WithdrawalModalProps> = ({ pool, position, onWi
 
         {step === "success" && (
           <div className="flex flex-col items-center gap-4 py-6">
-            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 shadow-glow-green">
-              <Check className="h-8 w-8" />
+            <div
+              className={
+                queued
+                  ? "flex h-16 w-16 items-center justify-center rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                  : "flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 shadow-glow-green"
+              }
+            >
+              {queued ? <Clock className="h-8 w-8" /> : <Check className="h-8 w-8" />}
             </div>
             <p className="text-base font-semibold text-white">
-              Withdrawal successful!
+              {queued ? "Withdrawal queued" : "Withdrawal successful!"}
             </p>
             <p className="text-sm text-gray-400 text-center max-w-xs">
-              Your withdrawal of {formatAmount(amount, pool.asset)} from the pool has been successfully confirmed.
+              {queued
+                ? `Your withdrawal of ${formatAmount(amount, pool.asset)} was added to the pool's withdrawal queue because idle liquidity couldn't cover it right now. It will be paid out automatically as liquidity becomes available -- no action needed.`
+                : `Your withdrawal of ${formatAmount(amount, pool.asset)} from the pool has been successfully confirmed.`}
             </p>
             <div className="w-full divide-y divide-red-900/20 rounded-xl border border-red-900/30 bg-[#1A0505]/40 px-4 py-2 text-xs">
               <div className="flex justify-between py-1.5">
@@ -240,7 +264,11 @@ export const WithdrawalModal: FC<WithdrawalModalProps> = ({ pool, position, onWi
               </div>
               <div className="flex justify-between py-1.5">
                 <span className="text-gray-400">Status</span>
-                <span className="text-emerald-400 font-bold">Confirmed</span>
+                {queued ? (
+                  <span className="text-amber-400 font-bold">Queued</span>
+                ) : (
+                  <span className="text-emerald-400 font-bold">Confirmed</span>
+                )}
               </div>
             </div>
             <button

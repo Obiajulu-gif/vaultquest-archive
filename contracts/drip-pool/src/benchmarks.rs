@@ -1192,3 +1192,40 @@ fn bench_stress_max_operations() {
         let _ = client.withdraw(&user);
     }
 }
+
+// ── Benchmark: RoundDeposit pruning (#558) ──────────────────────────────────
+
+/// Measures the cost of pruning a settled round with N participants who have
+/// all claimed. Demonstrates that pruning reclaims storage proportional to
+/// the number of participants in the round.
+#[test]
+fn bench_prune_round_1000_participants() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let round_id = client.open_round(&admin);
+    let participants = create_participants(&env, &client, 1000);
+
+    for i in 0..participants.len() {
+        let user = participants.get(i).unwrap();
+        client.round_deposit(&user, &round_id, &100);
+    }
+
+    client.lock_round(&admin, &round_id);
+    client.settle_round(&admin, &round_id, &0, &0);
+
+    // All participants claim (zeroing their per-round deposits).
+    for i in 0..participants.len() {
+        let user = participants.get(i).unwrap();
+        let _ = client.round_claim(&user, &round_id);
+    }
+
+    // Prune: removes 1000 RoundDeposit entries + the Round itself.
+    client.prune_round(&admin, &round_id, &participants);
+
+    // Verify the round is gone.
+    assert_eq!(
+        client.try_round(&round_id),
+        Err(Ok(Error::RoundNotFound))
+    );
+}

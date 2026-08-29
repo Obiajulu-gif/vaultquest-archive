@@ -152,3 +152,103 @@ describe("WithdrawalModal transaction states", () => {
     expect(screen.getByRole("button", { name: "Confirm withdrawal" })).toBeEnabled();
   });
 });
+
+describe("WithdrawalModal lockup and liquidity error mapping (#620)", () => {
+  it("distinguishes a lockup-active rejection from a generic failure", async () => {
+    const client = createMockVaultClient();
+    vi.spyOn(client, "submitAction").mockRejectedValue(
+      new ContractInterfaceError("lockup_active", "Withdrawal before lockup ends."),
+    );
+
+    render(
+      <WithdrawalModal
+        pool={pool}
+        position={position}
+        onClose={vi.fn()}
+        onWithdraw={async (amount) => {
+          await client.submitAction("withdraw", {
+            poolId: pool.id,
+            walletAddress: SAMPLE_ADDRESS,
+            amount,
+          });
+        }}
+      />,
+    );
+
+    const user = await enterReview("12");
+    await user.click(screen.getByRole("button", { name: "Confirm withdrawal" }));
+
+    // Distinct heading/copy on the review step — not the generic
+    // "Transaction failed" text shared by every other error kind.
+    expect(await screen.findByText("Still in lockup")).toBeInTheDocument();
+    expect(screen.queryByText("Transaction failed")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/still within its lockup period and can't be withdrawn yet/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Withdrawal before lockup ends\./)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Confirm withdrawal" })).toBeEnabled();
+  });
+
+  it("distinguishes an insufficient-liquidity rejection from a generic failure", async () => {
+    const client = createMockVaultClient();
+    vi.spyOn(client, "submitAction").mockRejectedValue(
+      new ContractInterfaceError("insufficient_liquidity", "Not enough idle liquidity; request queued."),
+    );
+
+    render(
+      <WithdrawalModal
+        pool={pool}
+        position={position}
+        onClose={vi.fn()}
+        onWithdraw={async (amount) => {
+          await client.submitAction("withdraw", {
+            poolId: pool.id,
+            walletAddress: SAMPLE_ADDRESS,
+            amount,
+          });
+        }}
+      />,
+    );
+
+    const user = await enterReview("12");
+    await user.click(screen.getByRole("button", { name: "Confirm withdrawal" }));
+
+    expect(await screen.findByText("Withdrawal queued")).toBeInTheDocument();
+    expect(screen.queryByText("Transaction failed")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/doesn't have enough available liquidity to settle this withdrawal immediately/),
+    ).toBeInTheDocument();
+  });
+
+  it("still shows the generic failure state for a plain contract_error", async () => {
+    const client = createMockVaultClient();
+    vi.spyOn(client, "submitAction").mockRejectedValue(
+      new ContractInterfaceError("contract_error", "Transaction reverted by the contract."),
+    );
+
+    render(
+      <WithdrawalModal
+        pool={pool}
+        position={position}
+        onClose={vi.fn()}
+        onWithdraw={async (amount) => {
+          await client.submitAction("withdraw", {
+            poolId: pool.id,
+            walletAddress: SAMPLE_ADDRESS,
+            amount,
+          });
+        }}
+      />,
+    );
+
+    const user = await enterReview("12");
+    await user.click(screen.getByRole("button", { name: "Confirm withdrawal" }));
+
+    // Generic errors keep the plain, undifferentiated review-step message —
+    // no lockup/queued framing gets applied to a real contract revert.
+    expect(await screen.findByText("Transaction reverted by the contract.")).toBeInTheDocument();
+    expect(screen.queryByText("Still in lockup")).not.toBeInTheDocument();
+    expect(screen.queryByText("Withdrawal queued")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Confirm withdrawal" })).toBeEnabled();
+  });
+});

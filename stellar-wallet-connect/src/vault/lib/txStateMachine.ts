@@ -137,6 +137,14 @@ export function mapTxError(
   if (kind === "stale_data") {
     return { failedAt: "indexing", message };
   }
+  // Lockup-active and insufficient-liquidity are contract-level rejections,
+  // not RPC or wallet failures, so they fail at the same stage as a generic
+  // contract_error — but they keep their own `kind` on the thrown error so
+  // callers (e.g. WithdrawalModal) can render a distinct, non-generic
+  // message instead of "Transaction reverted by the contract." (#620).
+  if (kind === "lockup_active" || kind === "insufficient_liquidity") {
+    return { failedAt: "confirming", message };
+  }
   return { failedAt: fallbackStage, message };
 }
 

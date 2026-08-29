@@ -34,6 +34,15 @@ export interface PoolSummary {
   acceptedAsset?: string;
   operationalStatus?: string;
   metadataVersion?: number;
+  /**
+   * Mirrors the contract's `is_emergency` circuit breaker (#645). When true,
+   * `join`/`drip` (deposit), `draw_winner`, and yield-crediting are blocked
+   * on-chain — but `withdraw`, `withdraw_locked`, and `claim`/`claim_reward`
+   * are deliberately left open so participants can always exit. Optional
+   * because not every pool source (e.g. the factory/indexer summary) reads
+   * this flag yet.
+   */
+  isEmergency?: boolean;
 }
 
 export interface SavedPoolEntry extends PoolSummary {

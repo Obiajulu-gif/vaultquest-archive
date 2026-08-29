@@ -4,6 +4,20 @@ VaultQuest pause controls are for incident response: protect user funds,
 preserve readable state, and give frontend/backend services a predictable mode
 while maintainers recover.
 
+> **Implementation note (#645):** this document describes the originally
+> scaffolded `pause` / `recover` admin API. That API was never built into the
+> canonical `contracts/drip-pool` contract — there is no `pause_protocol`,
+> `is_paused`, or `recover` there today (that flow only exists in the
+> deprecated `contracts/vault`). The real, shipped circuit breaker in
+> `drip-pool` is `is_emergency` / `TriggerEmergency` / `Recapitalize`
+> (`Pool.is_emergency`, readable via `is_emergency()`), which gates `join`,
+> `deposit`/`drip`, `draw_winner`, `add_yield`, `credit_yield`, and
+> `fulfill_withdrawal_queue` — while deliberately leaving `withdraw`,
+> `withdraw_locked`, and `claim`/`claim_reward` open so participants can
+> always exit. The frontend surfaces `PoolSummary.isEmergency` in
+> `PoolDetail.tsx` against these real gates; treat the table below as the
+> aspirational design, not the current contract behavior.
+
 ## Contract expectations
 
 When paused, read-only methods remain available. State-changing user actions

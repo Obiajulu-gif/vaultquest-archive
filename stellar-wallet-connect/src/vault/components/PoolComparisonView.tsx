@@ -4,6 +4,7 @@ import { Columns, Plus, X } from "lucide-react";
 import { EmptyState, LoadingState, StaleIndicator } from "../../components/FallbackStates";
 import type { PoolStatus, PoolSummary } from "../contract/types";
 import { formatAmount, formatDate } from "../lib/format";
+import { formatYieldLabel, YIELD_LABEL_TOOLTIP } from "../../../../lib/formatting";
 import PoolStatusBadge from "./PoolStatusBadge";
 
 export interface PoolComparisonViewProps {
@@ -30,7 +31,12 @@ const ROWS: ComparisonRow[] = [
   { label: "TVL", render: (p) => formatAmount(p.tvl, p.asset) },
   { label: "Asset", render: (p) => p.asset },
   { label: "Participants", render: (p) => String(p.participantCount) },
-  { label: "Expected yield", render: (p) => p.expectedYield },
+  {
+    label: "Expected yield",
+    render: (p) => (
+      <span title={YIELD_LABEL_TOOLTIP}>{formatYieldLabel(p.expectedYield)}</span>
+    ),
+  },
   { label: "Prize", render: (p) => p.prize ?? "—" },
   { label: "Opens", render: (p) => p.opensAt ? formatDate(p.opensAt) : "—" },
   { label: "Locks", render: (p) => p.locksAt ? formatDate(p.locksAt) : "—" },

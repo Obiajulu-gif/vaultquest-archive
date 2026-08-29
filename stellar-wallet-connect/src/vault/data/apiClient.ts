@@ -20,6 +20,17 @@ export interface TransactionStatusView {
 
 type ApiEnvelope<T> = { data: T };
 
+export interface VaultMetadataRecord {
+  id: string;
+  risk_tier?: string | null;
+  strategy?: string | null;
+  lockup_days?: number | null;
+  fee_bps?: number | null;
+  accepted_asset?: string | null;
+  operational_status?: string | null;
+  metadata_version?: number | null;
+}
+
 type SavedPoolApiRecord = {
   id: string;
   wallet_address: string;
@@ -138,6 +149,23 @@ export class VaultApiClient {
     const body = await parseJsonResponse<ApiEnvelope<PoolSummary[]>>(
       await fetch(this.url("/pools"), { signal: options?.signal }),
       "Pool discovery request failed",
+    );
+    return body.data.map((pool) => ({
+      ...pool,
+      riskTier: pool.riskTier ?? pool.risk_tier ?? undefined,
+      strategy: pool.strategy ?? pool.strategy_name ?? undefined,
+      lockupDays: pool.lockupDays ?? pool.lockup_days ?? undefined,
+      feeBps: pool.feeBps ?? pool.fee_bps ?? undefined,
+      acceptedAsset: pool.acceptedAsset ?? pool.accepted_asset ?? undefined,
+      operationalStatus: pool.operationalStatus ?? pool.operational_status ?? undefined,
+      metadataVersion: pool.metadataVersion ?? pool.metadata_version ?? undefined,
+    }));
+  }
+
+  async listVaultMetadata(options?: { signal?: AbortSignal }): Promise<VaultMetadataRecord[]> {
+    const body = await parseJsonResponse<ApiEnvelope<VaultMetadataRecord[]>>(
+      await fetch(this.url("/vault-metadata"), { signal: options?.signal }),
+      "Vault metadata request failed",
     );
     return body.data;
   }

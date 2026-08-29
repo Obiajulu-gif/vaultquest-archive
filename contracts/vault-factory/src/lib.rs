@@ -49,6 +49,7 @@ pub enum Error {
     AssetNotApproved = 5,    // asset not on the admin-managed allowlist
     WasmHashNotApproved = 6, // deploying with anything but the currently-approved drip-pool build
     PoolNotFound = 7,
+    MetadataStale = 8,
 }
 
 #[derive(Clone)]
@@ -70,6 +71,26 @@ pub struct PoolMetadata {
     pub wasm_hash: BytesN<32>,
     pub deployed_at_ledger: u32,
     pub active: bool,
+    pub risk_tier: Symbol,
+    pub strategy: Symbol,
+    pub lockup_days: u32,
+    pub fee_bps: u32,
+    pub accepted_asset: Address,
+    pub operational_status: Symbol,
+    pub metadata_version: u32,
+    pub metadata_updated_at_ledger: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct PoolMetadataUpdate {
+    pub risk_tier: Symbol,
+    pub strategy: Symbol,
+    pub lockup_days: u32,
+    pub fee_bps: u32,
+    pub accepted_asset: Address,
+    pub operational_status: Symbol,
+    pub expected_version: u32,
 }
 
 /// Registry event payload (#507). Published as a single-symbol-topic event
@@ -87,9 +108,30 @@ pub struct PoolDeployedEvent {
     pub admin: Address,
     pub asset: Address,
     pub wasm_hash: BytesN<32>,
+    pub risk_tier: Symbol,
+    pub strategy: Symbol,
+    pub lockup_days: u32,
+    pub fee_bps: u32,
+    pub accepted_asset: Address,
+    pub operational_status: Symbol,
+    pub metadata_version: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct PoolMetadataUpdatedEvent {
+    pub salt: BytesN<32>,
+    pub risk_tier: Symbol,
+    pub strategy: Symbol,
+    pub lockup_days: u32,
+    pub fee_bps: u32,
+    pub accepted_asset: Address,
+    pub operational_status: Symbol,
+    pub metadata_version: u32,
 }
 
 const FACTORY_POOL_DEPLOYED_TOPIC: Symbol = symbol_short!("fpooldep");
+const FACTORY_POOL_METADATA_UPDATED_TOPIC: Symbol = symbol_short!("fmetaup");
 
 #[contract]
 pub struct VaultFactory;
@@ -200,10 +242,18 @@ impl VaultFactory {
         let metadata = PoolMetadata {
             pool_address: deployed_address.clone(),
             admin: pool_admin,
-            asset,
-            wasm_hash,
+            asset: asset.clone(),
+            wasm_hash: wasm_hash.clone(),
             deployed_at_ledger: env.ledger().sequence(),
             active: true,
+            risk_tier: symbol_short!("medium"),
+            strategy: symbol_short!("default"),
+            lockup_days: 0,
+            fee_bps: 0,
+            accepted_asset: asset.clone(),
+            operational_status: symbol_short!("active"),
+            metadata_version: 1,
+            metadata_updated_at_ledger: env.ledger().sequence(),
         };
         env.storage()
             .instance()
@@ -216,15 +266,69 @@ impl VaultFactory {
         env.events().publish(
             (FACTORY_POOL_DEPLOYED_TOPIC,),
             PoolDeployedEvent {
-                salt,
+                salt: salt.clone(),
                 pool_address: deployed_address.clone(),
                 admin: metadata.admin.clone(),
                 asset: metadata.asset.clone(),
                 wasm_hash: metadata.wasm_hash.clone(),
+                risk_tier: metadata.risk_tier.clone(),
+                strategy: metadata.strategy.clone(),
+                lockup_days: metadata.lockup_days,
+                fee_bps: metadata.fee_bps,
+                accepted_asset: metadata.accepted_asset.clone(),
+                operational_status: metadata.operational_status.clone(),
+                metadata_version: metadata.metadata_version,
             },
         );
 
         Ok(deployed_address)
+    }
+
+    /// Updates discoverable metadata for an existing pool. Metadata changes are
+    /// versioned so indexers can identify stale or replayed metadata snapshots.
+    pub fn update_pool_metadata(
+        env: Env,
+        caller: Address,
+        salt: BytesN<32>,
+        metadata: PoolMetadataUpdate,
+    ) -> Result<(), Error> {
+        Self::require_admin(&env, &caller)?;
+        let mut pool = Self::get_pool(env.clone(), salt.clone())?;
+
+        if metadata.expected_version != pool.metadata_version {
+            return Err(Error::MetadataStale);
+        }
+
+        let approved_assets = Self::get_approved_assets(&env);
+        if !approved_assets.contains(&metadata.accepted_asset) {
+            return Err(Error::AssetNotApproved);
+        }
+
+        pool.risk_tier = metadata.risk_tier;
+        pool.strategy = metadata.strategy;
+        pool.lockup_days = metadata.lockup_days;
+        pool.fee_bps = metadata.fee_bps;
+        pool.accepted_asset = metadata.accepted_asset.clone();
+        pool.operational_status = metadata.operational_status;
+        pool.metadata_version += 1;
+        pool.metadata_updated_at_ledger = env.ledger().sequence();
+
+        env.storage().instance().set(&DataKey::PoolMeta(salt.clone()), &pool);
+        env.events().publish(
+            (FACTORY_POOL_METADATA_UPDATED_TOPIC,),
+            PoolMetadataUpdatedEvent {
+                salt,
+                risk_tier: pool.risk_tier.clone(),
+                strategy: pool.strategy.clone(),
+                lockup_days: pool.lockup_days,
+                fee_bps: pool.fee_bps,
+                accepted_asset: pool.accepted_asset.clone(),
+                operational_status: pool.operational_status.clone(),
+                metadata_version: pool.metadata_version,
+            },
+        );
+
+        Ok(())
     }
 
     /// Marks a pool inactive in the registry (does not pause or otherwise

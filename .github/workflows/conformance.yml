@@ -12,6 +12,13 @@ on:
       - "backend/src/types.ts"
       - "backend/src/services/stellarIndexer.ts"
       - "stellar-wallet-connect/src/vault/contract/types.ts"
+      # SDK/contract-adjacent dependency bumps (stellar-sdk, soroban, @stellar/*,
+      # wallet connector deps like @creit.tech/stellar-wallets-kit) can silently
+      # break cross-stack compatibility without touching any of the source paths
+      # above, so run conformance on dependency-manifest changes too (#659).
+      - "package.json"
+      - "backend/package.json"
+      - "stellar-wallet-connect/package.json"
       - ".github/workflows/conformance.yml"
   push:
     branches:
@@ -27,6 +34,13 @@ on:
       - "backend/src/types.ts"
       - "backend/src/services/stellarIndexer.ts"
       - "stellar-wallet-connect/src/vault/contract/types.ts"
+      # SDK/contract-adjacent dependency bumps (stellar-sdk, soroban, @stellar/*,
+      # wallet connector deps like @creit.tech/stellar-wallets-kit) can silently
+      # break cross-stack compatibility without touching any of the source paths
+      # above, so run conformance on dependency-manifest changes too (#659).
+      - "package.json"
+      - "backend/package.json"
+      - "stellar-wallet-connect/package.json"
       - ".github/workflows/conformance.yml"
 
 permissions:

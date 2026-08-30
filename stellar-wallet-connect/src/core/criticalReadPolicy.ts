@@ -47,6 +47,21 @@ export interface QuarantinedSample {
   detail?: string;
 }
 
+/**
+ * Simple tri-state summary of a read decision for display purposes (#658):
+ * - "verified": all in-policy providers agreed and every other gate passed.
+ * - "conflicting": at least one live provider disagreed with the majority
+ *   value (quarantined as `diverges_from_majority`), independent of whether
+ *   quorum/freshness still let the majority value through.
+ * - "degraded": no disagreement was observed, but the read still isn't fully
+ *   trustworthy (quorum not met, stale, or no in-policy samples at all).
+ *
+ * This is derived, read-only context for a UI badge — it never gates
+ * whether a transaction may be authorized; `assertAuthorizable` remains the
+ * only function that does that.
+ */
+export type ReadConfidenceLevel = "verified" | "degraded" | "conflicting";
+
 export interface CriticalReadDecision<T> {
   ok: boolean;
   degraded: boolean;
@@ -56,6 +71,7 @@ export interface CriticalReadDecision<T> {
   minLedgerSequence: number | null;
   maxLedgerSequence: number | null;
   reasons: string[];
+  confidence: ReadConfidenceLevel;
 }
 
 export type CriticalReadFailureKind =
@@ -192,7 +208,8 @@ export class CriticalReadPolicy {
         quarantined,
         minLedgerSequence: null,
         maxLedgerSequence: null,
-        reasons
+        reasons,
+        confidence: "degraded"
       };
     }
 
@@ -217,6 +234,13 @@ export class CriticalReadPolicy {
 
     const ok = quorumMet && divergence <= this.opts.maxLedgerDivergence;
 
+    // A conflicting minority takes priority in the summary even when the
+    // majority still clears quorum/freshness — providers disagreeing is
+    // worth surfacing to the user regardless of whether the read is
+    // otherwise authorizable.
+    const anyConflict = quarantined.some((q) => q.reason === "diverges_from_majority");
+    const confidence: ReadConfidenceLevel = anyConflict ? "conflicting" : ok ? "verified" : "degraded";
+
     return {
       ok,
       degraded: !ok && majority.samples.length > 0,
@@ -225,7 +249,8 @@ export class CriticalReadPolicy {
       quarantined,
       minLedgerSequence,
       maxLedgerSequence,
-      reasons
+      reasons,
+      confidence
     };
   }
 

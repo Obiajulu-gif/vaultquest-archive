@@ -3142,3 +3142,235 @@ fn test_validate_strategy_rejects_inflated_total_assets() {
         .unwrap();
     assert_ne!(phase, vaultquest_common::strategy::StrategyRotationPhase::Idle);
 }
+
+// ── #623: strategy adapter failure isolation (paused/degraded strategies) ──
+//
+// A conforming strategy (see `mock-yield`) can reject `deposit` while paused
+// and always honours `redeem` so an emergency recall can never be stranded.
+// These tests exercise the *pool's* call sites into that interface with a
+// mock adapter that moves real SAC tokens but can be toggled to reject
+// deposit/harvest, verifying the pool surfaces a clean contract error
+// instead of an uncontrolled panic, and that no pool state or custody
+// changes when the adapter rejects the call.
+
+#[contracttype]
+#[derive(Clone)]
+pub enum FailableKey {
+    DepositFails,
+    HarvestFails,
+}
+
+/// Strategy stub that moves real SAC tokens like `RealTokenStrategy`, but can
+/// be toggled (via `set_deposit_fails` / `set_harvest_fails`) to reject
+/// `deposit` or `harvest` the way a paused or degraded adapter would (#623).
+/// `redeem` always succeeds, mirroring `mock-yield`'s pause semantics: an
+/// emergency recall must never be blockable by adapter failure.
+#[contract]
+pub struct FailableStrategy;
+
+#[contractimpl]
+impl FailableStrategy {
+    pub fn set_deposit_fails(env: Env, fails: bool) {
+        env.storage().instance().set(&FailableKey::DepositFails, &fails);
+    }
+
+    pub fn set_harvest_fails(env: Env, fails: bool) {
+        env.storage().instance().set(&FailableKey::HarvestFails, &fails);
+    }
+
+    pub fn interface_version(_env: Env) -> u32 {
+        1
+    }
+
+    pub fn deposit(
+        env: Env,
+        from: Address,
+        asset: Address,
+        amount: i128,
+    ) -> Result<(), vaultquest_common::ContractError> {
+        let fails: bool = env
+            .storage()
+            .instance()
+            .get(&FailableKey::DepositFails)
+            .unwrap_or(false);
+        if fails {
+            return Err(vaultquest_common::ContractError::StrategyPaused);
+        }
+        let token = token::TokenClient::new(&env, &asset);
+        token.transfer(&from, &env.current_contract_address(), &amount);
+        Ok(())
+    }
+
+    pub fn redeem(
+        env: Env,
+        to: Address,
+        asset: Address,
+        amount: i128,
+    ) -> Result<i128, vaultquest_common::ContractError> {
+        let token = token::TokenClient::new(&env, &asset);
+        let available = token.balance(&env.current_contract_address());
+        let redeemed = if amount < available { amount } else { available };
+        if redeemed > 0 {
+            token.transfer(&env.current_contract_address(), &to, &redeemed);
+        }
+        Ok(redeemed)
+    }
+
+    pub fn harvest(
+        env: Env,
+        asset: Address,
+    ) -> Result<vaultquest_common::StrategyReport, vaultquest_common::ContractError> {
+        let fails: bool = env
+            .storage()
+            .instance()
+            .get(&FailableKey::HarvestFails)
+            .unwrap_or(false);
+        if fails {
+            return Err(vaultquest_common::ContractError::StrategyPaused);
+        }
+        let balance =
+            token::TokenClient::new(&env, &asset).balance(&env.current_contract_address());
+        Ok(vaultquest_common::StrategyReport {
+            realized_yield: 0,
+            realized_loss: 0,
+            total_assets: balance,
+        })
+    }
+
+    pub fn total_assets(env: Env, asset: Address) -> i128 {
+        token::TokenClient::new(&env, &asset).balance(&env.current_contract_address())
+    }
+}
+
+/// `deploy_to_strategy` must fail cleanly — not panic — when the adapter
+/// rejects the deposit (paused), and must leave pool state and token
+/// custody completely unchanged.
+#[test]
+fn deploy_to_strategy_fails_cleanly_when_adapter_is_paused() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+    client.deposit(&alice, &1_000);
+
+    let strategy_id = env.register_contract(None, FailableStrategy);
+    let strategy = FailableStrategyClient::new(&env, &strategy_id);
+    client.set_strategy(&admin, &strategy_id);
+
+    strategy.set_deposit_fails(&true);
+
+    let res = client.try_deploy_to_strategy(&admin, &500);
+    assert_eq!(res, Err(Ok(Error::StrategyPaused)));
+
+    // No state mutated: principal never left the pool's custody.
+    assert_eq!(client.pool().principal_in_strategy, 0);
+    assert_eq!(token.balance(&client.address), 1_000);
+    assert_eq!(token.balance(&strategy_id), 0);
+}
+
+/// Once the adapter is unpaused, the same deploy call succeeds normally —
+/// confirms the failure path above didn't corrupt state that would block a
+/// legitimate retry.
+#[test]
+fn deploy_to_strategy_succeeds_after_adapter_unpauses() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+    client.deposit(&alice, &1_000);
+
+    let strategy_id = env.register_contract(None, FailableStrategy);
+    let strategy = FailableStrategyClient::new(&env, &strategy_id);
+    client.set_strategy(&admin, &strategy_id);
+
+    strategy.set_deposit_fails(&true);
+    assert!(client.try_deploy_to_strategy(&admin, &500).is_err());
+
+    strategy.set_deposit_fails(&false);
+    client.deploy_to_strategy(&admin, &500);
+
+    assert_eq!(client.pool().principal_in_strategy, 500);
+    assert_eq!(token.balance(&strategy_id), 500);
+}
+
+/// `harvest_strategy` must fail cleanly — not panic — when the adapter
+/// rejects harvest (degraded), leaving distributable yield and principal
+/// untouched.
+#[test]
+fn harvest_strategy_fails_cleanly_when_adapter_is_degraded() {
+    let (env, client, admin, _token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+    client.deposit(&alice, &1_000);
+
+    let strategy_id = env.register_contract(None, FailableStrategy);
+    let strategy = FailableStrategyClient::new(&env, &strategy_id);
+    client.set_strategy(&admin, &strategy_id);
+    client.deploy_to_strategy(&admin, &500);
+
+    strategy.set_harvest_fails(&true);
+
+    let res = client.try_harvest_strategy(&admin);
+    assert_eq!(res, Err(Ok(Error::StrategyPaused)));
+
+    // Harvest failure must not mutate distributable yield or principal.
+    let pool = client.pool();
+    assert_eq!(pool.distributable_yield, 0);
+    assert_eq!(pool.principal_in_strategy, 500);
+}
+
+/// `reconcile_strategy` calls harvest best-effort (discarding its error, see
+/// `internal_harvest_strategy`'s caller). A degraded adapter must not panic
+/// that best-effort call — reconciliation should still be reachable once
+/// principal is fully drained, independent of harvest succeeding.
+#[test]
+fn reconcile_strategy_tolerates_degraded_adapter_harvest_failure() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let s1 = env.register_contract(None, FailableStrategy);
+    let s1_client = FailableStrategyClient::new(&env, &s1);
+    let s2 = env.register_contract(None, MockStrategy);
+
+    client.set_strategy(&admin, &s1);
+    client.propose_strategy(&admin, &s2, &500);
+
+    // No principal was ever deployed into s1, but harvest is still attempted
+    // during reconcile. A degraded adapter rejecting harvest must not panic
+    // the whole reconcile call.
+    s1_client.set_harvest_fails(&true);
+    client.reconcile_strategy(&admin);
+
+    let phase: vaultquest_common::strategy::StrategyRotationPhase = env
+        .storage()
+        .instance()
+        .get(&DataKey::StrategyRotationPhase)
+        .unwrap();
+    assert_eq!(phase, vaultquest_common::strategy::StrategyRotationPhase::Reconciled);
+}
+
+/// Emergency recall must always succeed even while the adapter's `deposit`
+/// path is paused — `redeem` is a distinct entrypoint per the `YieldStrategy`
+/// contract and a conforming adapter (mirrored here) never blocks it.
+#[test]
+fn emergency_recall_succeeds_while_adapter_deposit_is_paused() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+    client.deposit(&alice, &1_000);
+
+    let strategy_id = env.register_contract(None, FailableStrategy);
+    let strategy = FailableStrategyClient::new(&env, &strategy_id);
+    client.set_strategy(&admin, &strategy_id);
+    client.deploy_to_strategy(&admin, &500);
+
+    // Pause deposit only — redeem must remain unaffected.
+    strategy.set_deposit_fails(&true);
+
+    let recalled = client.emergency_recall_strategy(&admin);
+    assert_eq!(recalled, 500);
+    assert_eq!(client.pool().principal_in_strategy, 0);
+    assert_eq!(token.balance(&client.address), 1_000);
+}

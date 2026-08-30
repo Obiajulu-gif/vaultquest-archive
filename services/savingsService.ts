@@ -1,50 +1,196 @@
 /**
- * Savings Service
- * 
- * Orchestrates savings tracking and milestone updates.
+ * Savings Service (#651)
+ *
+ * Orchestrates savings tracking and milestone updates for the frontend/quest
+ * flows. This is a *mock* service powering local development, so it must
+ * reproduce the contract's behavioral edge cases exactly (zero/negative
+ * deposits rejected, claims that return a no-op rather than an error, lockup
+ * windows). Its rules derive from `lib/conformance-spec.ts` — the same
+ * fixtures the cross-stack conformance tests run — so divergence fails CI.
+ *
+ * Intentionally mocked behavior (documented in docs/VAULT_ENGAGEMENT_DATA.md):
+ *  - In-memory state only (no persistence).
+ *  - `blockchain` settlement is simulated synchronously; the real contract
+ *    credits yield via `credit_yield`/`draw_winner` and transfers SAC tokens.
  */
 
-import * as Tracker from '@/lib/savings/tracker';
-import * as Milestones from '@/lib/savings/milestones';
-import * as Eligibility from '@/lib/savings/eligibility';
-import { Quest, UserQuestParticipation } from '@/types/quest';
-import { EscrowService } from '@/services/escrowService';
+import {
+  validateDepositAmount,
+  validateWithdrawLockup,
+  validateClaimDeadline,
+  claimableTotal,
+  lockupMultiplierBps,
+  type ContractBehaviorError,
+} from "../lib/conformance-spec";
 
+export interface QuestMilestone {
+  id: string;
+  description: string;
+  targetAmount: number;
+  deadline: number;
+  isCompleted: boolean;
+}
+
+export interface Quest {
+  id: string;
+  title: string;
+  description: string;
+  sponsorAddress: string;
+  rewardAmount: number;
+  rewardToken: string;
+  status: string;
+  escrowId?: string;
+  escrowStatus?: string;
+  milestones: QuestMilestone[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface MilestoneProgress {
+  completedAt: number | null;
+}
+
+export interface UserQuestParticipation {
+  questId: string;
+  userAddress: string;
+  currentBalance: number;
+  streakDays: number;
+  lastDepositAt: number | null;
+  yieldAccrued: number;
+  prize: number;
+  claimedReward: number;
+  lockedUntilLedger: number;
+  /** Unix ms after which no rewards may be claimed (mirrors pool deadline). */
+  claimDeadline?: number | null;
+  milestoneProgress: MilestoneProgress[];
+  isEligibleForReward: boolean;
+  updatedAt?: number | null;
+}
+
+/**
+ * Contract-aligned deposit tracking.
+ *
+ * Mirrors `deposit` in the drip-pool contract: `amount <= 0` is rejected with
+ * `InvalidAmount` before any state mutation.
+ */
 export const SavingsService = {
   /**
-   * Tracks a new deposit and updates participation state
+   * Validates a deposit against contract semantics.
+   * @throws Error with message `InvalidAmount` when `amount <= 0`.
    */
-  async trackDeposit(quest: Quest, participation: UserQuestParticipation, amount: number): Promise<UserQuestParticipation> {
-    // 1. Update balance
-    participation.currentBalance = Tracker.calculateCurrentBalance(participation, amount);
-    
-    // 2. Update streak
-    participation.streakDays = Tracker.updateStreak(participation, amount);
+  validateDeposit(amount: number): void {
+    const err = validateDepositAmount(amount);
+    if (err) throw new Error(err);
+  },
+
+  /**
+   * Validates the lockup window before a principal withdrawal, mirroring
+   * `withdraw`'s `LockupActive` guard.
+   */
+  validateWithdrawal(participation: UserQuestParticipation, currentLedger: number): void {
+    const err = validateWithdrawLockup(participation.lockedUntilLedger, currentLedger);
+    if (err) throw new Error(err);
+  },
+
+  /**
+   * Computes the currently claimable amount, mirroring `claim_reward`: a value
+   * `<= 0` is a no-op (the contract returns `Ok(0)`, never an error) unless
+   * the claim deadline has already passed.
+   */
+  claimable(participation: UserQuestParticipation, now?: number): number {
+    const deadlineErr = validateClaimDeadline(participation.claimDeadline, now ?? Date.now());
+    if (deadlineErr) throw new Error(deadlineErr);
+    const available = claimableTotal(
+      participation.yieldAccrued,
+      participation.prize,
+      participation.claimedReward,
+    );
+    return available > 0 ? available : 0;
+  },
+
+  /**
+   * Reward weight for a lockup tier. Mirrors `vault.rs::multiplier_for` and is
+   * never applied to principal.
+   */
+  lockupWeightBps(lockupDays: number): number {
+    return lockupMultiplierBps(lockupDays);
+  },
+
+  /**
+   * Tracks a new deposit and updates participation state.
+   * Rejects non-positive amounts with `InvalidAmount` before mutating anything.
+   */
+  async trackDeposit(
+    quest: Quest,
+    participation: UserQuestParticipation,
+    amount: number,
+  ): Promise<UserQuestParticipation> {
+    const err = validateDepositAmount(amount);
+    if (err) {
+      throw new Error(err);
+    }
+
+    participation.currentBalance += amount;
+    participation.streakDays += 1;
     participation.lastDepositAt = Date.now();
 
-    // 3. Check for milestone completion
-    quest.milestones.forEach(async (milestone, index) => {
-      const isMet = Milestones.verifyMilestone(milestone, participation.currentBalance);
-      const prog = participation.milestoneProgress[index];
-      
-      if (isMet && !prog.completedAt) {
-        prog.completedAt = Date.now();
-        console.log(`[SavingsService] Milestone ${milestone.id} unlocked!`);
-        
-        // 4. Trigger reward release if this was a milestone release escrow
-        if (quest.escrowId) {
-          try {
-            await EscrowService.releaseReward(quest.escrowId, participation.userAddress, index);
-          } catch (error) {
-            console.error('Failed to trigger reward release:', error);
-          }
-        }
+    quest.milestones.forEach((milestone, index) => {
+      const progress = participation.milestoneProgress[index];
+      if (!progress) return;
+      if (participation.currentBalance >= milestone.targetAmount && progress.completedAt === null) {
+        progress.completedAt = Date.now();
+        milestone.isCompleted = true;
       }
     });
 
-    // 5. Update final eligibility
-    participation.isEligibleForReward = Eligibility.checkRewardEligibility(quest, participation);
+    participation.isEligibleForReward = participation.currentBalance > 0;
+    participation.updatedAt = Date.now();
 
     return participation;
-  }
+  },
+
+  /**
+   * Credits an earned reward. `claimedReward` stays monotonic — the contract
+   * never allows double-claiming, mirroring `Ok(0)` no-op behavior when the
+   * balance is already fully claimed.
+   */
+  async creditReward(participation: UserQuestParticipation, amount: number): Promise<number> {
+    const err = validateDepositAmount(amount);
+    if (err) throw new Error(err);
+    participation.yieldAccrued += amount;
+    return participation.yieldAccrued;
+  },
+
+  async claimReward(participation: UserQuestParticipation, now?: number): Promise<number> {
+    const deadlineErr = validateClaimDeadline(participation.claimDeadline, now ?? Date.now());
+    if (deadlineErr) throw new Error(deadlineErr);
+    const available = claimableTotal(
+      participation.yieldAccrued,
+      participation.prize,
+      participation.claimedReward,
+    );
+    if (available <= 0) return 0;
+    participation.claimedReward += available;
+    return available;
+  },
+
+  /**
+   * Completes the next incomplete milestone slot. Idempotent: when every slot
+   * is already completed it throws, mirroring "no milestone left to unlock".
+   */
+  unlockMilestone(participation: UserQuestParticipation, milestoneId: string): MilestoneProgress {
+    const progress = participation.milestoneProgress.find((p) => p.completedAt === null);
+    if (!progress) throw new Error(`milestone "${milestoneId}" not found or already completed`);
+    progress.completedAt = Date.now();
+    return progress;
+  },
 };
+
+export function isContractBehaviorError(value: unknown): value is ContractBehaviorError {
+  return (
+    value === "InvalidAmount" ||
+    value === "LockupActive" ||
+    value === "InvalidAction" ||
+    value === "ClaimDeadlinePassed"
+  );
+}

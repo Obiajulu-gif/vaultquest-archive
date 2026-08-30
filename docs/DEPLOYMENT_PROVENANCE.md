@@ -111,3 +111,23 @@ Scoped out of this PR — see #511 for the full design:
   deciding a rollout window (see the original proposal's compatibility
   note) so currently-deployed contracts aren't locked out before they have
   a recorded manifest entry.
+
+## Param-bound enforcement at the contract edge (#649)
+
+Administrative parameter changes on the settings page are simulated and
+never written directly — they route through governance proposals. The
+`vault-factory` contract enforces the same stringency bounds on-chain inside
+`update_pool_metadata` (see `contracts/vault-factory/src/lib.rs`), mirroring
+`lib/admin-parameter-simulation.ts`:
+
+| Bound | Value | Contract error |
+|---|---|---|
+| Treasury fee floor | `fee_bps >= 1` (1 bp; the UI carries the 0.5 bp floor, whole-bp floor here) | `FeeBelowStringency` |
+| Treasury fee cap | `fee_bps <= 10_000` (100.00%) | `FeeExceedsCap` |
+| Lockup cap | `lockup_days <= 3650` (10 years) | `LockupDaysExceedsCap` |
+
+A value the simulation UI marks as blocked can therefore never be written
+on-chain, even by the factory admin — the bounds are a contract-level
+invariant, not just a UI constraint. New pools default to a 75 bps treasury
+fee so registry metadata is never below the floor. Tests live in
+`contracts/vault-factory/src/test.rs`.

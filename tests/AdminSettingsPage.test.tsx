@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import React from "react";
 import AdminSettingsPage from "../app/app/admin/settings/page";
@@ -142,5 +142,57 @@ describe("AdminSettingsPage Health Checks", () => {
     expect(screen.getByText("network.passphrase")).toBeInTheDocument();
     expect(screen.getByText(/Expected "mainnet", Active "testnet"/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Read Deployment Provenance Documentation/i })).toBeInTheDocument();
+  });
+});
+
+describe("AdminSettingsPage Parameter Simulation (#649)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockGetFrontendEnv.mockReturnValue({
+      NEXT_PUBLIC_HORIZON_URL: "https://horizon-mock.stellar.org",
+      NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID: "CCONTRACT123",
+    });
+    mockAttestManifest.mockReturnValue({ verified: true, mismatches: [] });
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ data: {} }) }) as any));
+  });
+
+  it("renders the simulation and diff preview section", async () => {
+    render(<AdminSettingsPage />);
+    expect(screen.getByRole("combobox", { name: /^Parameter$/ })).toBeInTheDocument();
+    expect(screen.getByText("Parameter simulation & diff preview")).toBeInTheDocument();
+    expect(screen.getByText(/Propose a change above/)).toBeInTheDocument();
+  });
+
+  it("blocks a treasury fee below the 0.5 bp stringency and reports it in the diff", async () => {
+    render(<AdminSettingsPage />);
+
+    fireEvent.change(screen.getByRole("combobox", { name: /^Parameter$/ }), { target: { value: "treasuryFeeBps" } });
+    fireEvent.change(screen.getByLabelText(/Proposed value/), { target: { value: "0.1" } });
+    fireEvent.click(screen.getByText("Add to simulation"));
+
+    await waitFor(() => {
+      expect(screen.getByText("Blocked change")).toBeInTheDocument();
+    });
+    expect(screen.getAllByText(/0\.5 bp/).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("High risk")).toBeInTheDocument();
+  });
+
+  it("honors the override toggle for a blocked change", async () => {
+    render(<AdminSettingsPage />);
+
+    fireEvent.change(screen.getByRole("combobox", { name: /^Parameter$/ }), { target: { value: "treasuryFeeBps" } });
+    fireEvent.change(screen.getByLabelText(/Proposed value/), { target: { value: "0.1" } });
+    fireEvent.click(screen.getByText("Add to simulation"));
+
+    await waitFor(() => {
+      expect(screen.getByText("Blocked change")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByLabelText(/Allow override of blocked stringencies/));
+
+    await waitFor(() => {
+      expect(screen.getByText("Overridden")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Blocked change")).not.toBeInTheDocument();
   });
 });

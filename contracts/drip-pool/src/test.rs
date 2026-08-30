@@ -3142,3 +3142,265 @@ fn test_validate_strategy_rejects_inflated_total_assets() {
         .unwrap();
     assert_ne!(phase, vaultquest_common::strategy::StrategyRotationPhase::Idle);
 }
+
+// ── deposit concentration limits (#643) ─────────────────────────────────────
+
+#[test]
+fn deposit_caps_default_to_uncapped() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    assert_eq!(client.max_wallet_deposit(), 0);
+    assert_eq!(client.max_pool_deposit(), 0);
+    let alice = Address::generate(&env);
+    assert_eq!(client.remaining_wallet_capacity(&alice), i128::MAX);
+    assert_eq!(client.remaining_pool_capacity(), i128::MAX);
+}
+
+#[test]
+fn only_a_signer_can_set_deposit_caps() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let outsider = Address::generate(&env);
+
+    assert_eq!(
+        client.try_set_max_wallet_deposit(&outsider, &1_000),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(
+        client.try_set_max_pool_deposit(&outsider, &1_000),
+        Err(Ok(Error::Unauthorized))
+    );
+
+    // The admin (a signer by default, per `create`) can.
+    client.set_max_wallet_deposit(&admin, &1_000);
+    client.set_max_pool_deposit(&admin, &5_000);
+    assert_eq!(client.max_wallet_deposit(), 1_000);
+    assert_eq!(client.max_pool_deposit(), 5_000);
+}
+
+#[test]
+fn negative_cap_is_rejected() {
+    let (_env, client, admin) = setup();
+    client.create(&admin);
+    assert_eq!(
+        client.try_set_max_wallet_deposit(&admin, &-1),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(
+        client.try_set_max_pool_deposit(&admin, &-1),
+        Err(Ok(Error::InvalidAmount))
+    );
+}
+
+#[test]
+fn deposit_at_exact_wallet_cap_succeeds() {
+    let (env, client, admin, _token, issuer) = setup_with_token();
+    client.set_max_wallet_deposit(&admin, &1_000);
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+
+    client.deposit(&alice, &1_000);
+    assert_eq!(client.savings(&alice).deposited, 1_000);
+    assert_eq!(client.remaining_wallet_capacity(&alice), 0);
+}
+
+#[test]
+fn deposit_one_over_wallet_cap_fails_and_transfers_nothing() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    client.set_max_wallet_deposit(&admin, &1_000);
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_001);
+
+    assert_eq!(
+        client.try_deposit(&alice, &1_001),
+        Err(Ok(Error::WalletDepositCapExceeded))
+    );
+    // The cap check runs before the token transfer — a rejected deposit
+    // must not move funds.
+    assert_eq!(token.balance(&alice), 1_001);
+    assert_eq!(client.savings(&alice).deposited, 0);
+    assert_eq!(client.pool().total_deposited, 0);
+}
+
+#[test]
+fn wallet_cap_is_cumulative_across_multiple_deposits() {
+    let (env, client, admin, _token, issuer) = setup_with_token();
+    client.set_max_wallet_deposit(&admin, &1_000);
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+
+    client.deposit(&alice, &600);
+    assert_eq!(client.remaining_wallet_capacity(&alice), 400);
+
+    // A second deposit that individually looks fine (400 <= balance) but
+    // pushes the wallet's cumulative total past the cap must still fail.
+    assert_eq!(
+        client.try_deposit(&alice, &401),
+        Err(Ok(Error::WalletDepositCapExceeded))
+    );
+    // Exactly the remaining headroom succeeds.
+    client.deposit(&alice, &400);
+    assert_eq!(client.savings(&alice).deposited, 1_000);
+}
+
+#[test]
+fn wallet_cap_does_not_affect_other_wallets() {
+    let (env, client, admin, _token, issuer) = setup_with_token();
+    client.set_max_wallet_deposit(&admin, &1_000);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.join(&alice);
+    client.join(&bob);
+    issuer.mint(&alice, &1_000);
+    issuer.mint(&bob, &1_000);
+
+    client.deposit(&alice, &1_000);
+    // Bob's own headroom is untouched by Alice's deposit.
+    assert_eq!(client.remaining_wallet_capacity(&bob), 1_000);
+    client.deposit(&bob, &1_000);
+    assert_eq!(client.savings(&bob).deposited, 1_000);
+}
+
+#[test]
+fn deposit_at_exact_pool_cap_succeeds() {
+    let (env, client, admin, _token, issuer) = setup_with_token();
+    client.set_max_pool_deposit(&admin, &1_500);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.join(&alice);
+    client.join(&bob);
+    issuer.mint(&alice, &1_000);
+    issuer.mint(&bob, &500);
+
+    client.deposit(&alice, &1_000);
+    client.deposit(&bob, &500);
+    assert_eq!(client.pool().total_deposited, 1_500);
+    assert_eq!(client.remaining_pool_capacity(), 0);
+}
+
+#[test]
+fn deposit_over_pool_cap_fails_even_when_under_the_wallet_cap() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    client.set_max_wallet_deposit(&admin, &10_000); // generous — not the binding constraint
+    client.set_max_pool_deposit(&admin, &1_000);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.join(&alice);
+    client.join(&bob);
+    issuer.mint(&alice, &900);
+    issuer.mint(&bob, &200);
+
+    client.deposit(&alice, &900);
+    assert_eq!(client.remaining_pool_capacity(), 100);
+
+    // Bob's own wallet cap has plenty of headroom (10_000), but the pool as
+    // a whole only has 100 left.
+    assert_eq!(
+        client.try_deposit(&bob, &200),
+        Err(Ok(Error::PoolDepositCapExceeded))
+    );
+    assert_eq!(token.balance(&bob), 200); // nothing transferred
+    client.deposit(&bob, &100); // exactly the remaining pool headroom
+    assert_eq!(client.pool().total_deposited, 1_000);
+}
+
+#[test]
+fn concurrent_style_deposits_race_for_the_last_of_the_pool_cap() {
+    // Soroban applies submitted transactions to a contract sequentially
+    // within a ledger close — there is no interleaved-write race inside a
+    // single invocation. What "concurrent deposits" means for cap
+    // enforcement here is two deposits that were BOTH independently valid
+    // against the state each depositor observed before submitting (e.g. via
+    // `remaining_pool_capacity` in the UI), but where only one can actually
+    // fit once they are applied in some order. This test asserts the second
+    // one to actually execute is rejected rather than silently pushing the
+    // pool over its cap — the cap is enforced against live storage at
+    // execution time, not against whatever the caller observed earlier.
+    let (env, client, admin, token, issuer) = setup_with_token();
+    client.set_max_pool_deposit(&admin, &1_000);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.join(&alice);
+    client.join(&bob);
+    issuer.mint(&alice, &700);
+    issuer.mint(&bob, &700);
+
+    // Both alice and bob observe the same pre-state: 1_000 total headroom,
+    // and both independently decide to deposit 700 (each individually valid
+    // against that shared observation, since 700 <= 1_000).
+    assert_eq!(client.remaining_pool_capacity(), 1_000);
+
+    // alice's transaction executes first and succeeds.
+    client.deposit(&alice, &700);
+    assert_eq!(client.remaining_pool_capacity(), 300);
+
+    // bob's transaction, executing second against the now-updated storage,
+    // is rejected — even though 700 looked valid when bob's client checked
+    // headroom before alice's deposit landed.
+    assert_eq!(
+        client.try_deposit(&bob, &700),
+        Err(Ok(Error::PoolDepositCapExceeded))
+    );
+    assert_eq!(token.balance(&bob), 700); // bob's funds never moved
+    assert_eq!(client.pool().total_deposited, 700); // only alice's deposit counted
+}
+
+#[test]
+fn deposit_with_duration_is_subject_to_the_same_caps() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    client.set_max_wallet_deposit(&admin, &1_000);
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_500);
+
+    client.deposit_with_duration(&alice, &600, &7);
+    assert_eq!(
+        client.try_deposit_with_duration(&alice, &500, &7),
+        Err(Ok(Error::WalletDepositCapExceeded))
+    );
+    assert_eq!(token.balance(&alice), 900); // only the first 600 transferred
+    client.deposit_with_duration(&alice, &400, &7); // exactly the remaining headroom
+    assert_eq!(client.savings(&alice).deposited, 1_000);
+}
+
+#[test]
+fn raising_the_cap_unblocks_a_previously_rejected_amount() {
+    let (env, client, admin, _token, issuer) = setup_with_token();
+    client.set_max_wallet_deposit(&admin, &500);
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+
+    assert_eq!(
+        client.try_deposit(&alice, &1_000),
+        Err(Ok(Error::WalletDepositCapExceeded))
+    );
+
+    // Governance raises the cap — the same amount now succeeds.
+    client.set_max_wallet_deposit(&admin, &1_000);
+    client.deposit(&alice, &1_000);
+    assert_eq!(client.savings(&alice).deposited, 1_000);
+}
+
+#[test]
+fn lowering_the_cap_below_existing_balance_does_not_retroactively_fail_but_blocks_top_ups() {
+    let (env, client, admin, _token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+    client.deposit(&alice, &1_000); // no cap yet — succeeds
+
+    // Governance sets a cap below alice's existing balance.
+    client.set_max_wallet_deposit(&admin, &500);
+    assert_eq!(client.savings(&alice).deposited, 1_000); // untouched — no retroactive slashing
+    assert_eq!(client.remaining_wallet_capacity(&alice), 0); // saturates at 0, not negative
+
+    // Any further top-up is rejected while over-cap.
+    assert_eq!(
+        client.try_deposit(&alice, &1),
+        Err(Ok(Error::WalletDepositCapExceeded))
+    );
+}

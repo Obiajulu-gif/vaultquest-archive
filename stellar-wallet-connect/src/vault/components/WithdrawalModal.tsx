@@ -2,10 +2,21 @@ import type { FC } from "react";
 import { useState, useCallback } from "react";
 import { AlertTriangle, Check, Clock, Loader2 } from "lucide-react";
 import Modal from "../../components/Modal";
-import type { PoolSummary, UserPosition } from "../contract/types";
+import { ContractInterfaceError, type PoolSummary, type UserPosition } from "../contract/types";
 import { formatAmount } from "../lib/format";
 
 type Step = "input" | "review" | "broadcasting" | "success";
+
+/**
+ * Withdrawal failure classes the modal renders distinctly (#620).
+ *
+ * `lockup_active` and `insufficient_liquidity` are expected, recoverable
+ * contract-level outcomes (mirroring `Error::LockupActive` and the
+ * withdrawal-queue flow in contracts/drip-pool/src/lib.rs) — very different
+ * from a generic wallet/RPC/contract failure, so they get their own heading,
+ * icon, and tone instead of collapsing into "Transaction failed".
+ */
+type WithdrawalErrorKind = "lockup_active" | "insufficient_liquidity" | "generic";
 
 const QUICK_AMOUNTS = [25, 50, 75] as const;
 
@@ -30,11 +41,20 @@ export interface WithdrawalModalProps {
   onClose: () => void;
 }
 
+function classifyWithdrawalError(err: unknown): WithdrawalErrorKind {
+  if (err instanceof ContractInterfaceError) {
+    if (err.kind === "lockup_active") return "lockup_active";
+    if (err.kind === "insufficient_liquidity") return "insufficient_liquidity";
+  }
+  return "generic";
+}
+
 export const WithdrawalModal: FC<WithdrawalModalProps> = ({ pool, position, onWithdraw, onClose }) => {
   const [step, setStep] = useState<Step>("input");
   const [amount, setAmount] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [queued, setQueued] = useState(false);
+  const [errorKind, setErrorKind] = useState<WithdrawalErrorKind>("generic");
 
   const depositedNum = parseFloat(position.deposited);
   const amountNum = parseFloat(amount) || 0;
@@ -54,6 +74,7 @@ export const WithdrawalModal: FC<WithdrawalModalProps> = ({ pool, position, onWi
   const handleContinue = useCallback(() => {
     if (!isValid) {
       setError(amountNum <= 0 ? "Enter an amount" : "Amount exceeds deposited position");
+      setErrorKind("generic");
       return;
     }
     setStep("review");
@@ -63,12 +84,14 @@ export const WithdrawalModal: FC<WithdrawalModalProps> = ({ pool, position, onWi
   const handleConfirm = useCallback(async () => {
     setStep("broadcasting");
     setError(null);
+    setErrorKind("generic");
     try {
       const outcome = await onWithdraw(amount);
       setQueued(outcome?.queued ?? false);
       setStep("success");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Transaction failed");
+      setErrorKind(classifyWithdrawalError(err));
       setStep("review");
     }
   }, [amount, onWithdraw]);
@@ -176,7 +199,24 @@ export const WithdrawalModal: FC<WithdrawalModalProps> = ({ pool, position, onWi
               </div>
             </div>
 
-            {error && <p className="text-sm text-red-400">{error}</p>}
+            {error && (errorKind === "lockup_active" || errorKind === "insufficient_liquidity") && (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-900/40 bg-amber-900/10 p-3 text-sm text-amber-300">
+                <Clock className="mt-0.5 h-4 w-4 shrink-0" />
+                <div>
+                  <p className="font-semibold">
+                    {errorKind === "lockup_active" ? "Still in lockup" : "Withdrawal queued"}
+                  </p>
+                  <p className="mt-0.5 text-amber-300/90">
+                    {errorKind === "lockup_active"
+                      ? "Your deposit is still within its lockup period and can't be withdrawn yet."
+                      : "The pool doesn't have enough available liquidity to settle this withdrawal immediately. Your request has been queued and will settle once liquidity is available."}
+                    {" "}
+                    {error}
+                  </p>
+                </div>
+              </div>
+            )}
+            {error && errorKind === "generic" && <p className="text-sm text-red-400">{error}</p>}
 
             <div className="flex gap-3">
               <button
@@ -199,28 +239,48 @@ export const WithdrawalModal: FC<WithdrawalModalProps> = ({ pool, position, onWi
 
         {step === "broadcasting" && (
           <div className="flex flex-col items-center gap-4 py-6">
-            <div className="flex h-16 w-16 items-center justify-center rounded-full border-2 border-red-500/30">
-              {error ? (
+            <div
+              className={`flex h-16 w-16 items-center justify-center rounded-full border-2 ${
+                errorKind === "lockup_active" || errorKind === "insufficient_liquidity"
+                  ? "border-amber-500/30"
+                  : "border-red-500/30"
+              }`}
+            >
+              {errorKind === "lockup_active" || errorKind === "insufficient_liquidity" ? (
+                <Clock className="h-8 w-8 text-amber-400" />
+              ) : error ? (
                 <AlertTriangle className="h-8 w-8 text-red-400" />
               ) : (
                 <Loader2 className="h-8 w-8 animate-spin text-red-400" />
               )}
             </div>
             <p className="text-base font-semibold text-white">
-              {error ? "Transaction failed" : "Broadcasting withdrawal..."}
+              {errorKind === "lockup_active"
+                ? "Still in lockup"
+                : errorKind === "insufficient_liquidity"
+                  ? "Withdrawal queued"
+                  : error
+                    ? "Transaction failed"
+                    : "Broadcasting withdrawal..."}
             </p>
             <p className="text-sm text-gray-400 text-center max-w-xs">
-              {error
-                ? error
-                : "Please check your wallet to approve the transaction."}
+              {errorKind === "lockup_active"
+                ? "Your deposit is still within its lockup period and can't be withdrawn yet. " +
+                  (error ?? "Try again after the lockup ends.")
+                : errorKind === "insufficient_liquidity"
+                  ? "The pool doesn't have enough available liquidity to settle this withdrawal immediately. " +
+                    (error ?? "Your request has been queued and will settle once liquidity is available.")
+                  : error
+                    ? error
+                    : "Please check your wallet to approve the transaction."}
             </p>
             {error && (
               <button
                 type="button"
-                onClick={() => { setStep("review"); setError(null); }}
+                onClick={() => { setStep("review"); setError(null); setErrorKind("generic"); }}
                 className="rounded-xl bg-red-600 px-6 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#1A0505]"
               >
-                Try again
+                {errorKind === "lockup_active" || errorKind === "insufficient_liquidity" ? "Back" : "Try again"}
               </button>
             )}
             {!error && (

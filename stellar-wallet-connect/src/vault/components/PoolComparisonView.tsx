@@ -22,25 +22,58 @@ interface ComparisonRow {
   render: (pool: PoolSummary) => ReactNode;
 }
 
+/** Sentinel for a comparison cell whose underlying metric is missing/unavailable
+ * rather than a real, present value. Rendered as "—" so it can never be
+ * mistaken for a real zero (#630). */
+const UNAVAILABLE = "—";
+
+/**
+ * True when a raw metric value from the pool feed represents "no data yet"
+ * rather than a real, present value of zero. Distinguishes `null`/`undefined`,
+ * an empty string, and `NaN`/non-finite numbers (all of which mean "unknown")
+ * from an actual `0` (a legitimate reading), which numeric coercion alone
+ * cannot tell apart — e.g. `Number("")` is `0`, not `NaN` (#630).
+ */
+function isMissingMetric(value: string | number | null | undefined): boolean {
+  if (value === null || value === undefined) return true;
+  if (typeof value === "string") {
+    if (value.trim() === "") return true;
+    return !Number.isFinite(Number(value));
+  }
+  return !Number.isFinite(value);
+}
+
+/** Renders a TVL/yield-style metric as "—" when unavailable, otherwise formats it normally. */
+function renderAmountMetric(value: string | undefined, asset: string): ReactNode {
+  if (isMissingMetric(value)) return UNAVAILABLE;
+  return formatAmount(value as string, asset);
+}
+
+/** Renders a count metric as "—" when unavailable, never coercing missing data to "0". */
+function renderCountMetric(value: number | null | undefined): ReactNode {
+  if (isMissingMetric(value)) return UNAVAILABLE;
+  return String(value);
+}
+
 const ROWS: ComparisonRow[] = [
   { label: "Status", render: (p) => {
     return (
       <PoolStatusBadge status={p.status} />
     );
   }},
-  { label: "TVL", render: (p) => formatAmount(p.tvl, p.asset) },
+  { label: "TVL", render: (p) => renderAmountMetric(p.tvl, p.asset) },
   { label: "Asset", render: (p) => p.asset },
-  { label: "Participants", render: (p) => String(p.participantCount) },
+  { label: "Participants", render: (p) => renderCountMetric(p.participantCount) },
   {
     label: "Expected yield",
-    render: (p) => (
-      <span title={YIELD_LABEL_TOOLTIP}>{formatYieldLabel(p.expectedYield)}</span>
-    ),
+    render: (p) => isMissingMetric(p.expectedYield)
+      ? UNAVAILABLE
+      : <span title={YIELD_LABEL_TOOLTIP}>{formatYieldLabel(p.expectedYield)}</span>,
   },
-  { label: "Prize", render: (p) => p.prize ?? "—" },
-  { label: "Opens", render: (p) => p.opensAt ? formatDate(p.opensAt) : "—" },
-  { label: "Locks", render: (p) => p.locksAt ? formatDate(p.locksAt) : "—" },
-  { label: "Draws", render: (p) => p.drawsAt ? formatDate(p.drawsAt) : "—" },
+  { label: "Prize", render: (p) => p.prize ?? UNAVAILABLE },
+  { label: "Opens", render: (p) => p.opensAt ? formatDate(p.opensAt) : UNAVAILABLE },
+  { label: "Locks", render: (p) => p.locksAt ? formatDate(p.locksAt) : UNAVAILABLE },
+  { label: "Draws", render: (p) => p.drawsAt ? formatDate(p.drawsAt) : UNAVAILABLE },
 ];
 
 export const PoolComparisonView: FC<PoolComparisonViewProps> = ({

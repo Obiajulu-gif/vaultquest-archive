@@ -151,6 +151,37 @@ describe("DrawProofService", () => {
       expect(prisma.drawProof.create).toHaveBeenCalled();
     });
 
+    it("records the contract's on-chain Round.principal_snapshot on the proof when available (#642)", async () => {
+      const prisma = makeMockPrisma({
+        action: makeSelectWinnerAction(),
+      });
+      const rpc = makeRpc({
+        getContractData: vi.fn().mockImplementation((_contractId: string, key: string) => {
+          if (key === "Round:1") {
+            return Promise.resolve({ value: JSON.stringify({ principal_snapshot: "3500000" }) });
+          }
+          return Promise.reject(new Error("not found"));
+        }),
+      });
+      const svc = new DrawProofService(prisma, rpc);
+      const result = await svc.generateProof({ actionId: "action-123" });
+
+      expect(result).not.toBeNull();
+      expect(result!.proofJson.snapshot.roundPrincipalSnapshot).toBe("3500000");
+    });
+
+    it("omits roundPrincipalSnapshot (never fabricates one) when the contract round data can't be fetched", async () => {
+      const prisma = makeMockPrisma({
+        action: makeSelectWinnerAction(),
+      });
+      // Default makeRpc() rejects every getContractData call.
+      const svc = new DrawProofService(prisma, makeRpc());
+      const result = await svc.generateProof({ actionId: "action-123" });
+
+      expect(result).not.toBeNull();
+      expect(result!.proofJson.snapshot.roundPrincipalSnapshot).toBeUndefined();
+    });
+
     it("returns existing proof if already generated", async () => {
       const existingProof = {
         id: "existing-uuid",

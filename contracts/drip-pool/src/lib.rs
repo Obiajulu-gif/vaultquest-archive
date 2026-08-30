@@ -4,7 +4,7 @@
 //!
 //! This is the **authoritative** contract for VaultQuest pool state: principal,
 //! rewards/yield, round/draw state, pause, and winner settlement all live here.
-//! `contracts/vault` is a deprecated, incompatible skeleton (single-admin, no
+//! `contracts/_deprecated/vault` is a deprecated, incompatible skeleton (single-admin, no
 //! rounds/lockups/claim-deadlines, no real token custody) and MUST NOT be used
 //! for new deployments — see `contracts/CONTRACT_BOUNDARY.md` for the full
 //! decision record and legacy-deployment compatibility path. The backend,
@@ -181,6 +181,7 @@ pub enum Error {
     TokenDecimalsNotConfigured = 75, // token decimals not set (#599)
     StrategyCodeHashNotAllowed = 76, // strategy code hash not on allowlist (#602)
     BalanceVerificationFailed = 77,  // strategy reported values not backed by real balance (#601)
+    RoundHasOutstandingDeposits = 78, // prune_round called but participants still have unclaimed deposits (#558)
 }
 
 // ── Structs ────────────────────────────────────────────────────────────────
@@ -2218,6 +2219,56 @@ impl DripPool {
             (who, round_id, share),
         );
         Ok(share)
+    }
+
+    /// Admin-only: prune `RoundDeposit` entries and the `Round` itself for
+    /// a fully settled round whose participants have all claimed. Accepts a
+    /// list of participant addresses whose deposits should be removed — each
+    /// must have a zero `round_deposit_of` (already claimed). If all listed
+    /// participants have claimed, the `Round` entry is also removed to
+    /// reclaim persistent storage. Rejects pruning a round that still has
+    /// outstanding unclaimed deposits (#558).
+    pub fn prune_round(
+        env: Env,
+        caller: Address,
+        round_id: u32,
+        participants: Vec<Address>,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+        Self::require_signer(&env, &caller)?;
+        Self::require_compatible_config(&env)?;
+
+        let round = Self::load_round(&env, round_id)?;
+        if round.status != RoundStatus::Settled {
+            return Err(Error::RoundNotLocked);
+        }
+
+        for i in 0..participants.len() {
+            let who = participants.get(i).unwrap();
+            let deposit: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::RoundDeposit(who.clone(), round_id))
+                .unwrap_or(0);
+            if deposit > 0 {
+                return Err(Error::RoundHasOutstandingDeposits);
+            }
+            env.storage()
+                .persistent()
+                .remove(&DataKey::RoundDeposit(who, round_id));
+        }
+
+        // Remove the round entry itself to reclaim storage.
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Round(round_id));
+        Self::bump_instance(&env);
+
+        env.events().publish(
+            (symbol_short!("round"), symbol_short!("pruned")),
+            round_id,
+        );
+        Ok(())
     }
 
     fn load_round(env: &Env, round_id: u32) -> Result<Round, Error> {

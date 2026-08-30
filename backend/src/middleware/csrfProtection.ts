@@ -1,18 +1,21 @@
+/**
+ * CSRF Protection Middleware (Double-Submit Cookie Pattern).
+ *
+ * Implements CSRF protection for state-changing HTTP requests.
+ * Issues a `csrf-token` cookie and `X-CSRF-Token` header on GET requests.
+ * Validates matching token on POST, PUT, DELETE, and PATCH requests.
+ *
+ * NOTE ON RATE LIMITING:
+ * Rate limiting for the application is handled separately by `@fastify/rate-limit`
+ * in `backend/src/app.ts` (or `backend/src/plugins/rate-limit.ts` if configured).
+ * This middleware is dedicated solely to CSRF protection.
+ */
+
 import type { FastifyPluginAsync } from "fastify";
 import fp from "fastify-plugin";
 import { ERROR_CODES } from "../constants.js";
 import { AppError } from "../errors.js";
 import { randomUUID } from "node:crypto";
-
-const WINDOW_MS = 15 * 60 * 1000; // 15 minutes
-
-interface RateLimitInfo {
-  count: number;
-  resetTime: number;
-}
-
-const publicStore = new Map<string, RateLimitInfo>();
-const sensitiveStore = new Map<string, RateLimitInfo>();
 
 function parseCookies(cookieHeader: string | undefined): Record<string, string> {
   const cookies: Record<string, string> = {};
@@ -31,10 +34,9 @@ const plugin: FastifyPluginAsync = async (app) => {
   app.addHook("preHandler", async (req, reply) => {
     const method = req.method;
 
-    // CSRF Protection
     // Skip CSRF check for:
-    // - GET, HEAD, OPTIONS requests
-    // - Internal APIs (starts with /internal/)
+    // - Safe HTTP methods (GET, HEAD, OPTIONS)
+    // - Internal API routes (starts with /internal/)
     if (["GET", "HEAD", "OPTIONS"].includes(method) || req.url.startsWith("/internal/")) {
       // For GET requests, ensure a CSRF token exists
       if (method === "GET") {
@@ -49,7 +51,7 @@ const plugin: FastifyPluginAsync = async (app) => {
       return;
     }
 
-    // Enforce CSRF check for state-changing requests (POST, PUT, DELETE, PATCH)
+    // Enforce CSRF token match for state-changing requests (POST, PUT, DELETE, PATCH)
     const cookies = parseCookies(req.headers.cookie);
     const cookieToken = cookies["csrf-token"];
     const headerToken = req.headers["x-csrf-token"];
@@ -62,4 +64,4 @@ const plugin: FastifyPluginAsync = async (app) => {
   });
 };
 
-export const rateLimiter = fp(plugin, { name: "rateLimiter" });
+export const csrfProtection = fp(plugin, { name: "csrfProtection" });

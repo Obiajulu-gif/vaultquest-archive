@@ -84,4 +84,5 @@ re-run the full harness without skipped or modified assertions.
 | Date (UTC) | PR | Operation | Delta | Cause |
 |---|---|---|---|---|
 | 2026-04-26 | this PR | scaffold | n/a | Establishes baseline; no real numbers yet. |
+| 2026-08-29 | #558 | `prune_round` | +1 new error variant, ~50 LOC | Adds admin entrypoint to remove `RoundDeposit` entries and `Round` storage for fully settled rounds, preventing unbounded persistent storage growth across many rounds. |
 

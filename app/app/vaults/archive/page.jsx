@@ -2,8 +2,9 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Archive, CalendarDays, ChevronLeft, Trophy, Users } from "lucide-react";
+import { Archive, AlertTriangle, CalendarDays, ChevronLeft, Trophy, Users } from "lucide-react";
 import { VAULT_ROUND_ARCHIVE } from "@/lib/vault-mock-data";
+import { isArchiveEntryStale } from "@/lib/pool-status";
 
 const PAGE_SIZE = 3;
 
@@ -97,7 +98,9 @@ export default function VaultRoundArchivePage() {
         </section>
       ) : (
         <section className="space-y-4" aria-label="Completed rounds">
-          {visibleRounds.map((round) => (
+          {visibleRounds.map((round) => {
+            const stale = isArchiveEntryStale(round.verifiedAt);
+            return (
             <article key={round.id} className="vq-glass-hover p-5">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                 <div>
@@ -106,6 +109,19 @@ export default function VaultRoundArchivePage() {
                     <span className="rounded-full border border-vault-border bg-vault-surface px-2.5 py-1 text-xs font-semibold text-vault-muted">
                       {round.network} · {round.asset}
                     </span>
+                    {stale && (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-300"
+                        title={
+                          round.verifiedAt
+                            ? `Last verified ${formatDate(round.verifiedAt.slice(0, 10))} — may not reflect the latest on-chain state`
+                            : "Not yet verified against on-chain state"
+                        }
+                      >
+                        <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                        May be stale
+                      </span>
+                    )}
                   </div>
                   <p className="mt-2 flex items-center gap-2 text-sm text-vault-muted">
                     <CalendarDays className="h-4 w-4" aria-hidden="true" />
@@ -124,7 +140,8 @@ export default function VaultRoundArchivePage() {
                 <SummaryMetric icon={Trophy} label="Prize payout" value={formatCurrency(round.prizePayout)} />
               </div>
             </article>
-          ))}
+            );
+          })}
 
           <div className="flex flex-col items-center gap-3 pt-2">
             {hasMore ? (

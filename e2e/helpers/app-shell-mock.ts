@@ -1,5 +1,5 @@
 import { type Page } from "@playwright/test";
-import { injectMockWallet } from "./wallet-mock";
+import { injectConnectedMockWallet } from "./wallet-mock";
 
 export async function mockAppShell(page: Page, { connected = false } = {}) {
   await page.addInitScript(() => {
@@ -52,7 +52,7 @@ export async function mockAppShell(page: Page, { connected = false } = {}) {
   });
 
   if (connected) {
-    await injectMockWallet(page, "0x1234567890123456789012345678901234567890");
+    await injectConnectedMockWallet(page, "0x1234567890123456789012345678901234567890");
   } else {
     await page.addInitScript(() => {
       Object.defineProperty(window, "ethereum", {

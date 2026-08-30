@@ -34,7 +34,7 @@ Test 1: Dashboard Flow
 
 Test 2: Account Page Flow
 ─────────────────────────
-1. Navigate to /app/account?mockConnected=true
+1. Inject connected mock wallet, then navigate to /app/account
 2. Verify: "Your profile" visible ✓
 3. Navigate to /app/account (disconnect simulation)
 4. Verify: Connect prompt visible ✓
@@ -67,8 +67,8 @@ Test 6: Navigation Persistence
 
 Test 7: Reconnect Guidance
 ─────────────────────────
-1. Navigate to /app/account?mockConnected=true
-2. Navigate to /app/account (disconnect)
+1. Inject connected mock wallet, then navigate to /app/account
+2. Disconnect wallet
 3. Verify: Reconnect button visible ✓
 
 Test 8: Wallet Address Removal
@@ -108,13 +108,17 @@ e2e/
 ## Helper Functions
 
 ### `injectMockWallet(page, address?)`
-Injects a mock Ethereum wallet for testing.
+Injects a mock Ethereum wallet for testing. Use `injectConnectedMockWallet`
+when a test needs the wallet to be connected before page load.
 
 ```typescript
-import { injectMockWallet } from './helpers/wallet-mock';
+import { injectConnectedMockWallet, injectMockWallet } from './helpers/wallet-mock';
 
 await injectMockWallet(page);
 // Now the page has window.ethereum available
+
+await injectConnectedMockWallet(page);
+await page.goto('/app/account');
 ```
 
 ### `simulateWalletDisconnect(page)`

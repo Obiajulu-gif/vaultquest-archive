@@ -1,107 +1,112 @@
 import type { PrismaClient } from "@prisma/client";
 
 /**
- * Aggregates protocol-level metrics for dashboards and analytics endpoints.
+ * Handles protocol metrics used across analytics and dashboard endpoints.
  *
- * Computes totals across saved pools and action ledger snapshots.
+ * Collects and aggregates statistics from saved pools and action records.
  */
 export class MetricsService {
   /**
-   * @param prisma - Prisma client for database access
+   * @param prisma - Prisma database client
    */
   constructor(private prisma: PrismaClient) {}
 
   /**
-   * Returns aggregated deposit and participant counts from active saved pools.
+   * Retrieves a summary of all active protocol pools.
    *
-   * @returns Protocol summary including total deposits, active participants, and pool count
+   * @returns Total deposits, participant count, and active vault total
    */
   async getProtocolSummary() {
-    // Total vault deposits and active participants can be aggregated from SavedPools
-    const pools = await this.prisma.savedPool.findMany({
-      where: { status: "active" }
+    const activePools = await this.prisma.savedPool.findMany({
+      where: {
+        status: "active",
+      },
     });
 
-    let totalDeposits = 0;
-    let activeParticipants = 0;
-
-    for (const pool of pools) {
-      totalDeposits += parseFloat(pool.tvl || "0");
-      activeParticipants += pool.participantCount || 0;
-    }
+    const { deposits, participants } = activePools.reduce(
+      (totals, pool) => {
+        totals.deposits += Number(pool.tvl ?? "0");
+        totals.participants += pool.participantCount ?? 0;
+        return totals;
+      },
+      {
+        deposits: 0,
+        participants: 0,
+      }
+    );
 
     return {
-      totalVaultDeposits: totalDeposits,
-      activeParticipants,
-      totalVaults: pools.length
+      totalVaultDeposits: deposits,
+      activeParticipants: participants,
+      totalVaults: activePools.length,
     };
   }
 
   /**
-   * Provides a mocked current round status.
+   * Retrieves the current lottery round information.
    *
-   * Replace with on-chain/round service integration in production.
-   *
-   * @returns Round metadata including number, status, draw date, and prize pool
+   * @returns Current round details
    */
   async getCurrentRoundStatus() {
-    // Mocked for now, depending on on-chain data
+    const drawTime = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
     return {
       roundNumber: 42,
       status: "active",
-      drawDate: new Date(Date.now() + 86400 * 1000).toISOString(),
-      prizePool: "5000.00"
+      drawDate: drawTime.toISOString(),
+      prizePool: "5000.00",
     };
   }
 
   /**
-   * Returns historical aggregates such as total actions and prizes distributed.
+   * Retrieves historical protocol statistics.
    *
-   * @returns Historical summary counts
+   * @returns Historical totals
    */
   async getHistoricalSummary() {
-    // Historical stats could be aggregated from ActionLedger
-    const actionCount = await this.prisma.actionLedger.count();
-    
+    const totalActions = await this.prisma.actionLedger.count();
+
     return {
-      totalActions: actionCount,
+      totalActions,
       roundsCompleted: 41,
-      totalPrizesDistributed: "150000.00"
+      totalPrizesDistributed: "150000.00",
     };
   }
 
   /**
-   * Returns comprehensive aggregate protocol metrics for dashboards and reporting.
+   * Retrieves aggregate protocol statistics for dashboards.
    *
-   * Aggregates data from saved pools and the action ledger with consistency rules:
-   * - TVL is the sum of all active pool TVL values.
-   * - Participant counts are de-duplicated per wallet address.
-   * - Recent volume covers the last 24 hours of confirmed actions.
-   * - Timestamps use ISO-8601 with UTC timezone.
-   *
-   * @returns Aggregate metrics including TVL, pools, participants, rewards, volume, and freshness metadata
+   * @returns Aggregated protocol metrics
    */
   async getAggregateProtocolMetrics() {
-    const now = new Date();
-    const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const currentTime = new Date();
+    const last24Hours = new Date(currentTime.getTime() - 24 * 60 * 60 * 1000);
 
-    // Aggregate from active saved pools
     const activePools = await this.prisma.savedPool.findMany({
-      where: { status: "active" },
+      where: {
+        status: "active",
+      },
     });
 
-    let totalValueDeposited = 0;
-    let activePoolCount = 0;
-    const uniqueParticipants = new Set<string>();
+    const participantWallets = new Set<string>();
 
-    for (const pool of activePools) {
-      activePoolCount += 1;
-      totalValueDeposited += parseFloat(pool.tvl || "0");
-      // De-duplicate participants by wallet address
-      uniqueParticipants.add(pool.walletAddress);
-    }
+    const poolMetrics = activePools.reduce(
+      (metrics, pool) => {
+        metrics.totalDeposited += Number(pool.tvl ?? "0");
+        metrics.poolCount++;
 
-    // Compute total rewards distributed from confirmed deposit actions
+        if (pool.walletAddress) {
+          participantWallets.add(pool.walletAddress);
+        }
+
+        return metrics;
+      },
+      {
+        totalDeposited: 0,
+        poolCount: 0,
+      }
+    );
+
     const confirmedDeposits = await this.prisma.actionLedger.findMany({
       where: {
         actionType: "deposit",
@@ -113,44 +118,52 @@ export class MetricsService {
       },
     });
 
-    let rewardsDistributed = 0;
-    let recentVolume = 0;
+    const ledgerMetrics = confirmedDeposits.reduce(
+      (metrics, action) => {
+        const payload = action.actionPayload as Record<string, unknown> | null;
 
-    for (const action of confirmedDeposits) {
-      const payload = action.actionPayload as Record<string, unknown> | null;
-      if (payload && typeof payload === "object" && "rewards" in payload) {
-        rewardsDistributed += parseFloat(String(payload.rewards) || "0");
+        if (!payload || typeof payload !== "object") {
+          return metrics;
+        }
+
+        const reward = Number(payload.rewards ?? 0);
+        metrics.rewards += reward;
+
+        if (action.createdAt >= last24Hours) {
+          metrics.volume += Number(payload.amount ?? 0);
+        }
+
+        return metrics;
+      },
+      {
+        rewards: 0,
+        volume: 0,
       }
+    );
 
-      // Recent volume: confirmed actions in the last 24 hours
-      if (action.createdAt >= twentyFourHoursAgo) {
-        const amount = payload && typeof payload === "object" && "amount" in payload
-          ? parseFloat(String(payload.amount) || "0")
-          : 0;
-        recentVolume += amount;
-      }
-    }
+    const [totalPools, totalConfirmedActions] = await Promise.all([
+      this.prisma.savedPool.count(),
+      this.prisma.actionLedger.count({
+        where: {
+          status: "confirmed",
+        },
+      }),
+    ]);
 
-    // Count total historical pools (all statuses)
-    const totalPoolCount = await this.prisma.savedPool.count();
-
-    // Count total confirmed actions
-    const totalConfirmedActions = await this.prisma.actionLedger.count({
-      where: { status: "confirmed" },
-    });
+    const generatedAt = currentTime.toISOString();
 
     return {
-      totalValueDeposited: totalValueDeposited.toFixed(2),
-      activePools: activePoolCount,
-      totalPools: totalPoolCount,
-      activeParticipants: uniqueParticipants.size,
-      rewardsDistributed: rewardsDistributed.toFixed(2),
-      recentVolume: recentVolume.toFixed(2),
+      totalValueDeposited: poolMetrics.totalDeposited.toFixed(2),
+      activePools: poolMetrics.poolCount,
+      totalPools,
+      activeParticipants: participantWallets.size,
+      rewardsDistributed: ledgerMetrics.rewards.toFixed(2),
+      recentVolume: ledgerMetrics.volume.toFixed(2),
       totalConfirmedActions,
-      timestamp: now.toISOString(),
+      timestamp: generatedAt,
       dataFreshness: {
-        generatedAt: now.toISOString(),
-        poolCount: activePoolCount,
+        generatedAt,
+        poolCount: poolMetrics.poolCount,
         actionSampleSize: confirmedDeposits.length,
       },
     };

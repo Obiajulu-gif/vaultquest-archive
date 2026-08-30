@@ -16,7 +16,7 @@ import { getEnv } from "../env.js";
 import { createLogger } from "../logger.js";
 import { PrismaClient } from "@prisma/client";
 import { LedgerService } from "../services/ledger.js";
-import { SorobanRpcEventSource, defaultXdrDecoder } from "../services/stellarIndexer.js";
+import { SorobanRpcEventSource, sorobanNativeXdrDecoder } from "../services/stellarIndexer.js";
 
 const env = getEnv();
 const logger = createLogger(env.LOG_LEVEL);
@@ -54,12 +54,22 @@ function parseArgs() {
 async function run() {
   const { startLedger, endLedger, dryRun } = parseArgs();
 
+  if (!env.SOROBAN_RPC_URL) {
+    console.error("Error: SOROBAN_RPC_URL must be set to run the backfill");
+    process.exit(1);
+  }
+
   const prisma = new PrismaClient({
     datasources: { db: { url: env.DATABASE_URL } }
   });
 
   const ledgerService = new LedgerService(prisma);
-  const source = new SorobanRpcEventSource({ rpcUrl: env.SOROBAN_RPC_URL });
+  const contractIds = env.INDEXER_CONTRACT_IDS?.split(",").map((s) => s.trim()).filter(Boolean);
+  const source = new SorobanRpcEventSource({
+    rpcUrl: env.SOROBAN_RPC_URL.split(",").map((s) => s.trim()),
+    contractIds,
+    maxPageFetch: 10000
+  });
 
   logger.info({ startLedger, endLedger, dryRun }, "Starting ledger range backfill");
   console.log(`Starting backfill from ledger ${startLedger} to ${endLedger}${dryRun ? ' (DRY RUN)' : ''}...`);
@@ -74,7 +84,24 @@ async function run() {
     const rawEvents = await source.fetchEvents({ startLedger, endLedger, limit: 10000 });
 
     for (const raw of rawEvents) {
-      const payload = defaultXdrDecoder.decode(raw);
+      let payload: Record<string, unknown>;
+      try {
+        payload = sorobanNativeXdrDecoder.decode(raw);
+      } catch (err) {
+        logger.warn({ err, txHash: raw.txHash, eventId: raw.id }, "backfill: quarantining malformed event");
+        if (!dryRun) {
+          await ledgerService.quarantineEvent({
+            sorobanEventId: raw.id,
+            ledger: raw.ledger,
+            contractId: raw.contractId,
+            txHash: raw.txHash,
+            rawEvent: raw,
+            reason: err instanceof Error ? err.message : String(err)
+          });
+        }
+        failed += 1;
+        continue;
+      }
       const statusHint = raw.successful ? "confirmed" : "reverted";
 
       if (dryRun) {

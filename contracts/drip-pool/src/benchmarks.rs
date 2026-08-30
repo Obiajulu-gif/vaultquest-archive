@@ -43,6 +43,12 @@ fn skip_lockup(env: &Env) {
     env.ledger().set_sequence_number(current + 120_961);
 }
 
+/// Advance ledger sequence past the high-risk governance timelock (#533).
+fn skip_high_risk_delay(env: &Env) {
+    let current = env.ledger().sequence();
+    env.ledger().set_sequence_number(current + HIGH_RISK_DELAY_LEDGERS + 1);
+}
+
 fn create_participants(env: &Env, client: &DripPoolClient, count: u32) -> Vec<Address> {
     let mut participants = Vec::new(env);
     for _ in 0..count {
@@ -479,7 +485,9 @@ fn bench_propose_and_approve_2_of_2() {
         &ProposalAction::ReleaseEscrow(recipient.clone(), 5_000),
     );
     let executed = client.approve(&signer2, &pid);
-    assert!(executed);
+    assert!(!executed, "high-risk action must not execute before its delay");
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&signer2, &pid);
 
     let pool = client.pool();
     assert_eq!(pool.total_deposited, 5_000);
@@ -498,9 +506,11 @@ fn bench_propose_and_approve_3_of_5() {
     client.seed_admin(&admin, &signer2);
     client.seed_admin(&admin, &signer3);
 
-    // Lower threshold to 3 via proposal
+    // Lower threshold to 3 via proposal (high-risk: needs its own delay).
     let threshold_pid = client.propose(&admin, &ProposalAction::SetThreshold(3));
     let _ = client.approve(&signer2, &threshold_pid);
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&signer2, &threshold_pid);
 
     client.deposit(&admin, &10_000);
 
@@ -511,7 +521,9 @@ fn bench_propose_and_approve_3_of_5() {
     );
     let _ = client.approve(&signer2, &pid);
     let executed = client.approve(&signer3, &pid);
-    assert!(executed);
+    assert!(!executed, "high-risk action must not execute before its delay");
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&signer3, &pid);
 
     let pool = client.pool();
     assert_eq!(pool.total_deposited, 5_000);
@@ -956,7 +968,9 @@ fn bench_proposal_with_5_admins() {
     let _ = client.approve(&signer2, &pid);
     let _ = client.approve(&signer3, &pid);
     let executed = client.approve(&signer4, &pid);
-    assert!(executed);
+    assert!(!executed, "high-risk action must not execute before its delay");
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&signer4, &pid);
 
     let pool = client.pool();
     assert_eq!(pool.total_deposited, 5_000);
@@ -1177,4 +1191,41 @@ fn bench_stress_max_operations() {
         let user = participants.get(i).unwrap();
         let _ = client.withdraw(&user);
     }
+}
+
+// ── Benchmark: RoundDeposit pruning (#558) ──────────────────────────────────
+
+/// Measures the cost of pruning a settled round with N participants who have
+/// all claimed. Demonstrates that pruning reclaims storage proportional to
+/// the number of participants in the round.
+#[test]
+fn bench_prune_round_1000_participants() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let round_id = client.open_round(&admin);
+    let participants = create_participants(&env, &client, 1000);
+
+    for i in 0..participants.len() {
+        let user = participants.get(i).unwrap();
+        client.round_deposit(&user, &round_id, &100);
+    }
+
+    client.lock_round(&admin, &round_id);
+    client.settle_round(&admin, &round_id, &0, &0);
+
+    // All participants claim (zeroing their per-round deposits).
+    for i in 0..participants.len() {
+        let user = participants.get(i).unwrap();
+        let _ = client.round_claim(&user, &round_id);
+    }
+
+    // Prune: removes 1000 RoundDeposit entries + the Round itself.
+    client.prune_round(&admin, &round_id, &participants);
+
+    // Verify the round is gone.
+    assert_eq!(
+        client.try_round(&round_id),
+        Err(Ok(Error::RoundNotFound))
+    );
 }

@@ -1,0 +1,23 @@
+{
+  "eventType": "reward",
+  "valid": {
+    "topic": "reward",
+    "value": { "vault_id": "v1", "amount": "150", "recipient": "GREWARD...", "version": 2 },
+    "successful": true
+  },
+  "malformed": {
+    "topic": "reward",
+    "rawValue": "undefined_token(",
+    "successful": true
+  },
+  "legacyVersion": {
+    "topic": "reward",
+    "value": { "vault_id": "v1", "amount": "150", "version": 1 },
+    "successful": true
+  },
+  "unknownVersion": {
+    "topic": "reward",
+    "value": { "vault_id": "v1", "amount": "150", "version": 999 },
+    "successful": true
+  }
+}

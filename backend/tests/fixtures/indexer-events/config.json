@@ -1,0 +1,23 @@
+{
+  "eventType": "config",
+  "valid": {
+    "topic": "config",
+    "value": { "vault_id": "v1", "key": "min_deposit", "new_value": "100", "version": 2 },
+    "successful": true
+  },
+  "malformed": {
+    "topic": "config",
+    "rawValue": "{key:'min_deposit'",
+    "successful": true
+  },
+  "legacyVersion": {
+    "topic": "config",
+    "value": { "vault_id": "v1", "key": "min_deposit", "version": 1 },
+    "successful": true
+  },
+  "unknownVersion": {
+    "topic": "config",
+    "value": { "vault_id": "v1", "key": "min_deposit", "version": 999 },
+    "successful": true
+  }
+}

@@ -249,6 +249,69 @@ describe("applyRepairPlan", () => {
   });
 });
 
+describe("insolvency_drift", () => {
+  let db: TestDb;
+  beforeAll(async () => { db = await startTestDb(); });
+  afterAll(async () => { await db.stop(); });
+  beforeEach(async () => { await resetDb(db.prisma); });
+
+  it("detects insolvency when withdrawals exceed deposits for a vault", async () => {
+    // Deposit 100 into vault "v1"
+    await seedAction(db.prisma, {
+      idempotencyKey: "insol-deposit",
+      status: "confirmed",
+      actionType: "deposit",
+      actionPayload: { vault_id: "v1", amount: 100 }
+    });
+    // Withdraw 200 from vault "v1" — exceeds deposits
+    await seedAction(db.prisma, {
+      idempotencyKey: "insol-withdraw",
+      status: "confirmed",
+      actionType: "withdraw",
+      actionPayload: { vault_id: "v1", amount: 200 }
+    });
+
+    const drifts = await detectDrift(db.prisma);
+    const insolvency = drifts.find((d) => d.type === "insolvency_drift");
+    expect(insolvency).toBeDefined();
+    expect(insolvency!.recordId).toBe("v1");
+    expect(insolvency!.details.netTrackedPrincipal).toBe(-100);
+  });
+
+  it("does not flag healthy vaults (deposits >= withdrawals)", async () => {
+    await seedAction(db.prisma, {
+      idempotencyKey: "healthy-deposit",
+      status: "confirmed",
+      actionType: "deposit",
+      actionPayload: { vault_id: "v2", amount: 500 }
+    });
+    await seedAction(db.prisma, {
+      idempotencyKey: "healthy-withdraw",
+      status: "confirmed",
+      actionType: "withdraw",
+      actionPayload: { vault_id: "v2", amount: 300 }
+    });
+
+    const drifts = await detectDrift(db.prisma);
+    const insolvency = drifts.find((d) => d.type === "insolvency_drift");
+    expect(insolvency).toBeUndefined();
+  });
+
+  it("quarantines insolvency_drift in buildRepairPlan", () => {
+    const drifts = [{
+      type: "insolvency_drift" as const,
+      recordType: "vault_settlement" as const,
+      recordId: "v3",
+      details: { vaultId: "v3", netTrackedPrincipal: -500, actionCount: 2, message: "test" }
+    }];
+    const plan = buildRepairPlan(drifts, false);
+    expect(plan.steps).toHaveLength(0);
+    // insolvency_drift is quarantined, not auto-repaired
+    const quarantined = plan.drifts.filter((d) => d.type === "insolvency_drift");
+    expect(quarantined).toHaveLength(1);
+  });
+});
+
 describe("reconcileAll", () => {
   let db: TestDb;
   let svc: LedgerService;

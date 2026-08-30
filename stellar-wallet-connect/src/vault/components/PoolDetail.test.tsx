@@ -40,6 +40,20 @@ describe("availableActions", () => {
   it("offers nothing while drawing", () => {
     expect(availableActions({ ...basePool, status: "drawing" }, joined)).toEqual([]);
   });
+
+  it("blocks join while the pool is in emergency pause", () => {
+    expect(availableActions({ ...basePool, isEmergency: true }, null)).toEqual([]);
+  });
+
+  it("blocks drip but keeps withdraw while the pool is in emergency pause", () => {
+    expect(availableActions({ ...basePool, isEmergency: true }, joined)).toEqual(["withdraw"]);
+  });
+
+  it("keeps claim and withdraw available when settled and paused", () => {
+    expect(
+      availableActions({ ...basePool, status: "settled", isEmergency: true }, joined)
+    ).toEqual(["claim", "withdraw"]);
+  });
 });
 
 describe("PoolDetail", () => {
@@ -105,5 +119,46 @@ describe("PoolDetail", () => {
   it("renders an error state with retry", () => {
     render(<PoolDetail pool={null} error="nope" onRetry={() => {}} />);
     expect(screen.getByText(/couldn't load pool/i)).toBeInTheDocument();
+  });
+
+  describe("TVL confidence indicator (#658)", () => {
+    it("shows no confidence indicator when tvlConfidence is omitted", () => {
+      render(<PoolDetail pool={basePool} />);
+      expect(screen.queryByLabelText(/verified across providers/i)).not.toBeInTheDocument();
+      expect(screen.queryByLabelText(/limited provider confirmation/i)).not.toBeInTheDocument();
+      expect(screen.queryByLabelText(/providers disagree/i)).not.toBeInTheDocument();
+    });
+
+    it("shows a verified indicator when providers agree", () => {
+      render(<PoolDetail pool={basePool} tvlConfidence="verified" />);
+      expect(screen.getByLabelText(/verified across providers/i)).toBeInTheDocument();
+    });
+
+    it("shows a degraded indicator when read confidence is degraded", () => {
+      render(<PoolDetail pool={basePool} tvlConfidence="degraded" />);
+      expect(screen.getByLabelText(/limited provider confirmation/i)).toBeInTheDocument();
+    });
+
+    it("shows a conflicting indicator when providers disagree", () => {
+      render(<PoolDetail pool={basePool} tvlConfidence="conflicting" />);
+      expect(screen.getByLabelText(/providers disagree/i)).toBeInTheDocument();
+    });
+  it("does not show a pause banner or hide actions for a non-paused pool", () => {
+    render(<PoolDetail pool={basePool} position={null} />);
+    expect(screen.queryByText(/pool paused for recovery/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /join pool/i })).toBeInTheDocument();
+  });
+
+  it("shows a pause banner and hides join when the pool is in emergency mode", () => {
+    render(<PoolDetail pool={{ ...basePool, isEmergency: true }} position={null} />);
+    expect(screen.getByText(/pool paused for recovery/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /join pool/i })).not.toBeInTheDocument();
+  });
+
+  it("still shows withdraw (not gated on-chain) when paused and joined", () => {
+    render(<PoolDetail pool={{ ...basePool, isEmergency: true }} position={joined} />);
+    expect(screen.getByText(/pool paused for recovery/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /withdraw/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /add deposit/i })).not.toBeInTheDocument();
   });
 });

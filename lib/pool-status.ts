@@ -129,3 +129,88 @@ export function getPoolStatusMeta(status?: string | null): PoolStatusMeta {
 export function getPoolStatusClassName(status?: string | null): string {
   return TONE_CLASSES[getPoolStatusMeta(status).tone];
 }
+
+// ─── Round status ─────────────────────────────────────────────────────────────
+// A round is the active lifecycle window of a vault (open → pending → closed).
+// Round status is a strict subset of pool status — `active`, `pending`, and
+// `completed` all exist in POOL_STATUS above. This used to live in a separate
+// `lib/vault-status.js` module that duplicated the status-derivation concern;
+// it is consolidated here so there is a single canonical status module.
+
+export const ROUND_STATUS = {
+  ACTIVE: "active",
+  PENDING: "pending",
+  COMPLETED: "completed",
+} as const;
+
+export type RoundStatus = (typeof ROUND_STATUS)[keyof typeof ROUND_STATUS];
+
+export interface RoundStatusMeta {
+  label: string;
+  tone: "neutral" | "info" | "success" | "warning" | "danger";
+}
+
+const ROUND_STATUS_META: Record<RoundStatus, RoundStatusMeta> = {
+  [ROUND_STATUS.ACTIVE]: { label: "Active Round", tone: "success" },
+  [ROUND_STATUS.PENDING]: { label: "Pending Round", tone: "warning" },
+  [ROUND_STATUS.COMPLETED]: { label: "Completed Round", tone: "neutral" },
+};
+
+/**
+ * Returns the consistent label/tone for a round status, used by both
+ * vault cards and the vault detail page so status text never drifts.
+ * Unknown/malformed statuses fall back to `pending` (same behavior as the
+ * original `lib/vault-status.js`).
+ */
+export function getRoundStatusMeta(status?: string | null): RoundStatusMeta {
+  const normalized = normalizePoolStatus(status);
+  return (
+    ROUND_STATUS_META[normalized as RoundStatus] ??
+    ROUND_STATUS_META[ROUND_STATUS.PENDING]
+  );
+}
+
+// ─── Archive entry freshness (#622) ────────────────────────────────────────────
+// Minimal baseline slice: flag when an archived round's on-chain-derived data
+// is old enough that it should not be trusted without reconciling against
+// current chain state. This does NOT reconcile against the chain itself, run
+// repair tooling, or replace the indexer - it is a pure, presentation-layer
+// staleness check over whatever verification timestamp an archive entry
+// carries. Full drift reconciliation is out of scope here; see
+// docs/RECONCILIATION.md for that larger system.
+
+/**
+ * An archive entry is considered stale once its last verification is older
+ * than this, relative to "now". 24h mirrors the indexer's own "Critical"
+ * hard-lag framing in docs/INDEXER_RUNBOOK.md, applied here to archive
+ * metadata rather than live sync lag.
+ */
+export const ARCHIVE_STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Pure staleness check for one archive entry's verification timestamp.
+ *
+ * Returns `true` when:
+ *   - `verifiedAt` is missing/unparseable (never verified, or malformed
+ *     metadata - treated as stale rather than silently trusted), or
+ *   - the age of `verifiedAt` relative to `now` exceeds `thresholdMs`.
+ *
+ * A `verifiedAt` that is in the future (clock skew, bad data) is treated as
+ * stale as well, rather than "very fresh" - it should never be trusted less
+ * cautiously than an ordinary stale entry.
+ */
+export function isArchiveEntryStale(
+  verifiedAt: string | null | undefined,
+  now: Date | number = Date.now(),
+  thresholdMs: number = ARCHIVE_STALE_THRESHOLD_MS,
+): boolean {
+  if (!verifiedAt) return true;
+
+  const verifiedAtMs = new Date(verifiedAt).getTime();
+  if (Number.isNaN(verifiedAtMs)) return true;
+
+  const nowMs = typeof now === "number" ? now : now.getTime();
+  const ageMs = nowMs - verifiedAtMs;
+
+  return ageMs < 0 || ageMs > thresholdMs;
+}

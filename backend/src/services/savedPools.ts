@@ -63,6 +63,11 @@ export interface SavedPoolRecord {
   updatedAt: Date;
 }
 
+export type ListSavedPoolsResult = {
+  items: SavedPoolRecord[];
+  nextCursor: string | null;
+};
+
 /**
  * Manages saved pool records linked to user wallets.
  */
@@ -149,17 +154,29 @@ export class SavedPoolsService {
   }
 
   /**
-   * Lists all saved pools for a wallet.
+   * Lists saved pools for a wallet with cursor-based pagination.
    *
    * @param walletAddress - Wallet identifier
-   * @returns Saved pool records
+   * @param cursor - Optional cursor for pagination
+   * @param limit - Maximum number of records to return
+   * @returns Saved pool records with next cursor
    */
-  async listSavedPools(walletAddress: string): Promise<SavedPoolRecord[]> {
+  async listSavedPools(
+    walletAddress: string,
+    cursor?: string | null,
+    limit: number = 25
+  ): Promise<ListSavedPoolsResult> {
     const rows = await this.prisma.savedPool.findMany({
       where: { walletAddress },
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit + 1,
+      ...(cursor != null ? { cursor: { id: cursor }, skip: 1 } : {}),
     });
 
-    return rows as unknown as SavedPoolRecord[];
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    const nextCursor = hasMore ? (items[items.length - 1]?.id ?? null) : null;
+
+    return { items: items as unknown as SavedPoolRecord[], nextCursor };
   }
 }

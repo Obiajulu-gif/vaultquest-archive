@@ -1,14 +1,20 @@
 import { buildApp } from "./app.js";
 import { getEnv } from "./env.js";
-import { getPrisma } from "./db.js";
+import { getPrisma, pingDatabase } from "./db.js";
 import { createLogger } from "./logger.js";
-import { startReconcilerCron, startQuestCron, startIndexerCron, startBackupCron } from "./cron.js";
+import {
+  startReconcilerCron,
+  startQuestCron,
+  startIndexerCron,
+  startBackupCron,
+  startNotificationReminderCron
+} from "./cron.js";
 import { CacheService } from "./services/cacheService.js";
 import { LedgerService } from "./services/ledger.js";
 import {
   StellarIndexer,
   SorobanRpcEventSource,
-  defaultXdrDecoder
+  sorobanNativeXdrDecoder
 } from "./services/stellarIndexer.js";
 import { setAttestationInfo } from "./routes/health.js";
 import type { ScheduledTask } from "node-cron";
@@ -70,7 +76,13 @@ const app = buildApp({
   internalSecret: env.INTERNAL_SERVICE_SECRET,
   apiKey: env.API_KEY,
   logger,
-  cacheService
+  cacheService,
+  categoriesCacheTtlSeconds: env.CATEGORIES_CACHE_TTL_SECONDS,
+  reminderLeadHours: env.REMINDER_LEAD_HOURS,
+  adminWalletAddresses: (env.ADMIN_WALLET_ADDRESSES ?? "")
+    .split(",")
+    .map((wallet) => wallet.trim())
+    .filter(Boolean)
 });
 
 // Periodic write-behind sync task: sync checkpoint from cache to PostgreSQL database every 15 seconds
@@ -91,19 +103,47 @@ const cronTask = startReconcilerCron({
 
 const questCronTask = startQuestCron({ prisma, logger });
 
+// Maturity / claim-window reminder notifications (issue #446).
+const notificationCronTask = startNotificationReminderCron({
+  prisma,
+  leadHours: env.REMINDER_LEAD_HOURS,
+  logger
+});
+
 // Stellar indexer daemon (#indexer). Only started when a Soroban RPC endpoint
 // and at least one contract id are configured.
 let indexerCronTask: ScheduledTask | undefined;
 if (env.SOROBAN_RPC_URL && env.INDEXER_CONTRACT_IDS) {
-  const contractIds = env.INDEXER_CONTRACT_IDS.split(",").map((s) => s.trim()).filter(Boolean);
+  const staticContractIds = env.INDEXER_CONTRACT_IDS.split(",").map((s) => s.trim()).filter(Boolean);
+  const indexerLedgerService = new LedgerService(prisma, cacheService);
   const indexer = new StellarIndexer({
-    ledger: new LedgerService(prisma, cacheService),
-    source: new SorobanRpcEventSource({ rpcUrl: env.SOROBAN_RPC_URL, contractIds }),
-    decoder: defaultXdrDecoder,
-    logger
+    ledger: indexerLedgerService,
+    source: new SorobanRpcEventSource({ rpcUrl: env.SOROBAN_RPC_URL.split(",").map((s) => s.trim()), contractIds: staticContractIds }),
+    decoder: sorobanNativeXdrDecoder,
+    logger,
+    // #507: widen the static env list with any pools the factory has
+    // registered on-chain, so a newly deployed pool starts being indexed
+    // on the next tick without an env var change + restart.
+    resolveContractIds: async () => {
+      const registryAddresses = await indexerLedgerService.getActivePoolAddresses();
+      return Array.from(new Set([...staticContractIds, ...registryAddresses]));
+    },
+    // #507: only a `fpooldep` event emitted by this exact contract is
+    // trusted into the pool registry — see stellarIndexer.ts's
+    // factoryAddress check ("spoofed pools" acceptance criterion). Left
+    // undefined (fail closed, events logged and skipped) if not configured.
+    factoryAddress: env.VAULT_FACTORY_ADDRESS
   });
-  indexerCronTask = startIndexerCron({ prisma, indexer, logger });
-  logger.info({ contractIds }, "stellar indexer daemon started");
+
+  // Resume from the last persisted checkpoint instead of re-fetching from the
+  // RPC's default window (which would either replay or gap-skip history).
+  const checkpoint = await indexerLedgerService.getIndexerCheckpoint();
+  if (checkpoint?.lastProcessedEventId) {
+    indexer.setCursor(checkpoint.lastProcessedEventId);
+  }
+
+  indexerCronTask = startIndexerCron({ prisma, indexer, ledger: indexerLedgerService, logger });
+  logger.info({ contractIds: staticContractIds, resumeCursor: checkpoint?.lastProcessedEventId ?? null }, "stellar indexer daemon started");
 }
 
 // Automated database backup cron (#275). Only started when BACKUP_DIR is set.
@@ -114,7 +154,8 @@ if (env.BACKUP_DIR) {
     databaseUrl: env.DATABASE_URL,
     retainDays: env.BACKUP_RETAIN_DAYS,
     schedule: env.BACKUP_SCHEDULE,
-    logger
+    logger,
+    prisma
   });
   logger.info(
     { backupDir: env.BACKUP_DIR, schedule: env.BACKUP_SCHEDULE },
@@ -127,6 +168,7 @@ async function shutdown(signal: string) {
   clearInterval(cacheSyncInterval);
   cronTask.stop();
   questCronTask.stop();
+  notificationCronTask.stop();
   indexerCronTask?.stop();
   backupCronTask?.stop();
   await app.close();
@@ -138,10 +180,15 @@ async function shutdown(signal: string) {
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 
-app
-  .listen({ port: env.PORT, host: "0.0.0.0" })
-  .then((addr) => logger.info({ addr }, "listening"))
-  .catch((err) => {
-    logger.error({ err }, "failed to start");
+pingDatabase(prisma).then((isConnected) => {
+  if (!isConnected) {
+    logger.error("failed to connect to database on startup. shutting down.");
     process.exit(1);
-  });
+  }
+  return app.listen({ port: env.PORT, host: "0.0.0.0" });
+}).then((addr) => {
+  if (addr) logger.info({ addr }, "listening");
+}).catch((err) => {
+  logger.error({ err }, "failed to start");
+  process.exit(1);
+});

@@ -20,6 +20,14 @@ const schema = z.object({
   // polls the Soroban RPC for the listed contracts' events.
   SOROBAN_RPC_URL: z.string().url().optional(),
   INDEXER_CONTRACT_IDS: z.string().optional(),
+  /**
+   * #507 — the one trusted vault-factory contract address. Required for
+   * the indexer to trust any `fpooldep` (pool-deployed) registry event —
+   * without it, such events are logged and skipped rather than blindly
+   * upserted into PoolRegistry (see stellarIndexer.ts's factoryAddress
+   * check, closing the "spoofed pools" acceptance-criteria gap).
+   */
+  VAULT_FACTORY_ADDRESS: z.string().optional(),
   // Deployment manifest attestation
   NETWORK_PASSPHRASE: z.string().min(1).optional(),
   DEPLOYMENT_MANIFEST_PATH: z.string().optional(),
@@ -36,6 +44,12 @@ const schema = z.object({
     })
     .optional(),
   /**
+   * Comma-separated wallet addresses that may access admin-only backend routes.
+   * These are validated against server-side wallet sessions; the public
+   * frontend allowlist is only a display hint.
+   */
+  ADMIN_WALLET_ADDRESSES: z.string().optional(),
+  /**
    * Automated database backup configuration (issue #275).
    * BACKUP_DIR: absolute path where pg_dump files are written.
    *   When unset, the backup cron is not started.
@@ -44,7 +58,35 @@ const schema = z.object({
    */
   BACKUP_DIR: z.string().min(1).optional(),
   BACKUP_RETAIN_DAYS: z.coerce.number().int().positive().default(7),
-  BACKUP_SCHEDULE: z.string().default("0 2 * * *")
+  BACKUP_SCHEDULE: z.string().default("0 2 * * *"),
+  /**
+   * Redis connection string for the caching layer (issue #485), e.g.
+   * `redis://localhost:6379` or a managed provider URL with credentials.
+   * When unset, caching gracefully degrades to direct database reads.
+   */
+  REDIS_URL: z.string().url().optional(),
+  /**
+   * Cache TTL (seconds) for the GET /api/categories response (issue #485).
+   */
+  CATEGORIES_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(3600),
+  /**
+   * Reminder lead time (hours) for maturity/claim-window notifications
+   * (issue #446). A reminder is generated once a saved pool's `locksAt` or
+   * `drawsAt` timestamp falls within this many hours of "now".
+   */
+  REMINDER_LEAD_HOURS: z.coerce.number().int().positive().default(24),
+  SENDGRID_API_KEY: z.string().min(1).optional(),
+  EMAIL_FROM: z.string().email().optional(),
+  /**
+   * Critical-read quorum/freshness policy (issue #596). Applied to
+   * balance-critical Stellar RPC reads (withdrawals, admin repairs,
+   * reconciliation) via `services/criticalReadPolicy.ts`. Defaults are
+   * conservative but overridable per-environment.
+   */
+  CRITICAL_READ_MIN_QUORUM: z.coerce.number().int().positive().default(2),
+  CRITICAL_READ_MAX_FRESHNESS_MS: z.coerce.number().int().positive().default(15_000),
+  CRITICAL_READ_MAX_LEDGER_DIVERGENCE: z.coerce.number().int().nonnegative().default(2),
+  CRITICAL_READ_MAX_LATENCY_MS: z.coerce.number().int().positive().default(8_000)
 });
 
 export type Env = z.infer<typeof schema>;
@@ -73,12 +115,23 @@ export function getEnv(): Env {
       NODE_ENV: (process.env.NODE_ENV ?? "development") as Env["NODE_ENV"],
       SOROBAN_RPC_URL: process.env.SOROBAN_RPC_URL || undefined,
       INDEXER_CONTRACT_IDS: process.env.INDEXER_CONTRACT_IDS || undefined,
+      VAULT_FACTORY_ADDRESS: process.env.VAULT_FACTORY_ADDRESS || undefined,
       NETWORK_PASSPHRASE: process.env.NETWORK_PASSPHRASE || undefined,
       DEPLOYMENT_MANIFEST_PATH: process.env.DEPLOYMENT_MANIFEST_PATH || undefined,
       API_KEY: process.env.API_KEY || undefined,
+      ADMIN_WALLET_ADDRESSES: process.env.ADMIN_WALLET_ADDRESSES || undefined,
       BACKUP_DIR: process.env.BACKUP_DIR || undefined,
       BACKUP_RETAIN_DAYS: Number(process.env.BACKUP_RETAIN_DAYS ?? 7),
-      BACKUP_SCHEDULE: process.env.BACKUP_SCHEDULE ?? "0 2 * * *"
+      BACKUP_SCHEDULE: process.env.BACKUP_SCHEDULE ?? "0 2 * * *",
+      REDIS_URL: process.env.REDIS_URL || undefined,
+      CATEGORIES_CACHE_TTL_SECONDS: Number(process.env.CATEGORIES_CACHE_TTL_SECONDS ?? 3600),
+      REMINDER_LEAD_HOURS: Number(process.env.REMINDER_LEAD_HOURS ?? 24),
+      SENDGRID_API_KEY: process.env.SENDGRID_API_KEY || undefined,
+      EMAIL_FROM: process.env.EMAIL_FROM || undefined,
+      CRITICAL_READ_MIN_QUORUM: Number(process.env.CRITICAL_READ_MIN_QUORUM ?? 2),
+      CRITICAL_READ_MAX_FRESHNESS_MS: Number(process.env.CRITICAL_READ_MAX_FRESHNESS_MS ?? 15_000),
+      CRITICAL_READ_MAX_LEDGER_DIVERGENCE: Number(process.env.CRITICAL_READ_MAX_LEDGER_DIVERGENCE ?? 2),
+      CRITICAL_READ_MAX_LATENCY_MS: Number(process.env.CRITICAL_READ_MAX_LATENCY_MS ?? 8_000)
     } satisfies Env;
   }
   return parseEnv();

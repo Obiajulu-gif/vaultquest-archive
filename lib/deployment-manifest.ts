@@ -29,6 +29,35 @@ const BuildSchema = z.object({
   contractWasmHash: z.string().optional(),
 });
 
+/**
+ * Governance section added in #632: records who can upgrade, pause, or
+ * administer each deployed contract so validation scripts can fail loudly on
+ * unexpected authority changes.
+ */
+const GovernanceSchema = z.object({
+  /**
+   * Minimum number of signers required to authorise an upgrade or admin
+   * operation. Must be >= 1; if > 1 this implies a multisig scheme.
+   */
+  signerThreshold: z.number().int().min(1),
+  /**
+   * Stellar account (or C… contract) that holds admin authority — can call
+   * admin-only entry points (e.g. `set_admin`, `set_fee`).
+   */
+  adminAuthority: z.string().min(1),
+  /**
+   * Stellar account (or C… contract) authorised to upgrade the WASM bytecode.
+   * Separation from adminAuthority mirrors the Soroban authority model where
+   * upgrade capability is distinct from run-time administration.
+   */
+  upgradeAuthority: z.string().min(1),
+  /**
+   * Optional: account authorised to invoke emergency pause. Defaults to
+   * adminAuthority if absent; recorded here for operational transparency.
+   */
+  pauseAuthority: z.string().min(1).optional(),
+});
+
 export const DeploymentManifestSchema = z.object({
   version: z.string().regex(/^\d+\.\d+\.\d+$/, "Must be semver"),
   environment: z.enum(["staging", "production"]),
@@ -36,6 +65,8 @@ export const DeploymentManifestSchema = z.object({
   contracts: ContractsSchema,
   assets: z.array(z.record(z.string())).default([]),
   build: BuildSchema,
+  /** Governance/authority metadata — required for mainnet, optional for staging. */
+  governance: GovernanceSchema.optional(),
   signature: z.string().optional(),
 });
 
@@ -48,14 +79,38 @@ export interface ManifestMismatch {
   envValue: string;
 }
 
+/**
+ * Spec hashes for contracts that have been superseded and must never be
+ * accepted, even if still deployed on-chain (#495 — contracts/vault and any
+ * other retired drip-pool build). Populate as legacy spec hashes are confirmed.
+ */
+export const DEPRECATED_CONTRACT_SPEC_HASHES: ReadonlySet<string> = new Set([]);
+
+/** Throws when the manifest's contract spec has been superseded (#495). */
+export function assertContractSpecNotDeprecated(manifest: DeploymentManifest): void {
+  const specHash = manifest.contracts.dripPool.specHash;
+  if (specHash && DEPRECATED_CONTRACT_SPEC_HASHES.has(specHash)) {
+    throw new Error(
+      `Deployment manifest references a deprecated contract spec (${specHash}). ` +
+        `contracts/drip-pool is the sole authoritative contract; see contracts/CONTRACT_BOUNDARY.md`
+    );
+  }
+}
+
 let _cached: DeploymentManifest | null = null;
 
 function validateAndCache(raw: string): DeploymentManifest {
-  let parsed: unknown;
+  let parsed: any;
   try {
     parsed = JSON.parse(raw);
   } catch {
     throw new Error("Deployment manifest is not valid JSON");
+  }
+
+  if (parsed && parsed.contracts) {
+    if (parsed.contracts.escrow && !parsed.contracts.escrow.contractId) {
+      delete parsed.contracts.escrow;
+    }
   }
 
   const result = DeploymentManifestSchema.safeParse(parsed);
@@ -65,6 +120,8 @@ function validateAndCache(raw: string): DeploymentManifest {
       .join("; ");
     throw new Error(`Invalid deployment manifest: ${issues}`);
   }
+
+  assertContractSpecNotDeprecated(result.data);
 
   _cached = result.data;
   return _cached;
@@ -184,16 +241,88 @@ export function validateManifestAgainstEnv(
   return mismatches;
 }
 
+// ─── Governance validation (#632) ─────────────────────────────────────────────
+
+export interface GovernanceViolation {
+  field: string;
+  manifestValue: string;
+  expectedValue: string;
+  reason: string;
+}
+
+const GOVERNANCE_ENV_MAP = {
+  adminAuthority: "EXPECTED_ADMIN_AUTHORITY",
+  upgradeAuthority: "EXPECTED_UPGRADE_AUTHORITY",
+  pauseAuthority: "EXPECTED_PAUSE_AUTHORITY",
+} as const;
+
 /**
- * Returns true when the loaded manifest's version differs from the
- * compiled NEXT_PUBLIC_APP_VERSION env var (#660).
- * Used by the stale-client refresh prompt.
+ * Validates the manifest's governance block against expected authorities from
+ * environment variables (#632).  Returns violations found; an empty array means
+ * all checked fields match.  Throws when the manifest is mainnet but has no
+ * governance block, since authority tracking is mandatory for production.
  */
-export function isStaleClient(manifest: DeploymentManifest): boolean {
-  const compiledVersion =
-    typeof process !== "undefined"
-      ? process.env.NEXT_PUBLIC_APP_VERSION
-      : undefined;
-  if (!compiledVersion) return false;
-  return manifest.version !== compiledVersion;
+export function validateManifestGovernance(
+  manifest: DeploymentManifest,
+  env: Record<string, string | undefined> = typeof process !== "undefined" ? process.env : {},
+): GovernanceViolation[] {
+  if (!manifest.governance) {
+    if (manifest.network.name === "mainnet") {
+      throw new Error(
+        "Governance block is required for mainnet deployments but is absent from the manifest."
+      );
+    }
+    return [];
+  }
+
+  const gov = manifest.governance;
+  const violations: GovernanceViolation[] = [];
+
+  // Check each authority field against its expected env var.
+  for (const [field, envKey] of Object.entries(GOVERNANCE_ENV_MAP) as [keyof typeof GOVERNANCE_ENV_MAP, string][]) {
+    const manifestValue = gov[field];
+    const expectedValue = env[envKey];
+    if (!expectedValue || !manifestValue) continue;
+    if (manifestValue !== expectedValue) {
+      violations.push({
+        field: `governance.${field}`,
+        manifestValue,
+        expectedValue,
+        reason: `${field} does not match ${envKey}`,
+      });
+    }
+  }
+
+  // Signer threshold from env
+  const expectedThresholdRaw = env["EXPECTED_SIGNER_THRESHOLD"];
+  if (expectedThresholdRaw) {
+    const expected = Number(expectedThresholdRaw);
+    if (Number.isInteger(expected) && gov.signerThreshold !== expected) {
+      violations.push({
+        field: "governance.signerThreshold",
+        manifestValue: String(gov.signerThreshold),
+        expectedValue: expectedThresholdRaw,
+        reason: `signerThreshold does not match EXPECTED_SIGNER_THRESHOLD`,
+      });
+    }
+  }
+
+  return violations;
+}
+
+/**
+ * Throws if governance validation finds any violations.  Convenience wrapper
+ * for use in CI/deploy scripts where failure should be fatal.
+ */
+export function assertGovernanceValid(
+  manifest: DeploymentManifest,
+  env?: Record<string, string | undefined>,
+): void {
+  const violations = validateManifestGovernance(manifest, env);
+  if (violations.length > 0) {
+    const details = violations
+      .map((v) => `  ${v.field}: manifest="${v.manifestValue}" expected="${v.expectedValue}" (${v.reason})`)
+      .join("\n");
+    throw new Error(`Governance authority validation failed:\n${details}`);
+  }
 }

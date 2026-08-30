@@ -100,6 +100,12 @@
                           },
                           {
                             "key": {
+                              "symbol": "claim_deadline"
+                            },
+                            "val": "void"
+                          },
+                          {
+                            "key": {
                               "symbol": "created_at"
                             },
                             "val": {
@@ -124,11 +130,25 @@
                           },
                           {
                             "key": {
+                              "symbol": "principal_in_strategy"
+                            },
+                            "val": {
+                              "i128": "0"
+                            }
+                          },
+                          {
+                            "key": {
                               "symbol": "proposal_nonce"
                             },
                             "val": {
                               "u32": 0
                             }
+                          },
+                          {
+                            "key": {
+                              "symbol": "strategy"
+                            },
+                            "val": "void"
                           },
                           {
                             "key": {
@@ -144,6 +164,14 @@
                             },
                             "val": {
                               "u64": "0"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "unclaimed_swept"
+                            },
+                            "val": {
+                              "bool": false
                             }
                           }
                         ]

@@ -22,7 +22,7 @@ import { writeFileSync, readFileSync, existsSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { execSync } from "child_process";
-import { DeploymentManifestSchema } from "../lib/deployment-manifest.js";
+import { DeploymentManifestSchema, assertGovernanceValid } from "../lib/deployment-manifest.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -83,6 +83,14 @@ const manifest = {
     buildTimestamp: new Date().toISOString(),
     contractWasmHash: env("CONTRACT_WASM_HASH"),
   },
+  ...(env("GOVERNANCE_ADMIN_AUTHORITY") ? {
+    governance: {
+      signerThreshold: Number(env("GOVERNANCE_SIGNER_THRESHOLD", "1")),
+      adminAuthority: env("GOVERNANCE_ADMIN_AUTHORITY"),
+      upgradeAuthority: env("GOVERNANCE_UPGRADE_AUTHORITY") || env("GOVERNANCE_ADMIN_AUTHORITY"),
+      ...(env("GOVERNANCE_PAUSE_AUTHORITY") ? { pauseAuthority: env("GOVERNANCE_PAUSE_AUTHORITY") } : {}),
+    },
+  } : {}),
 };
 
 const result = DeploymentManifestSchema.safeParse(manifest);
@@ -104,8 +112,19 @@ if (existsSync(outPath)) {
   }
 }
 
+// Validate governance authorities against expected env vars when present.
+try {
+  assertGovernanceValid(result.data, process.env);
+} catch (err) {
+  console.error((err as Error).message);
+  process.exit(1);
+}
+
 writeFileSync(outPath, JSON.stringify(result.data, null, 2) + "\n");
 console.log(`Wrote deployment-manifest.json v${manifest.version} (${manifest.environment})`);
 console.log(`  Network: ${manifest.network.name} (${manifest.network.passphrase.substring(0, 30)}...)`);
 console.log(`  Commit:  ${manifest.build.commitSha}`);
 console.log(`  Drip pool: ${manifest.contracts.dripPool.contractId || "(not set)"}`);
+if (result.data.governance) {
+  console.log(`  Governance: threshold=${result.data.governance.signerThreshold}, admin=${result.data.governance.adminAuthority}`);
+}

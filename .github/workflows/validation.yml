@@ -49,6 +49,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Strict JSON.parse check on all package.json files
+        run: node ./scripts/check-package-json.js
+
       - name: Lint
         run: pnpm run lint
 

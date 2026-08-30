@@ -1,5 +1,6 @@
 "use client";
 
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { useTranslation } from "next-i18next";
 import {
@@ -12,8 +13,11 @@ import {
   Shield,
   Settings,
   SquareStack,
+  Plus,
+  AlertCircle,
 } from "lucide-react";
 import { motion } from "framer-motion";
+import { getFrontendEnv, getManifestAttestation, attestManifest } from "@vaultquest/stellar-wallet-connect";
 
 const PROTOCOL_PARAMETERS = [
   {
@@ -27,9 +31,14 @@ const PROTOCOL_PARAMETERS = [
     note: "Keeps operational churn low for small deposits.",
   },
   {
-    label: "Maximum deposit per vault",
+    label: "Maximum deposit per wallet",
     value: "250,000 XLM",
-    note: "Prevents single-wallet concentration risk.",
+    note: "Enforced on-chain by drip-pool's max_wallet_deposit (#643) — a deposit that would push a wallet's cumulative principal past this value is rejected by the contract itself, not only validated here.",
+  },
+  {
+    label: "Maximum deposit per vault (protocol-wide)",
+    value: "10,000,000 XLM",
+    note: "Enforced on-chain by drip-pool's max_pool_deposit (#643), independently of the per-wallet limit above — a vault can reject a deposit for being over the protocol-wide cap even when the depositing wallet is well under its own limit.",
   },
   {
     label: "Treasury fee",
@@ -162,6 +171,18 @@ const STATUS_STYLE = {
     dot: "bg-amber-400",
     icon: Clock3,
   },
+  loading: {
+    label: "Checking...",
+    className: "bg-gray-500/15 text-gray-300 ring-gray-400/30",
+    dot: "bg-gray-400",
+    icon: Clock3,
+  },
+  unavailable: {
+    label: "Unavailable",
+    className: "bg-red-500/15 text-red-300 ring-red-400/30",
+    dot: "bg-red-500",
+    icon: AlertTriangle,
+  },
 };
 
 function StatusBadge({ status }) {
@@ -197,10 +218,183 @@ function MetricCard({ label, value, detail, icon: Icon }) {
 
 export default function AdminSettingsPage() {
   const { t } = useTranslation("common");
+
+  const [health, setHealth] = useState({
+    smartContract: { status: "loading", detail: "Checking contract deployment..." },
+    backendApi: { status: "loading", detail: "Checking backend health..." },
+    indexer: { status: "loading", detail: "Checking indexer sync..." },
+    rpcLayer: { status: "loading", detail: "Checking Horizon RPC..." },
+  });
+  const [attestation, setAttestation] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+
+    async function verifyHealth() {
+      let envData;
+      let env = {
+        NEXT_PUBLIC_HORIZON_URL: "https://horizon-testnet.stellar.org",
+        NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID: "",
+      };
+      try {
+        envData = getFrontendEnv();
+        env = { ...env, ...envData };
+      } catch (e) {
+        console.warn("Failed to load frontend env", e);
+      }
+
+      const API_BASE = process.env.NEXT_PUBLIC_VAULTQUEST_API_BASE_URL || "/api";
+      const horizonUrl = env.NEXT_PUBLIC_HORIZON_URL;
+      const contractId = env.NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID;
+
+      // Check attestation
+      try {
+        const att = attestManifest(envData);
+        if (active) setAttestation(att);
+      } catch (e) {
+        console.error("Attestation check failed", e);
+      }
+
+      // Check Backend API
+      let backendApi = { status: "unavailable", detail: "Backend API is unreachable." };
+      try {
+        const start = performance.now();
+        const res = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(5000) });
+        const latency = performance.now() - start;
+        if (res.ok) {
+          const body = await res.json();
+          const uptime = body.data?.uptime ?? 0;
+          if (latency > 1000) {
+            backendApi = {
+              status: "degraded",
+              detail: `Healthy but latency is high (${Math.round(latency)}ms). Uptime: ${uptime}s.`,
+            };
+          } else {
+            backendApi = {
+              status: "operational",
+              detail: `Responding healthy. Latency: ${Math.round(latency)}ms. Uptime: ${uptime}s.`,
+            };
+          }
+        } else {
+          backendApi = {
+            status: "unavailable",
+            detail: `Returned HTTP ${res.status}.`,
+          };
+        }
+      } catch {
+        backendApi = { status: "unavailable", detail: "Endpoint timed out or is offline." };
+      }
+
+      // Check Indexer
+      let indexer = { status: "unavailable", detail: "Indexer endpoint is offline." };
+      try {
+        const res = await fetch(`${API_BASE}/health/indexer`, { signal: AbortSignal.timeout(5000) });
+        if (res.ok) {
+          const body = await res.json();
+          const data = body.data;
+          let status = "operational";
+          let detail = `Healthy. Latest ledger: ${data.latest_ledger}. Lag: ${data.sync_lag} ledgers.`;
+          if (data.status === "degraded" || data.last_error) {
+            status = "degraded";
+            detail = `Degraded: ${data.last_error || "Lagging"}. Lag: ${data.sync_lag} ledgers.`;
+          } else if (data.sync_lag > 20) {
+            status = "unavailable";
+            detail = `Critical lag: ${data.sync_lag} ledgers.`;
+          } else if (data.sync_lag >= 5) {
+            status = "degraded";
+            detail = `Lagging behind. Lag: ${data.sync_lag} ledgers.`;
+          }
+          indexer = { status, detail };
+        } else {
+          indexer = { status: "unavailable", detail: `Returned HTTP ${res.status}.` };
+        }
+      } catch {
+        // use default
+      }
+
+      // Check Horizon RPC
+      let rpcLayer = { status: "unavailable", detail: "Horizon node is unresponsive." };
+      try {
+        const start = performance.now();
+        const res = await fetch(`${horizonUrl}/`, { signal: AbortSignal.timeout(5000) });
+        const latency = performance.now() - start;
+        if (res.ok) {
+          if (latency < 500) {
+            rpcLayer = { status: "operational", detail: `Responsive. Latency: ${Math.round(latency)}ms.` };
+          } else if (latency <= 2000) {
+            rpcLayer = { status: "degraded", detail: `Slow response. Latency: ${Math.round(latency)}ms.` };
+          } else {
+            rpcLayer = { status: "unavailable", detail: `High latency: ${Math.round(latency)}ms.` };
+          }
+        } else {
+          rpcLayer = { status: "degraded", detail: `Returned HTTP ${res.status}.` };
+        }
+      } catch {
+        // use default
+      }
+
+      // Check Smart Contract
+      let smartContract = { status: "unavailable", detail: "Contract ID not configured." };
+      if (contractId) {
+        try {
+          const res = await fetch(`${horizonUrl}/accounts/${contractId}`, { signal: AbortSignal.timeout(5000) });
+          if (res.status === 200) {
+            smartContract = {
+              status: "operational",
+              detail: `Contract verified on-chain. Address: ${contractId}.`,
+            };
+          } else if (res.status === 404) {
+            smartContract = {
+              status: "unavailable",
+              detail: `Contract address ${contractId} is not deployed on this network.`,
+            };
+          } else {
+            smartContract = {
+              status: "degraded",
+              detail: `Verification query returned status ${res.status}.`,
+            };
+          }
+        } catch {
+          smartContract = { status: "unavailable", detail: "Verification query timed out or failed." };
+        }
+      }
+
+      if (active) {
+        setHealth({ smartContract, backendApi, indexer, rpcLayer });
+      }
+    }
+
+    verifyHealth();
+    return () => { active = false; };
+  }, []);
+
+  const serviceItems = [
+    {
+      name: "Smart contract",
+      status: health.smartContract.status,
+      detail: health.smartContract.detail,
+    },
+    {
+      name: "Backend API",
+      status: health.backendApi.status,
+      detail: health.backendApi.detail,
+    },
+    {
+      name: "Indexer",
+      status: health.indexer.status,
+      detail: health.indexer.detail,
+    },
+    {
+      name: "Stellar Horizon RPC",
+      status: health.rpcLayer.status,
+      detail: health.rpcLayer.detail,
+    },
+  ];
+
   const totals = {
     parameters: PROTOCOL_PARAMETERS.length,
     rounds: ACTIVE_ROUNDS.length,
-    services: SERVICE_STATUS.length,
+    services: serviceItems.length,
     notes: OPERATIONAL_NOTES.length,
   };
 
@@ -245,6 +439,36 @@ export default function AdminSettingsPage() {
         </div>
       </motion.header>
 
+      {/* Attestation Mismatch Warnings */}
+      {attestation && !attestation.verified && (
+        <div className="rounded-3xl border border-red-500/30 bg-red-950/40 p-5 text-red-200">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="h-6 w-6 text-red-400 shrink-0 mt-0.5" aria-hidden="true" />
+            <div>
+              <h3 className="text-base font-bold text-white">Deployment Mismatch Detected</h3>
+              <p className="text-sm text-red-300 mt-1">
+                The active network configuration does not match the compiled deployment manifest:
+              </p>
+              <ul className="mt-3 list-disc list-inside text-sm space-y-1.5 text-red-300">
+                {attestation.mismatches.map((m) => (
+                  <li key={m.field}>
+                    <strong>{m.field}</strong>: Expected &quot;{m.manifestValue}&quot;, Active &quot;{m.envValue}&quot;
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-4 text-sm">
+                <a
+                  href="/docs/DEPLOYMENT_PROVENANCE.md"
+                  className="underline font-semibold text-white hover:text-red-200"
+                >
+                  Read Deployment Provenance Documentation
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           label="Protocol parameters"
@@ -260,7 +484,7 @@ export default function AdminSettingsPage() {
         />
         <MetricCard
           label="Service status"
-          value={`${SERVICE_STATUS.filter((s) => s.status === "operational").length}/${totals.services}`}
+          value={`${serviceItems.filter((s) => s.status === "operational").length}/${totals.services}`}
           detail="Services currently in an operational state."
           icon={Server}
         />
@@ -389,19 +613,41 @@ export default function AdminSettingsPage() {
             </div>
 
             <div className="mt-5 space-y-3">
-              {SERVICE_STATUS.map((service) => (
+              {serviceItems.map((service) => (
                 <div
                   key={service.name}
-                  className="flex items-start justify-between gap-3 rounded-2xl border border-vault-border bg-vault-surface/40 p-4"
+                  className="flex flex-col gap-2 rounded-2xl border border-vault-border bg-vault-surface/40 p-4"
                 >
-                  <div className="flex items-start gap-3">
-                    <span className={`mt-1 h-2.5 w-2.5 rounded-full ${STATUS_STYLE[service.status].dot}`} />
-                    <div>
-                      <p className="font-medium text-vault-text">{service.name}</p>
-                      <p className="mt-1 text-sm text-vault-muted">{service.detail}</p>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-3">
+                      <span className={`mt-1 h-2.5 w-2.5 rounded-full ${STATUS_STYLE[service.status]?.dot ?? "bg-gray-400"}`} />
+                      <div>
+                        <p className="font-medium text-vault-text">{service.name}</p>
+                        <p className="mt-1 text-sm text-vault-muted">{service.detail}</p>
+                      </div>
                     </div>
+                    <StatusBadge status={service.status} />
                   </div>
-                  <StatusBadge status={service.status} />
+
+                  {/* Remediation Links for Stale or Failed Statuses */}
+                  {service.name === "Indexer" && service.status !== "operational" && service.status !== "loading" && (
+                    <div className="mt-1 pl-5.5 text-xs text-amber-300">
+                      <span>See the </span>
+                      <a href="/docs/INDEXER_RUNBOOK.md" className="underline font-semibold hover:text-white transition-colors">
+                        Indexer Operations Runbook
+                      </a>
+                      <span> for recovery steps.</span>
+                    </div>
+                  )}
+                  {service.name === "Smart contract" && service.status !== "operational" && service.status !== "loading" && (
+                    <div className="mt-1 pl-5.5 text-xs text-red-300">
+                      <span>Verify deployment or see </span>
+                      <a href="/docs/env-inventory.md" className="underline font-semibold hover:text-white transition-colors">
+                        Environment Inventory Guide
+                      </a>
+                      <span>.</span>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

@@ -2,8 +2,6 @@ import {
   type DrawProof,
   type VerificationResult,
   type VerificationField,
-  computeHash,
-  computeWinnerProofHash,
   verifyProofIntegrity,
 } from "./draw-proof";
 
@@ -43,24 +41,37 @@ function fieldUnverified(name: string, detail: string): VerificationField {
   return { name, status: "unverified", detail };
 }
 
-async function verifyDocumentIntegrity(proof: DrawProof): Promise<VerificationField> {
-  const result = await verifyProofIntegrity(proof);
-  const docField = result.fields.find((f) => f.name === "document_integrity");
-  return docField ?? fieldFail("document_integrity", "missing from integrity check");
-}
-
-async function verifyWinnerHashChain(proof: DrawProof): Promise<VerificationField> {
-  const result = await verifyProofIntegrity(proof);
-  const winnerField = result.fields.find((f) => f.name === "winner_proof_hash");
-  return winnerField ?? fieldFail("winner_proof_hash", "missing from integrity check");
-}
-
-async function verifySeedHash(proof: DrawProof): Promise<VerificationField> {
-  const recomputed = await computeHash(proof.randomness.seed);
-  if (recomputed === proof.randomness.seedHash) {
-    return fieldPass("seed_hash");
+/**
+ * Confirms the randomness reveal actually happened on-chain (not merely
+ * self-consistent inside the document) and that it landed at or after the
+ * committed ledger — closing the gap the document-only checks in
+ * verifyProofIntegrity can't cover on their own (#494).
+ */
+async function verifyRandomnessReveal(
+  proof: DrawProof,
+  rpc: StellarRpcClient
+): Promise<VerificationField> {
+  try {
+    const tx = await rpc.getTransaction(proof.randomness.revealTxHash);
+    if (!tx) {
+      return fieldFail("randomness_reveal", `reveal transaction ${proof.randomness.revealTxHash} not found on chain`);
+    }
+    if (!tx.successful) {
+      return fieldFail("randomness_reveal", `reveal transaction ${proof.randomness.revealTxHash} was not successful (status: ${tx.status})`);
+    }
+    if (tx.ledger < proof.randomness.commitmentLedgerSeq) {
+      return fieldFail(
+        "randomness_reveal",
+        `reveal at ledger ${tx.ledger} precedes commitment ledger ${proof.randomness.commitmentLedgerSeq}`
+      );
+    }
+    return fieldPass("randomness_reveal");
+  } catch (err) {
+    return fieldUnverified(
+      "randomness_reveal",
+      `RPC error: ${err instanceof Error ? err.message : String(err)}`
+    );
   }
-  return fieldFail("seed_hash", `expected ${recomputed}, got ${proof.randomness.seedHash}`);
 }
 
 async function verifyPayoutTransaction(
@@ -114,6 +125,61 @@ async function verifySnapshotLedger(
   }
 }
 
+/**
+ * Cross-checks the proof's `snapshot.totalDeposits` (summed off-chain from
+ * participant data) against the drip-pool contract's own
+ * `Round.principal_snapshot` for this round (#642) — the deterministic
+ * cutoff balance the contract freezes at `lock_round`, before which no late
+ * deposit can be counted. Without this check, a proof's `totalDeposits`
+ * figure is trusted purely from the off-chain participants list; this reads
+ * the contract's frozen storage directly and fails the check if they
+ * disagree, so eligible-balance evidence is independently verifiable rather
+ * than only self-consistent.
+ *
+ * `unverified` (not `fail`) when the proof predates #642 and never recorded
+ * `roundPrincipalSnapshot` — there is nothing to cross-check, not a mismatch.
+ */
+async function verifyRoundSnapshot(
+  proof: DrawProof,
+  rpc: StellarRpcClient
+): Promise<VerificationField> {
+  if (!proof.snapshot.roundPrincipalSnapshot) {
+    return fieldUnverified(
+      "round_snapshot",
+      "Proof does not record a roundPrincipalSnapshot (pre-#642 proof format)"
+    );
+  }
+
+  try {
+    const data = await rpc.getContractData(proof.contractId, `Round:${proof.roundId}`);
+    const round = JSON.parse(data.value) as Record<string, unknown>;
+    const onChainSnapshot = String(
+      round.principal_snapshot ?? round.principalSnapshot ?? ""
+    );
+
+    if (!onChainSnapshot) {
+      return fieldUnverified(
+        "round_snapshot",
+        `Contract round ${proof.roundId} has no principal_snapshot field in storage`
+      );
+    }
+
+    if (onChainSnapshot !== proof.snapshot.roundPrincipalSnapshot) {
+      return fieldFail(
+        "round_snapshot",
+        `expected on-chain principal_snapshot ${onChainSnapshot}, proof recorded ${proof.snapshot.roundPrincipalSnapshot}`
+      );
+    }
+
+    return fieldPass("round_snapshot");
+  } catch (err) {
+    return fieldUnverified(
+      "round_snapshot",
+      `RPC error: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
 // ─── Main Verifier ────────────────────────────────────────────────────────────
 
 export interface ClientVerificationResult extends VerificationResult {
@@ -127,21 +193,34 @@ export async function verifyDrawProofClient(
 ): Promise<ClientVerificationResult> {
   const fields: VerificationField[] = [];
 
-  fields.push(await verifyDocumentIntegrity(proof));
-  fields.push(await verifyWinnerHashChain(proof));
-  fields.push(await verifySeedHash(proof));
+  // Surface the FULL per-field output of the document-only integrity engine
+  // (#572) instead of collapsing it to a single boolean: every check —
+  // document_integrity, winner_proof_hash, seed_hash, randomness_commitment
+  // (and randomness_evidence on schema failure) — is forwarded verbatim so
+  // the UI can render each one with its pass/fail/unverified state and the
+  // `detail` string explaining *why* a check failed.
+  const integrity = await verifyProofIntegrity(proof);
+  fields.push(...integrity.fields);
 
   if (rpc) {
     fields.push(await verifySnapshotLedger(proof, rpc));
     fields.push(await verifyPayoutTransaction(proof, rpc));
+    fields.push(await verifyRandomnessReveal(proof, rpc));
+    fields.push(await verifyRoundSnapshot(proof, rpc));
   } else {
     fields.push(fieldUnverified("snapshot_ledger", "No RPC client provided"));
     fields.push(fieldUnverified("payout_tx", "No RPC client provided"));
+    fields.push(fieldUnverified("randomness_reveal", "No RPC client provided"));
+    fields.push(fieldUnverified("round_snapshot", "No RPC client provided"));
   }
 
+  // Randomness evidence must be independently confirmed on-chain: without an
+  // RPC client the reveal can't be checked, so the proof can never be marked
+  // fully verified in the browser from the document alone (#494).
   const passCount = fields.filter((f) => f.status === "pass").length;
   const failCount = fields.filter((f) => f.status === "fail").length;
-  const allPass = failCount === 0 && passCount >= 3;
+  const randomnessRevealVerified = fields.find((f) => f.name === "randomness_reveal")?.status === "pass";
+  const allPass = failCount === 0 && passCount >= 3 && randomnessRevealVerified;
 
   return {
     verified: allPass,
@@ -150,6 +229,94 @@ export async function verifyDrawProofClient(
     rpcVerified: rpc !== undefined,
     rpcError: rpc ? undefined : "No RPC client provided — limited verification",
   };
+}
+
+// ─── Reward Entry Reconciliation (#634) ──────────────────────────────────────
+
+export type ProofStatus = "verified" | "tampered" | "missing" | "pending" | "unverified";
+export type ClaimStatus = "claimed" | "pending" | "unclaimed" | "failed";
+
+export interface RewardReconciliation {
+  proofStatus: ProofStatus;
+  proofDetail: string;
+  claimStatus: ClaimStatus;
+}
+
+export interface ReconcileRewardEntryInput {
+  /** Round ID to match against draw proof's roundId. */
+  roundId: number;
+  /** Draw proof fetched from storage, or null/undefined if not found. */
+  proof: DrawProof | null | undefined;
+  /** Whether the cycle outcome is won. */
+  isWon: boolean;
+  /**
+   * On-chain tx hash for the claim, if any.  Absence means unclaimed (for a
+   * won entry) or irrelevant (for a no_win/pending entry).
+   */
+  claimTxHash: string | null;
+  /**
+   * Result of fetching the claim tx from the indexer/RPC.  Undefined when no
+   * claimTxHash exists.  Truthy means confirmed-successful.
+   */
+  claimTxSuccessful?: boolean;
+}
+
+/**
+ * Pure reconciliation of one reward entry against its draw proof and claim
+ * transaction data (#634).  All RPC calls are done by the caller; this
+ * function only interprets the pre-fetched data so it is synchronous and
+ * testable in isolation.
+ */
+export async function reconcileRewardEntry(
+  input: ReconcileRewardEntryInput,
+): Promise<RewardReconciliation> {
+  // ── Proof reconciliation ─────────────────────────────────────────────────
+  let proofStatus: ProofStatus;
+  let proofDetail: string;
+
+  if (!input.proof) {
+    proofStatus = input.isWon ? "missing" : "pending";
+    proofDetail = input.isWon
+      ? "No draw proof found for this round"
+      : "Draw proof not yet available";
+  } else if (input.proof.roundId !== input.roundId) {
+    proofStatus = "tampered";
+    proofDetail = `Round ID mismatch: proof.roundId=${input.proof.roundId}, expected=${input.roundId}`;
+  } else {
+    const result = await verifyProofIntegrity(input.proof);
+    const failingField = result.fields.find((f) => f.status === "fail");
+    const unverifiedField = result.fields.find((f) => f.status === "unverified");
+
+    if (failingField) {
+      proofStatus = "tampered";
+      proofDetail = `${failingField.name}: ${failingField.detail ?? "check failed"}`;
+    } else if (unverifiedField) {
+      proofStatus = "unverified";
+      proofDetail = `${unverifiedField.name}: ${unverifiedField.detail ?? "could not verify"}`;
+    } else {
+      proofStatus = "verified";
+      proofDetail = "All proof integrity checks passed";
+    }
+  }
+
+  // ── Claim reconciliation ─────────────────────────────────────────────────
+  let claimStatus: ClaimStatus;
+
+  if (!input.isWon) {
+    // Non-winning entries never have a claim.
+    claimStatus = "unclaimed";
+  } else if (!input.claimTxHash) {
+    claimStatus = "unclaimed";
+  } else if (input.claimTxSuccessful === undefined) {
+    // txHash exists but we couldn't fetch the result (RPC unavailable or still indexing).
+    claimStatus = "pending";
+  } else if (input.claimTxSuccessful) {
+    claimStatus = "claimed";
+  } else {
+    claimStatus = "failed";
+  }
+
+  return { proofStatus, proofDetail, claimStatus };
 }
 
 // ─── Fetch-based RPC Client ───────────────────────────────────────────────────

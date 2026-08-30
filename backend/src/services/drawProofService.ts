@@ -83,24 +83,44 @@ export class DrawProofService {
       return null;
     }
 
+    if (!this.rpc) {
+      this.logger?.warn(
+        { actionId: options.actionId },
+        "draw proof: no RPC client configured, refusing to fabricate randomness evidence"
+      );
+      return null;
+    }
+
     let participants: ParticipantEntry[] = [];
     let poolState: Record<string, unknown> = {};
     let payoutTxHash = action.txHash || "";
     let payoutLedgerSeq = drawLedger + 1;
+    let roundPrincipalSnapshot: string | undefined;
 
-    if (this.rpc) {
-      try {
-        participants = await this.fetchParticipants(contractId, drawLedger);
-        poolState = await this.fetchPoolState(contractId);
-        if (action.txHash) {
-          const tx = await this.rpc.getTransaction(action.txHash);
-          if (tx) {
-            payoutLedgerSeq = tx.ledger;
-          }
+    try {
+      participants = await this.fetchParticipants(contractId, drawLedger);
+      poolState = await this.fetchPoolState(contractId);
+      roundPrincipalSnapshot = await this.fetchRoundPrincipalSnapshot(contractId, roundId);
+      if (action.txHash) {
+        const tx = await this.rpc.getTransaction(action.txHash);
+        if (tx) {
+          payoutLedgerSeq = tx.ledger;
         }
-      } catch (err) {
-        this.logger?.warn({ err, contractId }, "draw proof: RPC fetch failed, using empty data");
       }
+    } catch (err) {
+      this.logger?.warn({ err, contractId }, "draw proof: RPC fetch failed, using empty data");
+    }
+
+    // Real randomness evidence must come from the contract's own commit/reveal
+    // (or beacon) event — never derived from public identifiers, which would
+    // be predictable and defeat the whole point of the proof (#494).
+    const randomness = await this.fetchRandomnessEvidence(contractId, roundId, drawLedger);
+    if (!randomness) {
+      this.logger?.warn(
+        { actionId: options.actionId, contractId, roundId },
+        "draw proof: no on-chain randomness evidence found, refusing to generate proof"
+      );
+      return null;
     }
 
     const input: DrawProofInput = {
@@ -108,8 +128,11 @@ export class DrawProofService {
       contractId,
       participants,
       poolState,
-      randomnessSource: "deterministic_placeholder",
-      randomnessSeed: `draw-${contractId}-${roundId}-${drawLedger}`,
+      randomnessSource: randomness.source,
+      randomnessSeed: randomness.seed,
+      randomnessCommitment: randomness.commitment,
+      commitmentLedgerSeq: randomness.commitmentLedgerSeq,
+      revealTxHash: randomness.revealTxHash,
       drawnAtLedger: drawLedger,
       winnerAddress,
       payoutTxHash,
@@ -118,6 +141,7 @@ export class DrawProofService {
       payoutAsset: String(payload.asset || "USDC"),
       payoutConfirmed: true,
       contractSpecHash: options.contractSpecHash || "unknown",
+      ...(roundPrincipalSnapshot !== undefined && { roundPrincipalSnapshot }),
     };
 
     const proof = await assembleDrawProof(input);
@@ -254,6 +278,59 @@ export class DrawProofService {
     return generated;
   }
 
+  /**
+   * Reads the actual randomness commit/reveal (or beacon) evidence the
+   * contract emitted for this round. Returns null — never a fabricated seed —
+   * when the contract hasn't published real evidence for this draw.
+   */
+  private async fetchRandomnessEvidence(
+    contractId: string,
+    roundId: number,
+    drawLedger: number
+  ): Promise<{
+    source: "soroban_prng" | "external_beacon";
+    seed: string;
+    commitment: string;
+    commitmentLedgerSeq: number;
+    revealTxHash: string;
+  } | null> {
+    if (!this.rpc) return null;
+
+    try {
+      const { events } = await this.rpc.getEvents({
+        contractId,
+        topic: ["randomness_reveal"],
+        limit: 50,
+      });
+
+      for (const evt of events) {
+        let decoded: Record<string, unknown>;
+        try {
+          decoded = JSON.parse(Buffer.from(evt.valueXdr, "base64").toString("utf8"));
+        } catch {
+          continue;
+        }
+
+        if (Number(decoded.round_id) !== roundId) continue;
+        const seed = String(decoded.seed || "");
+        const commitment = String(decoded.commitment || "");
+        const commitmentLedgerSeq = Number(decoded.commitment_ledger || 0);
+        const source = decoded.source === "external_beacon" ? "external_beacon" : "soroban_prng";
+
+        if (!seed || !commitment || !commitmentLedgerSeq || commitmentLedgerSeq > drawLedger) {
+          continue;
+        }
+
+        return { source, seed, commitment, commitmentLedgerSeq, revealTxHash: evt.txHash };
+      }
+
+      return null;
+    } catch (err) {
+      this.logger?.warn({ err, contractId, roundId }, "draw proof: failed to fetch randomness evidence");
+      return null;
+    }
+  }
+
   private async fetchParticipants(
     contractId: string,
     _atLedger: number
@@ -295,6 +372,30 @@ export class DrawProofService {
       return JSON.parse(data.value) as Record<string, unknown>;
     } catch {
       return {};
+    }
+  }
+
+  /**
+   * Reads the contract's own `Round.principal_snapshot` for `roundId` (#642)
+   * — the deterministic cutoff balance the contract freezes at `lock_round`
+   * — so it can be recorded on the draw proof and later cross-checked
+   * against the off-chain `totalDeposits` figure. Returns `undefined` (never
+   * a fabricated value) when the round can't be fetched, e.g. it predates
+   * round-scoped accounting or the RPC call fails.
+   */
+  private async fetchRoundPrincipalSnapshot(
+    contractId: string,
+    roundId: number
+  ): Promise<string | undefined> {
+    if (!this.rpc) return undefined;
+
+    try {
+      const data = await this.rpc.getContractData(contractId, `Round:${roundId}`);
+      const round = JSON.parse(data.value) as Record<string, unknown>;
+      const snapshot = round.principal_snapshot ?? round.principalSnapshot;
+      return snapshot === undefined || snapshot === null ? undefined : String(snapshot);
+    } catch {
+      return undefined;
     }
   }
 

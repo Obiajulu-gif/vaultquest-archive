@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { injectMockWallet } from './helpers/wallet-mock';
+import { injectConnectedMockWallet, injectMockWallet } from './helpers/wallet-mock';
 
 test.describe('Error States — Failed Transactions', () => {
   test('rejected wallet transaction shows an error message in the UI', async ({ page }) => {
@@ -53,8 +53,9 @@ test.describe('Error States — Failed Transactions', () => {
       );
     });
 
-    // Trigger a data-loading action.
-    await page.goto('/app/account?mockConnected=true');
+    // Trigger a data-loading action with an explicit connected wallet adapter.
+    await injectConnectedMockWallet(page);
+    await page.goto('/app/account');
 
     // The page should render an error / empty state rather than hanging indefinitely.
     const errorOrEmpty = page.locator(
@@ -124,7 +125,8 @@ test.describe('Error States — Failed Transactions', () => {
       route.fulfill({ status: 500, body: JSON.stringify({ error: 'Internal Server Error' }) })
     );
 
-    await page.goto('/app/account?mockConnected=true');
+    await injectConnectedMockWallet(page);
+    await page.goto('/app/account');
 
     // Wait for the page to attempt its data fetch and surface the error.
     await page.waitForTimeout(2000);
@@ -161,7 +163,8 @@ test.describe('Error States — Failed Transactions', () => {
       })
     );
 
-    await page.goto('/app/account?mockConnected=true');
+    await injectConnectedMockWallet(page);
+    await page.goto('/app/account');
 
     // The app should not show a blank page — some fallback message must appear.
     const fallback = page.locator(

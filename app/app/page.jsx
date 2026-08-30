@@ -6,6 +6,7 @@ import { useConnectModal } from "@rainbow-me/rainbowkit";
 import { useAccount } from "wagmi";
 import { useTranslation } from "next-i18next";
 import { Sparkles } from "lucide-react";
+import { VaultApiClient } from "@vaultquest/stellar-wallet-connect/src/vault/data/apiClient";
 import OnboardingCards from "@/components/app/OnboardingCards";
 import PublicStatsBar from "@/components/app/PublicStatsBar";
 import VaultMetricsCards from "@/components/app/VaultMetricsCards";
@@ -20,10 +21,14 @@ import { WalletConnectionStatus } from "@vaultquest/stellar-wallet-connect/src/c
 import { OnboardingChecklist } from "@vaultquest/stellar-wallet-connect/src/vault/components/OnboardingChecklist";
 import VaultEmptyState from "@/components/app/VaultEmptyState";
 import VaultOnboardingTour from "@/components/app/VaultOnboardingTour";
+import FirstDepositOnboarding from "@/components/app/FirstDepositOnboarding";
 import VaultGoalTracker from "@/components/app/VaultGoalTracker";
 import VaultRewardsExplanationModal from "@/components/app/VaultRewardsExplanationModal";
 import VaultDocsQuickLinks from "@/components/app/VaultDocsQuickLinks";
 import VaultLeaderboardPlaceholder from "@/components/app/VaultLeaderboardPlaceholder";
+import DashboardWelcomeCard from "@/components/app/DashboardWelcomeCard";
+import ActivitySummaryWidget from "@/components/app/ActivitySummaryWidget";
+import AccountStatusWidget from "@/components/app/AccountStatusWidget";
 
 function DashboardSkeleton() {
   return (
@@ -95,10 +100,30 @@ export default function AppDashboardPage() {
   const { openConnectModal } = useConnectModal();
   const [onboardingStep, setOnboardingStep] = useState(0);
   const [hasJoinedVault] = useState(false);
+  const [onboardingForceOpen, setOnboardingForceOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const [vaultMetadata, setVaultMetadata] = useState([]);
 
   useEffect(() => {
     setMounted(true);
+    const client = new VaultApiClient();
+    let active = true;
+
+    client.listVaultMetadata()
+      .then((records) => {
+        if (active) {
+          setVaultMetadata(records.slice(0, 3));
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setVaultMetadata([]);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   const isWinner = false;
@@ -134,6 +159,9 @@ export default function AppDashboardPage() {
         drawDate={new Date().toISOString()}
       />
 
+      {/* Welcome Card */}
+      <DashboardWelcomeCard />
+
       {/* Hero Header */}
       <header className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between border-b border-vault-border/20 pb-8">
         <div className="space-y-4 max-w-2xl">
@@ -156,11 +184,61 @@ export default function AppDashboardPage() {
       {/* Vault Metrics (full-width, below hero) */}
       <VaultMetricsCards />
 
+      {vaultMetadata.length > 0 && (
+        <section className="vq-glass p-6">
+          <div className="flex items-center justify-between gap-4 pb-4 border-b border-vault-border/30">
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] text-vault-muted">Canonical vault metadata</p>
+              <h2 className="mt-2 text-xl font-semibold text-vault-text">Factory-backed discovery signals</h2>
+            </div>
+          </div>
+          <div className="mt-5 grid gap-3 md:grid-cols-3">
+            {vaultMetadata.map((item) => (
+              <div key={item.id} className="rounded-xl border border-vault-border bg-vault-surface/60 p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-semibold text-vault-text">{item.id}</span>
+                  <span className="rounded-full bg-vault-accent/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-vault-accent">
+                    v{item.metadata_version ?? 1}
+                  </span>
+                </div>
+                <dl className="mt-3 space-y-2 text-sm text-vault-muted">
+                  <div className="flex justify-between gap-3"><dt>Risk</dt><dd className="font-medium text-vault-text">{item.risk_tier ?? "unknown"}</dd></div>
+                  <div className="flex justify-between gap-3"><dt>Strategy</dt><dd className="font-medium text-vault-text">{item.strategy ?? "unknown"}</dd></div>
+                  <div className="flex justify-between gap-3"><dt>Asset</dt><dd className="font-medium text-vault-text">{item.accepted_asset ?? "unknown"}</dd></div>
+                  <div className="flex justify-between gap-3"><dt>Status</dt><dd className="font-medium text-vault-text">{item.operational_status ?? "unknown"}</dd></div>
+                </dl>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Main Grid */}
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">
         {/* Left Column */}
         <main className="space-y-8 lg:col-span-8">
+          <ActivitySummaryWidget />
           <OnboardingChecklist walletConnected={isConnected} hasJoinedVault={hasJoinedVault} />
+          
+          <FirstDepositOnboarding
+            hasJoinedVault={hasJoinedVault && !onboardingForceOpen}
+          />
+
+          {!onboardingForceOpen && (hasJoinedVault || (typeof window !== "undefined" && localStorage.getItem("vq_first_deposit_onboarding_dismissed") === "true")) && (
+            <div className="flex justify-end pr-2">
+              <button
+                type="button"
+                onClick={() => {
+                  localStorage.removeItem("vq_first_deposit_onboarding_dismissed");
+                  setOnboardingForceOpen(true);
+                }}
+                className="text-xs font-semibold text-red-400 hover:text-red-300 transition-colors hover:underline"
+              >
+                Reopen First-Deposit Guide
+              </button>
+            </div>
+          )}
+
           {isConnected && !hasJoinedVault && (
             <VaultEmptyState variant="dashboard" />
           )}
@@ -180,6 +258,8 @@ export default function AppDashboardPage() {
             </h3>
             <PublicStatsBar layout="vertical" />
           </div>
+
+          <AccountStatusWidget />
 
           {isConnected && (
             <>

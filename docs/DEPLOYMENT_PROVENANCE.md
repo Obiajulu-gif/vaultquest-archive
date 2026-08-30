@@ -1,115 +1,113 @@
-# Deployment Provenance & Cache-Busting Strategy (#660)
+# Deployment provenance (#511)
 
-This document describes how VaultQuest handles build asset versioning, stale
-client detection, and safe refresh prompts to protect users during active
-wallet sessions.
+This document describes the contract-artifact provenance manifest — what it
+records, how `verifyProvenance()` checks it, and how to independently verify
+a deployed contract's wasm locally without any special tooling.
 
----
+This is a deliberately scaled-down slice of the fuller signed-provenance
+proposal discussed on #511 (see that issue's design comment for the full
+Sigstore/cosign + SBOM + CI-attestation rollout). What ships here is the
+self-contained, verifiable part: a typed manifest schema and a pure digest
+comparison. See [Deferred](#deferred) for what's intentionally left out and
+why.
 
-## 1. Deployment Manifest
+## What's recorded
 
-The `deployment-manifest.json` file is published at the root of every
-deployment. It is served as a static asset and contains:
+`lib/deployment-provenance.ts` defines `DeploymentManifestEntrySchema`, one
+entry per deployed contract:
 
-| Field | Description |
+| Field | Meaning |
 |---|---|
-| `version` | SemVer string matching the release tag |
-| `environment` | `staging` or `production` |
-| `network` | Stellar network passphrase, Soroban RPC, and Horizon URLs |
-| `contracts.dripPool.contractId` | Canonical on-chain contract address |
-| `build.commitSha` | Git commit SHA of the deployed build |
-| `build.buildTimestamp` | ISO 8601 UTC timestamp of the build |
+| `contractName` | Logical name, e.g. `"drip-pool"` — matches the crate/package name. |
+| `contractId` | Deployed Stellar contract id (`C...`), if known. Optional — a manifest entry can be recorded before deployment. |
+| `sourceCommit` | Git commit sha the wasm was built from. |
+| `wasmDigest` | `sha256` of the built `.wasm` file, lowercase hex, no `sha256:` prefix. |
+| `specHash` | `sha256` of the contract's exported spec (XDR). Catches ABI drift even if the wasm digest check is bypassed. |
+| `cargoLockHash` | `sha256` of `Cargo.lock` at build time. Catches a dependency-only rebuild that produced a different wasm than what was reviewed. |
+| `network` | `testnet \| mainnet \| futurenet \| standalone`. |
+| `timestamp` | ISO-8601 build/record time. |
 
-The manifest is validated on startup via `lib/deployment-manifest.ts` using
-Zod schemas. Any mismatch between manifest values and runtime env vars surfaces
-through `AttestationProvider` → `AttestationError`.
+A full manifest is `{ version: 1, entries: DeploymentManifestEntry[] }` — see
+`ProvenanceManifestSchema`.
 
----
+This is a separate, additive module from `lib/deployment-manifest.ts` /
+`deployment-manifest.json` (the existing network + contract-id config the
+frontend reads at runtime). Nothing here changes that schema or its
+consumers; the two can be merged in a follow-up once this shape is proven
+out, per the original proposal's compatibility note.
 
-## 2. Stale Client Detection
+## Verifying an artifact
 
-`AttestationProvider` fetches the manifest on every page load and compares the
-embedded `version` and contract addresses against the compiled env vars. A
-mismatch indicates the user is running a stale JavaScript bundle.
+### Locally, by hand
 
-### Detection Flow
+```bash
+# 1. Build the contract the same way CI does
+cd contracts/drip-pool
+cargo build --target wasm32v1-none --release
 
+# 2. Hash the resulting wasm
+sha256sum ../../target/wasm32v1-none/release/drip_pool.wasm
+# -> <64-char lowercase hex digest>
+
+# 3. Compare it against the recorded entry's wasmDigest for this contract/commit.
+#    They must match exactly (case-insensitive on input, but the manifest
+#    itself always stores lowercase hex).
 ```
-Page Load
-  │
-  ▼
-loadManifestAsync() — fetches /deployment-manifest.json (always fresh, no SW cache)
-  │
-  ▼
-validateManifestAgainstEnv(manifest, process.env)
-  │
-  ├─ No mismatches → render app normally
-  │
-  └─ Mismatches detected → render <AttestationError />
-       (shows version mismatch banner + safe refresh prompt)
+
+On macOS without `sha256sum`, use `shasum -a 256 <file>` instead.
+
+### Programmatically, with `verifyProvenance()`
+
+```ts
+import { verifyProvenance, type DeploymentManifestEntry } from "@/lib/deployment-provenance";
+
+const entry: DeploymentManifestEntry = /* looked up from the manifest */;
+const freshDigest = /* sha256 of a freshly-built wasm, hex */;
+
+const result = verifyProvenance(entry, freshDigest);
+if (!result.verified) {
+  throw new Error(`Provenance check failed: ${result.reason}`);
+}
 ```
 
----
+`verifyProvenance` is a pure function — no network calls, no filesystem
+access, no Sigstore/Rekor lookups. It:
 
-## 3. Cache-Busting Strategy
+- normalizes case/whitespace on the freshly-computed digest before comparing,
+- rejects anything that isn't a well-formed 64-char hex sha256 digest,
+- rejects a digest that doesn't match the manifest's recorded `wasmDigest`,
+- never throws — callers get a `{ verified, reason }` result they can act on
+  (e.g. refuse to treat a contract id as trusted) rather than having to
+  catch an exception.
 
-### Next.js Build Hashing
+`verifyProvenanceForContract(manifest, contractName, freshDigest)` is a
+convenience wrapper that looks the entry up by `contractName` first and
+fails closed (returns `verified: false`, never throws) when no entry exists
+for that contract — so a caller can uniformly treat "no provenance recorded"
+the same as "provenance check failed" rather than needing a separate
+missing-entry code path.
 
-All JavaScript chunks emitted by Next.js include a content hash in their
-filename (e.g. `_next/static/chunks/abc123.js`). This means:
-- **New deployments** always load fresh JS — browser cache misses on hash change.
-- **CDN/edge** can safely cache assets with long TTLs (e.g. `Cache-Control: public, max-age=31536000, immutable`).
-- **`/deployment-manifest.json`** must be served with `Cache-Control: no-cache` so the version check is always fresh.
+## Deferred
 
-### Service Worker Guidance
+Scoped out of this PR — see #511 for the full design:
 
-VaultQuest does **not** register a service worker by default to avoid
-complexities with Stellar transaction builders and contract addresses becoming
-stale. If a service worker is added in future:
-- Precache only static assets; exclude `/deployment-manifest.json`.
-- On SW activation, post a message to all clients to recheck the manifest.
-- Never cache Soroban RPC responses.
-
----
-
-## 4. Safe Refresh Prompt
-
-When a version mismatch is detected **outside** a pending wallet signing
-session, the user is shown a non-blocking banner prompting a page refresh.
-
-### Rules
-
-| Condition | Behaviour |
-|---|---|
-| Mismatch detected, no pending transaction | Show refresh banner immediately |
-| Mismatch detected, wallet signing in progress | Defer banner until signing resolves |
-| Mismatch detected, deposit/withdrawal pending | Defer banner until `confirmed` or `failed` |
-
-The `AttestationError` component reads transaction state from the global store
-to determine whether to show immediately or defer. This prevents unsafe
-interruption of wallet signing flows.
-
----
-
-## 5. Environment Variables
-
-| Variable | Purpose |
-|---|---|
-| `NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE` | Validated against `manifest.network.passphrase` |
-| `NEXT_PUBLIC_SOROBAN_RPC_URL` | Validated against `manifest.network.sorobanRpcUrl` |
-| `NEXT_PUBLIC_HORIZON_URL` | Validated against `manifest.network.horizonUrl` |
-| `NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID` | Validated against `manifest.contracts.dripPool.contractId` |
-| `DEPLOYMENT_MANIFEST_PATH` | Override for SSR manifest path (optional) |
-
----
-
-## 6. Deployment Checklist
-
-Before every release:
-
-1. Update `deployment-manifest.json` with the correct `version`, `commitSha`,
-   and `buildTimestamp`.
-2. Verify all contract IDs match on-chain deployments.
-3. Ensure `/deployment-manifest.json` CDN TTL is set to `no-cache`.
-4. Deploy Next.js build — hashed assets are safe to cache indefinitely.
-5. Smoke-test `AttestationProvider` on staging before promoting to production.
+- **Sigstore/cosign keyless signing** of the manifest or individual
+  attestations, and the corresponding `cosign verify` / Rekor
+  transparency-log check. `verifyProvenance()` here only compares digests;
+  it does not establish that the recorded digest itself was produced by a
+  trusted builder. That's the actual "signed provenance" part of the
+  original proposal and needs real CI/OIDC infrastructure to implement and
+  verify — not something that can be meaningfully added and tested in this
+  slice.
+- **SBOM generation** (`cargo cyclonedx` / `cyclonedx-npm`) — unrelated to
+  the digest-verification guarantee this PR adds; tracked separately.
+- **Reproducible-build CI enforcement** (pinned toolchain,
+  `--remap-path-prefix`, double-build-and-diff in CI) — the manifest schema
+  here assumes the recorded `wasmDigest` is trustworthy; making that
+  assumption verifiable end-to-end in CI is follow-up work.
+- **Automatic rejection wiring in backend/frontend** — this PR ships the
+  verification primitive (`verifyProvenance`) but does not wire it into a
+  request path that blocks untrusted contract ids. Doing so safely requires
+  deciding a rollout window (see the original proposal's compatibility
+  note) so currently-deployed contracts aren't locked out before they have
+  a recorded manifest entry.

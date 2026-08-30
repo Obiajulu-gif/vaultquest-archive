@@ -12,10 +12,12 @@ import LevelOnboarding from "@/components/app/LevelOnboarding";
 import BadgesGallery from "@/components/app/BadgesGallery";
 import PrizeChart from "@/components/app/PrizeChart";
 import VaultNotificationSettings from "@/components/app/VaultNotificationSettings";
+import PositionSnapshotExport from "@/components/app/PositionSnapshotExport";
 import WalletReconnectGuidance from "@/components/app/WalletReconnectGuidance";
 import SecurityTipsPanel from "@/components/app/SecurityTipsPanel";
-import VaultOnboardingTour, { useRestartTour } from "@/components/app/VaultOnboardingTour";
-import SavedPoolsWatchlist from "@/components/app/SavedPoolsWatchlist";
+import VaultOnboardingTour, {
+  useRestartTour,
+} from "@/components/app/VaultOnboardingTour";
 import { useYieldCounter } from "@/components/hooks/useYieldCounter";
 import { formatUsd } from "@/lib/yield-counter";
 import { DEMO_PORTFOLIO, DEMO_TRANSACTIONS } from "@/lib/demo-portfolio";
@@ -41,7 +43,7 @@ function MetricCard({ icon: Icon, label, value, sub, highlight }) {
   );
 }
 
-function ConnectedDashboard({ isNetworkMismatch, onRetry, locale }) {
+function ConnectedDashboard({ address, isNetworkMismatch, onRetry, locale }) {
   const [selectedAsset, setSelectedAsset] = useState("all");
   const [tourKey, setTourKey] = useState(0);
 
@@ -59,10 +61,7 @@ function ConnectedDashboard({ isNetworkMismatch, onRetry, locale }) {
       <SecurityTipsPanel />
 
       {isNetworkMismatch && (
-        <WalletReconnectGuidance
-          isNetworkMismatch
-          onRetry={onRetry}
-        />
+        <WalletReconnectGuidance isNetworkMismatch onRetry={onRetry} />
       )}
 
       <AccountPositionSummary />
@@ -95,7 +94,32 @@ function ConnectedDashboard({ isNetworkMismatch, onRetry, locale }) {
 
       <ProfileEditor />
 
-      <VaultNotificationSettings />
+      <div className="grid gap-6 lg:grid-cols-2">
+        <VaultNotificationSettings />
+        <PositionSnapshotExport
+          positions={[
+            {
+              pool: "USDC Stable Pool",
+              asset: "USDC",
+              principal: 1000,
+              projectedReward: 52,
+              claimableReward: 12.5,
+              maturityDate: "2026-08-15",
+              status: "Active",
+            },
+            {
+              pool: "XLM Drip Vault",
+              asset: "XLM",
+              principal: 5000,
+              projectedReward: 190,
+              claimableReward: 45.2,
+              maturityDate: null,
+              status: "Active",
+            },
+          ]}
+          walletAddress={address}
+        />
+      </div>
 
       <SavedPoolsWatchlist />
 
@@ -152,31 +176,25 @@ function EmptyAccount() {
 
 export default function AccountPage() {
   const { t, i18n } = useTranslation("common");
-  const { isConnected: wagmiConnected } = useAccount();
+  const { address, isConnected } = useAccount();
   const { openConnectModal } = useConnectModal();
-  const [isMockConnected, setIsMockConnected] = useState(false);
   const [wasDisconnected, setWasDisconnected] = useState(false);
   const [isNetworkMismatch, setIsNetworkMismatch] = useState(false);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
-      if (params.get("mockConnected") === "true") {
-        setIsMockConnected(true);
-      }
       if (params.get("networkMismatch") === "true") {
         setIsNetworkMismatch(true);
       }
     }
 
-    if (!wagmiConnected && !isMockConnected && !isNetworkMismatch) {
+    if (!isConnected && !isNetworkMismatch) {
       setWasDisconnected(true);
     } else {
       setWasDisconnected(false);
     }
-  }, [wagmiConnected, isMockConnected, isNetworkMismatch]);
-
-  const isConnected = wagmiConnected || isMockConnected;
+  }, [isConnected, isNetworkMismatch]);
 
   const handleRetry = () => {
     setIsNetworkMismatch(false);
@@ -187,13 +205,14 @@ export default function AccountPage() {
   return (
     <div className="space-y-8">
       <header>
-        <h1 className="text-3xl font-bold text-vault-text">{t("routes.account.title")}</h1>
-        <p className="mt-2 text-vault-muted">
-          {t("routes.account.subtitle")}
-        </p>
+        <h1 className="text-3xl font-bold text-vault-text">
+          {t("routes.account.title")}
+        </h1>
+        <p className="mt-2 text-vault-muted">{t("routes.account.subtitle")}</p>
       </header>
       {isConnected ? (
         <ConnectedDashboard
+          address={address}
           isNetworkMismatch={isNetworkMismatch}
           onRetry={handleRetry}
           locale={i18n.resolvedLanguage || i18n.language}
@@ -201,10 +220,7 @@ export default function AccountPage() {
       ) : (
         <>
           {wasDisconnected && (
-            <WalletReconnectGuidance
-              isDisconnected
-              onRetry={handleRetry}
-            />
+            <WalletReconnectGuidance isDisconnected onRetry={handleRetry} />
           )}
           <EmptyAccount />
         </>

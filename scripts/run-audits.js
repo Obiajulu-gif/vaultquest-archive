@@ -14,7 +14,7 @@ async function run() {
 
   const pages = [
     { name: "Home Page", path: "/", file: "home.json" },
-    { name: "Account Dashboard", path: "/app/account?mockConnected=true", file: "account.json" },
+    { name: "Account Dashboard", path: "/app/account", file: "account.json" },
   ];
 
   const results = [];

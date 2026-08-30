@@ -50,7 +50,7 @@ describe("vault data hooks", () => {
     const { result } = renderHook(() => usePoolDiscovery(client, { apiBaseUrl: "https://api.test" }));
 
     await waitFor(() => expect(result.current.data).toEqual([pool]));
-    expect(fetch).toHaveBeenCalledWith("https://api.test/pools");
+    expect(fetch).toHaveBeenCalledWith("https://api.test/pools", expect.any(Object));
   });
 
   it("invalidates saved-pool query state after mutations", async () => {

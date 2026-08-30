@@ -1,4 +1,4 @@
-export const ADMIN_ADDRESSES = [
-  "0x1234567890123456789012345678901234567890",
-  "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
-];
+export const ADMIN_ADDRESSES = (process.env.NEXT_PUBLIC_ADMIN_ADDRESSES || "")
+  .split(",")
+  .map((addr) => addr.trim())
+  .filter(Boolean);

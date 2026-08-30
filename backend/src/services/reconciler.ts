@@ -15,9 +15,19 @@
  * mode and appends a complete audit trail for every repair.
  */
 
+import { createHash } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { ERROR_CODES } from "../constants.js";
+import { AppError } from "../errors.js";
 import type { LedgerService } from "./ledger.js";
+import { createLogger } from "../logger.js";
+import { getPrometheusMetrics } from "./prometheusMetrics.js";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const STALE_ORPHAN_THRESHOLD_DAYS = 7;
+const STALE_ORPHAN_ESCALATION_DAYS = 30;
+
+const logger = createLogger(process.env.LOG_LEVEL ?? "info");
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -43,7 +53,8 @@ export type DriftType =
   | "contradiction"
   | "orphaned_settlement"
   | "missing_settlement"
-  | "stale_pending_event";
+  | "stale_pending_event"
+  | "insolvency_drift";
 
 export interface DriftRecord {
   type: DriftType;
@@ -72,6 +83,17 @@ export interface ReconciliationResult {
   stepsApplied: number;
   quarantined: number;
   plan: RepairPlan;
+}
+
+/**
+ * Age bucket for a stale_orphan drift. Orphans older than 30 days escalate
+ * to the "30d" bucket (operator intervention required); the rest are "7d".
+ */
+export type StaleOrphanBucket = "7d" | "30d";
+
+export function staleOrphanBucket(updatedAt: Date): StaleOrphanBucket {
+  const ageMs = Date.now() - updatedAt.getTime();
+  return ageMs > STALE_ORPHAN_ESCALATION_DAYS * DAY_MS ? "30d" : "7d";
 }
 
 // ─── Drift detection ──────────────────────────────────────────────────────────
@@ -296,6 +318,51 @@ export async function detectDrift(prisma: PrismaClient): Promise<DriftRecord[]> 
     });
   }
 
+  // 9. Insolvency drift: per-vault net tracked principal (confirmed deposits
+  //    minus confirmed withdrawals) goes negative, indicating more was paid
+  //    out than deposited — a critical accounting invariant violation for a
+  //    no-loss prize-savings protocol (#560).
+  const confirmedActions = await prisma.actionLedger.findMany({
+    where: {
+      status: "confirmed",
+      actionType: { in: ["deposit", "withdraw"] }
+    },
+    select: { id: true, actionType: true, actionPayload: true, txHash: true }
+  });
+
+  const vaultNetPrincipal = new Map<string, { net: number; actions: typeof confirmedActions }>();
+  for (const a of confirmedActions) {
+    const payload = a.actionPayload as Record<string, unknown> | null;
+    const vaultId = String(payload?.vault_id ?? payload?.pool_id ?? "unknown");
+    if (!vaultNetPrincipal.has(vaultId)) {
+      vaultNetPrincipal.set(vaultId, { net: 0, actions: [] });
+    }
+    const entry = vaultNetPrincipal.get(vaultId)!;
+    entry.actions.push(a);
+    const amount = Number(payload?.amount ?? 0);
+    if (a.actionType === "deposit") {
+      entry.net += amount;
+    } else if (a.actionType === "withdraw") {
+      entry.net -= amount;
+    }
+  }
+
+  for (const [vaultId, { net, actions }] of vaultNetPrincipal) {
+    if (net < 0) {
+      drifts.push({
+        type: "insolvency_drift",
+        recordType: "vault_settlement",
+        recordId: vaultId,
+        details: {
+          vaultId,
+          netTrackedPrincipal: net,
+          actionCount: actions.length,
+          message: `Vault ${vaultId} has negative net tracked principal (${net}): more withdrawn than deposited`
+        }
+      });
+    }
+  }
+
   return drifts;
 }
 
@@ -356,7 +423,37 @@ export function buildRepairPlan(drifts: DriftRecord[], dryRun: boolean): RepairP
 
       case "stale_orphan": {
         // Already orphaned. No further action needed — operator can review.
-        // Just log it.
+        // Surface it loudly: structured warning/error log + Prometheus metric,
+        // so an operator doesn't have to know to query reconciliation output.
+        const updatedAt = new Date(drift.details.updatedAt as string);
+        const ageMs = Date.now() - updatedAt.getTime();
+        const ageDays = Math.max(0, Math.floor(ageMs / DAY_MS));
+        const bucket = staleOrphanBucket(updatedAt);
+
+        const metrics = getPrometheusMetrics();
+        metrics.incStaleOrphan(bucket);
+
+        const logFields = {
+          event: "reconciliation.stale_orphan",
+          recordId: drift.recordId,
+          txHash: drift.details.txHash ?? null,
+          errorCode: drift.details.errorCode ?? null,
+          ageDays,
+          bucket
+        };
+
+        if (bucket === "30d") {
+          // Escalated: orphaned for > 30 days — needs operator intervention.
+          logger.error(
+            logFields,
+            `stale_orphan: action ${drift.recordId} orphaned for ${ageDays} days (>${STALE_ORPHAN_ESCALATION_DAYS}d escalation)`
+          );
+        } else {
+          logger.warn(
+            logFields,
+            `stale_orphan: action ${drift.recordId} orphaned for ${ageDays} days (exceeds ${STALE_ORPHAN_THRESHOLD_DAYS}d threshold)`
+          );
+        }
         break;
       }
 
@@ -397,6 +494,23 @@ export function buildRepairPlan(drifts: DriftRecord[], dryRun: boolean): RepairP
           data: {},
           provenance: `drift:stale_pending_event:${drift.recordId}`
         });
+        break;
+      }
+
+      case "insolvency_drift": {
+        // Critical: vault has more tracked withdrawals than deposits.
+        // Quarantine for manual review — never auto-repair financial
+        // invariants (#560).
+        logger.error(
+          {
+            event: "reconciliation.insolvency_drift",
+            vaultId: drift.recordId,
+            netTrackedPrincipal: drift.details.netTrackedPrincipal,
+            actionCount: drift.details.actionCount
+          },
+          `insolvency_drift: vault ${drift.recordId} has negative net tracked principal (${drift.details.netTrackedPrincipal})`
+        );
+        quarantined.push(drift);
         break;
       }
 
@@ -475,10 +589,14 @@ export async function applyRepairPlan(
     }
   }
 
-  // Quarantine contradictions and unresolvable drifts.
+  // Quarantine contradictions, duplicates, and insolvency drifts.
   let quarantined = 0;
   for (const drift of plan.drifts) {
-    if (drift.type === "contradiction" || drift.type === "duplicate_tx_hash") {
+    if (
+      drift.type === "contradiction" ||
+      drift.type === "duplicate_tx_hash" ||
+      drift.type === "insolvency_drift"
+    ) {
       const existing = await prisma.repairQuarantine.findFirst({
         where: {
           recordType: drift.recordType,
@@ -530,6 +648,24 @@ export async function reconcileAll(
   const dryRun = opts.dryRun ?? false;
 
   const drifts = await detectDrift(prisma);
+
+  // Keep the current stale-orphan gauge in sync with what this run actually
+  // found, so it reflects current state rather than cumulative history.
+  const metrics = getPrometheusMetrics();
+  let staleOrphan7d = 0;
+  let staleOrphan30d = 0;
+  for (const drift of drifts) {
+    if (drift.type !== "stale_orphan") continue;
+    const updatedAt = new Date(drift.details.updatedAt as string);
+    if (staleOrphanBucket(updatedAt) === "30d") {
+      staleOrphan30d += 1;
+    } else {
+      staleOrphan7d += 1;
+    }
+  }
+  metrics.setStaleOrphans("7d", staleOrphan7d);
+  metrics.setStaleOrphans("30d", staleOrphan30d);
+
   const plan = buildRepairPlan(drifts, dryRun);
 
   let stepsApplied = 0;
@@ -610,4 +746,226 @@ export async function recoverStuckActions(
   });
 
   return { recovered: result.recovered, prunedEvents: pruned.count };
+}
+
+// ─── Dual-controlled repair proposals (#597) ─────────────────────────────────
+//
+// Automated repair is a privileged financial operation. Instead of
+// `reconcileAll` applying a plan directly, callers can go through this
+// propose -> approve -> execute workflow:
+//   1. `createRepairProposal` snapshots a plan, hashes it, and enforces a
+//      hard per-proposal cap on step count / affected value.
+//   2. `approveRepairProposal` records a distinct identity's signed
+//      approval, bound to the exact diff hash — any drift in the plan
+//      invalidates prior approvals.
+//   3. `executeRepairProposal` re-verifies the hash, expiry, and approval
+//      count (proposals above the configured limits need two distinct
+//      approvers) before delegating to `applyRepairPlan`, which is already
+//      idempotent per-step (see the `RepairAudit` provenance check), so a
+//      partially-executed proposal can safely resume.
+
+export type RepairProposalStatus =
+  | "pending"
+  | "approved"
+  | "executed"
+  | "rejected"
+  | "expired"
+  | "cancelled";
+
+export interface RepairProposalLimits {
+  /** Above this many steps, two distinct approvers are required. */
+  dualControlStepThreshold: number;
+  /** Above this total affected value, two distinct approvers are required. */
+  dualControlValueThreshold: number;
+  /** Hard ceiling on steps per proposal — proposals above this are rejected outright. */
+  maxStepsPerProposal: number;
+  /** Hard ceiling on total affected value per proposal. */
+  maxValuePerProposal: number;
+  /** Proposal validity window in ms. */
+  ttlMs: number;
+}
+
+export const DEFAULT_REPAIR_PROPOSAL_LIMITS: RepairProposalLimits = {
+  dualControlStepThreshold: 5,
+  dualControlValueThreshold: 1_000,
+  maxStepsPerProposal: 50,
+  maxValuePerProposal: 100_000,
+  ttlMs: 30 * 60 * 1000
+};
+
+/**
+ * Deterministic, canonical hash of a repair plan's steps. Approvals are
+ * bound to this exact hash so a changed plan can never execute under a
+ * stale approval.
+ */
+export function computeDiffHash(plan: RepairPlan): string {
+  const canonical = JSON.stringify(
+    plan.steps.map((s) => ({
+      table: s.table,
+      recordId: s.recordId,
+      action: s.action,
+      data: s.data,
+      provenance: s.provenance
+    }))
+  );
+  return createHash("sha256").update(canonical).digest("hex");
+}
+
+/** Best-effort sum of any numeric `amount` fields across a plan's steps. */
+export function estimatePlanValue(plan: RepairPlan): number {
+  let total = 0;
+  for (const step of plan.steps) {
+    const amount = step.data?.amount;
+    if (typeof amount === "string" || typeof amount === "number") {
+      const n = Math.abs(Number(amount));
+      if (Number.isFinite(n)) total += n;
+    }
+  }
+  return total;
+}
+
+export function requiredApprovals(
+  plan: RepairPlan,
+  limits: RepairProposalLimits = DEFAULT_REPAIR_PROPOSAL_LIMITS
+): number {
+  const value = estimatePlanValue(plan);
+  return plan.steps.length > limits.dualControlStepThreshold || value > limits.dualControlValueThreshold
+    ? 2
+    : 1;
+}
+
+export async function createRepairProposal(
+  prisma: PrismaClient,
+  plan: RepairPlan,
+  proposerId: string,
+  limits: RepairProposalLimits = DEFAULT_REPAIR_PROPOSAL_LIMITS
+) {
+  if (plan.steps.length === 0) {
+    throw AppError.validation("cannot propose an empty repair plan");
+  }
+  if (plan.steps.length > limits.maxStepsPerProposal) {
+    throw AppError.validation(
+      `repair proposal exceeds max steps per proposal (${plan.steps.length} > ${limits.maxStepsPerProposal})`
+    );
+  }
+  const value = estimatePlanValue(plan);
+  if (value > limits.maxValuePerProposal) {
+    throw AppError.validation(
+      `repair proposal exceeds max value per proposal (${value} > ${limits.maxValuePerProposal})`
+    );
+  }
+
+  const diffHash = computeDiffHash(plan);
+  const now = new Date();
+
+  return prisma.repairProposal.create({
+    data: {
+      planJson: plan as any,
+      diffHash,
+      status: "pending",
+      proposerId,
+      stepCount: plan.steps.length,
+      valueTotal: value,
+      requiredApprovals: requiredApprovals(plan, limits),
+      expiresAt: new Date(now.getTime() + limits.ttlMs)
+    }
+  });
+}
+
+export async function approveRepairProposal(
+  prisma: PrismaClient,
+  proposalId: string,
+  approverId: string,
+  diffHash: string
+) {
+  const proposal = await prisma.repairProposal.findUnique({
+    where: { id: proposalId },
+    include: { approvals: true }
+  });
+  if (!proposal) throw AppError.notFound("repair proposal not found");
+  if (proposal.status !== "pending" && proposal.status !== "approved") {
+    throw AppError.conflict(ERROR_CODES.ILLEGAL_TRANSITION, `proposal is ${proposal.status}, cannot approve`);
+  }
+  if (proposal.expiresAt.getTime() < Date.now()) {
+    await prisma.repairProposal.update({ where: { id: proposalId }, data: { status: "expired" } });
+    throw AppError.conflict(ERROR_CODES.ILLEGAL_TRANSITION, "repair proposal has expired");
+  }
+  if (diffHash !== proposal.diffHash) {
+    throw AppError.conflict(
+      ERROR_CODES.ILLEGAL_TRANSITION,
+      "approval diff hash does not match the proposed plan; the plan changed since proposal"
+    );
+  }
+  if (approverId === proposal.proposerId) {
+    throw AppError.forbidden("the proposer cannot also approve their own repair proposal");
+  }
+  if (proposal.approvals.some((a) => a.approverId === approverId)) {
+    // Idempotent: re-approving with the same identity is a no-op, not an error.
+    return proposal;
+  }
+
+  await prisma.repairApproval.create({
+    data: { proposalId, approverId }
+  });
+
+  const approvalCount = proposal.approvals.length + 1;
+  const nextStatus: RepairProposalStatus =
+    approvalCount >= proposal.requiredApprovals ? "approved" : "pending";
+
+  return prisma.repairProposal.update({
+    where: { id: proposalId },
+    data: { status: nextStatus },
+    include: { approvals: true }
+  });
+}
+
+export async function executeRepairProposal(
+  prisma: PrismaClient,
+  proposalId: string,
+  executorId: string
+): Promise<{ applied: number; quarantined: number }> {
+  const proposal = await prisma.repairProposal.findUnique({
+    where: { id: proposalId },
+    include: { approvals: true }
+  });
+  if (!proposal) throw AppError.notFound("repair proposal not found");
+
+  if (proposal.status === "executed") {
+    // Resuming an already-fully-executed proposal is a safe no-op.
+    return { applied: 0, quarantined: 0 };
+  }
+  if (proposal.status !== "approved") {
+    throw AppError.conflict(
+      ERROR_CODES.ILLEGAL_TRANSITION,
+      `proposal is ${proposal.status}, requires ${proposal.requiredApprovals} approval(s) before it can execute`
+    );
+  }
+  if (proposal.expiresAt.getTime() < Date.now()) {
+    await prisma.repairProposal.update({ where: { id: proposalId }, data: { status: "expired" } });
+    throw AppError.conflict(ERROR_CODES.ILLEGAL_TRANSITION, "repair proposal has expired");
+  }
+
+  const plan = proposal.planJson as unknown as RepairPlan;
+  if (computeDiffHash(plan) !== proposal.diffHash) {
+    // Defence in depth: the stored plan snapshot must still match the hash
+    // every approval was bound to.
+    throw AppError.conflict(ERROR_CODES.ILLEGAL_TRANSITION, "stored plan no longer matches its diff hash");
+  }
+  if (proposal.approvals.length < proposal.requiredApprovals) {
+    throw AppError.forbidden(
+      `${proposal.approvals.length} of ${proposal.requiredApprovals} required approvals present`
+    );
+  }
+
+  // applyRepairPlan is idempotent per-step (RepairAudit provenance check),
+  // so re-running execute on a proposal that partially applied before a
+  // crash/timeout simply skips already-applied steps and resumes the rest.
+  const result = await applyRepairPlan(prisma, { ...plan, dryRun: false });
+
+  await prisma.repairProposal.update({
+    where: { id: proposalId },
+    data: { status: "executed", executedBy: executorId, executedAt: new Date() }
+  });
+
+  return result;
 }

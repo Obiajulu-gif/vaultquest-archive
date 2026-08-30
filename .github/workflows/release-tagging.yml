@@ -1,3 +1,14 @@
+# Builds contract artifacts and publishes a draft GitHub Release for a `v*`
+# tag (issue #424). The changelog body here is a raw commit list; the richer,
+# label-grouped changelog lives on the rolling draft release maintained by
+# .github/workflows/release-drafter.yml (see .github/release-drafter.yml).
+#
+# Maintainer steps before publishing a tagged release:
+#   1. Review this workflow's draft release (created below) for the build
+#      artifacts (contracts-wasm.zip, deployment-manifest.json).
+#   2. Copy/merge the grouped notes from the release-drafter draft (Releases
+#      page) into this release's body if a richer changelog is wanted.
+#   3. Edit as needed, then publish.
 name: Release on Tag
 
 on:

@@ -18,7 +18,11 @@
     "test:e2e:headed": "playwright test --headed",
     "test:conformance": "cd contracts/drip-pool && npx vitest run",
     "generate:manifest": "npx tsx scripts/generate-manifest.ts",
-    "fixtures:regenerate": "node scripts/regenerate-fixtures.js"
+    "check:drift": "npx tsx scripts/check-config-drift.ts",
+    "fixtures:regenerate": "node scripts/regenerate-fixtures.js",
+    "check:mock-data": "node ./scripts/check-mock-data.js",
+    "check:mock-auth": "node ./scripts/check-mock-auth.js",
+    "check:package-json": "node ./scripts/check-package-json.js"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.12",

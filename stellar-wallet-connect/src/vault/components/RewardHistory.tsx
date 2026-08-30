@@ -1,5 +1,5 @@
 import type { FC } from "react";
-import { ExternalLink, History, Trophy } from "lucide-react";
+import { AlertTriangle, ExternalLink, History, Trophy } from "lucide-react";
 import {
   EmptyState,
   ErrorState,
@@ -7,7 +7,7 @@ import {
   WalletDisconnectedState,
 } from "../../components/FallbackStates";
 import { DataRefreshControl } from "../../components/DataRefreshControl";
-import type { RewardHistoryEntry, RewardOutcome } from "../contract/types";
+import type { RewardHistoryEntry, RewardOutcome, ProofStatus } from "../contract/types";
 import { explorerTxUrl, formatAmount, formatDate, truncateAddress, type StellarNetwork } from "../lib/format";
 import { TransactionTimeline } from "../../components/TransactionTimeline";
 import type { TxFlowResult } from "../lib/txStateMachine";
@@ -39,6 +39,43 @@ export interface RewardHistoryProps {
   refetch?: () => void;
 }
 
+/**
+ * Rough, purely-informational estimate of the Stellar network fee for one
+ * claim transaction, in XLM (#644). Mirrors the same "small, local, clearly
+ * approximate" pattern as `GAS_BUFFER` in DepositModal.tsx — this is a UX
+ * safety rail, not a fee oracle: real fees vary with network congestion and
+ * this repo has no live fee-estimation service to query instead.
+ */
+const ESTIMATED_CLAIM_FEE_XLM = 0.01;
+
+/**
+ * True when a reward is denominated in XLM and its amount is below the
+ * rough estimated network fee for the claim transaction that pays it out —
+ * i.e. claiming it may cost more in fees than the reward is worth (#644).
+ *
+ * Deliberately XLM-only: the fee is paid in XLM but a reward can be
+ * denominated in any asset (USDC, etc.), and comparing a USDC amount
+ * against an XLM fee estimate without a price oracle would be a meaningless
+ * (and potentially misleading) cross-asset comparison, so non-XLM rewards
+ * never trigger this warning.
+ */
+function isUneconomicalClaim(entry: RewardHistoryEntry): boolean {
+  if (entry.asset.toUpperCase() !== "XLM") return false;
+  const amount = Number(entry.rewardAmount);
+  if (!Number.isFinite(amount)) return false;
+  return amount > 0 && amount < ESTIMATED_CLAIM_FEE_XLM;
+}
+
+const UneconomicalClaimBadge: FC = () => (
+  <span
+    className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-300"
+    title={`This reward is smaller than the estimated ~${ESTIMATED_CLAIM_FEE_XLM} XLM network fee to claim it — claiming may cost more than it's worth.`}
+  >
+    <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+    May cost more to claim
+  </span>
+);
+
 const OUTCOME_BADGE: Record<RewardOutcome, { label: string; className: string }> = {
   won: { label: "Won", className: "bg-emerald-500/15 text-emerald-300" },
   no_win: { label: "No win", className: "bg-gray-500/15 text-gray-300" },
@@ -49,6 +86,43 @@ const OutcomeBadge: FC<{ status: RewardOutcome }> = ({ status }) => {
   const badge = OUTCOME_BADGE[status];
   return (
     <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${badge.className}`}>
+      {badge.label}
+    </span>
+  );
+};
+
+const PROOF_BADGE: Record<ProofStatus, { label: string; className: string; title: string }> = {
+  verified: { label: "Proof ✓", className: "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30", title: "Draw proof verified" },
+  tampered: { label: "Proof ✗", className: "bg-red-500/10 text-red-400 border border-red-500/30", title: "Draw proof integrity check failed" },
+  missing: { label: "No proof", className: "bg-gray-500/10 text-gray-400 border border-gray-600/30", title: "No draw proof found for this round" },
+  pending: { label: "Proof pending", className: "bg-amber-500/10 text-amber-400 border border-amber-500/30", title: "Draw proof not yet available" },
+  unverified: { label: "Proof ?", className: "bg-gray-500/10 text-gray-400 border border-gray-600/30", title: "Proof present but could not be fully verified" },
+};
+
+const CLAIM_STATUS_BADGE: Record<string, { label: string; className: string }> = {
+  claimed: { label: "Claimed", className: "bg-emerald-500/10 text-emerald-400" },
+  pending: { label: "Claim pending", className: "bg-amber-500/10 text-amber-400" },
+  unclaimed: { label: "Unclaimed", className: "bg-gray-500/10 text-gray-300" },
+  failed: { label: "Claim failed", className: "bg-red-500/10 text-red-400" },
+};
+
+const ProofBadge: FC<{ proofStatus: ProofStatus; detail?: string }> = ({ proofStatus, detail }) => {
+  const badge = PROOF_BADGE[proofStatus];
+  return (
+    <span
+      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${badge.className}`}
+      title={detail || badge.title}
+      aria-label={detail || badge.title}
+    >
+      {badge.label}
+    </span>
+  );
+};
+
+const ClaimStatusBadge: FC<{ claimStatus: string }> = ({ claimStatus }) => {
+  const badge = CLAIM_STATUS_BADGE[claimStatus] ?? { label: claimStatus, className: "bg-gray-500/10 text-gray-400" };
+  return (
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${badge.className}`}>
       {badge.label}
     </span>
   );
@@ -134,6 +208,8 @@ export const RewardHistory: FC<RewardHistoryProps> = ({
               <th scope="col" className="px-4 py-3 font-medium">Reward</th>
               <th scope="col" className="px-4 py-3 font-medium">Winner</th>
               <th scope="col" className="px-4 py-3 font-medium">Status</th>
+              <th scope="col" className="px-4 py-3 font-medium">Proof</th>
+              <th scope="col" className="px-4 py-3 font-medium">Claim</th>
               <th scope="col" className="px-4 py-3 font-medium">Tx</th>
               {onClaim && <th scope="col" className="px-4 py-3 font-medium">Action</th>}
             </tr>
@@ -143,11 +219,30 @@ export const RewardHistory: FC<RewardHistoryProps> = ({
               <tr key={entry.id} className="border-b border-red-900/20 last:border-0">
                 <td className="px-4 py-3 font-medium text-white">{entry.poolName}</td>
                 <td className="px-4 py-3 text-gray-300">{formatDate(entry.cycleEndedAt)}</td>
-                <td className="px-4 py-3 text-gray-300">{formatAmount(entry.rewardAmount, entry.asset)}</td>
+                <td className="px-4 py-3 text-gray-300">
+                  <div className="flex flex-col gap-1">
+                    <span>{formatAmount(entry.rewardAmount, entry.asset)}</span>
+                    {isUneconomicalClaim(entry) && <UneconomicalClaimBadge />}
+                  </div>
+                </td>
                 <td className="px-4 py-3 font-mono text-gray-300">
                   {entry.winnerAddress ? truncateAddress(entry.winnerAddress) : "—"}
                 </td>
                 <td className="px-4 py-3"><OutcomeBadge status={entry.status} /></td>
+                <td className="px-4 py-3">
+                  {entry.proofStatus ? (
+                    <ProofBadge proofStatus={entry.proofStatus} detail={entry.proofDetail} />
+                  ) : (
+                    <span className="text-gray-600 text-xs">—</span>
+                  )}
+                </td>
+                <td className="px-4 py-3">
+                  {entry.claimStatus ? (
+                    <ClaimStatusBadge claimStatus={entry.claimStatus} />
+                  ) : (
+                    <span className="text-gray-600 text-xs">—</span>
+                  )}
+                </td>
                 <td className="px-4 py-3"><TxLink txHash={entry.txHash} network={network} /></td>
                 {onClaim && (
                   <td className="px-4 py-3">
@@ -184,7 +279,10 @@ export const RewardHistory: FC<RewardHistoryProps> = ({
               </div>
               <div className="flex justify-between gap-2">
                 <dt className="text-gray-400">Reward</dt>
-                <dd className="text-gray-200">{formatAmount(entry.rewardAmount, entry.asset)}</dd>
+                <dd className="flex flex-col items-end gap-1 text-gray-200">
+                  <span>{formatAmount(entry.rewardAmount, entry.asset)}</span>
+                  {isUneconomicalClaim(entry) && <UneconomicalClaimBadge />}
+                </dd>
               </div>
               <div className="flex justify-between gap-2">
                 <dt className="text-gray-400">Winner</dt>
@@ -192,6 +290,18 @@ export const RewardHistory: FC<RewardHistoryProps> = ({
                   {entry.winnerAddress ? truncateAddress(entry.winnerAddress) : "—"}
                 </dd>
               </div>
+              {entry.proofStatus && (
+                <div className="flex justify-between gap-2">
+                  <dt className="text-gray-400">Proof</dt>
+                  <dd><ProofBadge proofStatus={entry.proofStatus} detail={entry.proofDetail} /></dd>
+                </div>
+              )}
+              {entry.claimStatus && (
+                <div className="flex justify-between gap-2">
+                  <dt className="text-gray-400">Claim</dt>
+                  <dd><ClaimStatusBadge claimStatus={entry.claimStatus} /></dd>
+                </div>
+              )}
               <div className="flex justify-between gap-2">
                 <dt className="text-gray-400">Tx</dt>
                 <dd><TxLink txHash={entry.txHash} network={network} /></dd>

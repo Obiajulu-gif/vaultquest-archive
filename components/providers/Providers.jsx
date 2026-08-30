@@ -12,6 +12,9 @@ import { getStoredLocale, setStoredLocale, normalizeLocale } from "@/lib/locale"
 import { createWagmiConfig } from "@/lib/wagmi";
 import { TransactionToastProvider } from "@/hooks/useTransactionToast";
 
+import { ToastProvider } from "@/components/providers/ToastProvider";
+
+export default function Providers({ children }) {
 function ProvidersInner({ children }) {
   const { i18n } = useTranslation("common");
   const [queryClient] = useState(
@@ -57,7 +60,9 @@ function ProvidersInner({ children }) {
       <WagmiProvider key={configVersion} config={wagmiConfig}>
         <QueryClientProvider client={queryClient}>
           <RainbowKitProvider>
-            <TransactionToastProvider>{children}</TransactionToastProvider>
+            <TransactionToastProvider>
+              <ToastProvider>{children}</ToastProvider>
+            </TransactionToastProvider>
           </RainbowKitProvider>
         </QueryClientProvider>
       </WagmiProvider>

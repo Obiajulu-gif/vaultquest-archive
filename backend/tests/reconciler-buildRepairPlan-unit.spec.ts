@@ -218,16 +218,21 @@ describe("buildRepairPlan — branch coverage for every DriftType", () => {
   // ── missing_settlement ───────────────────────────────────────────────────
 
   describe("missing_settlement", () => {
-    it("produces no repair step (informational only)", () => {
+    it("produces no auto-repair step but retains the drift for quarantining (#561)", () => {
       const drifts = [
         makeDrift({
           type: "missing_settlement",
           recordId: "action-no-settlement",
-          details: { vaultId: "v-missing" },
+          details: { vaultId: "v-missing", actionType: "deposit", amount: 100 },
         }),
       ];
       const plan = buildRepairPlan(drifts, true);
+      // No financial auto-repair step is invented (settlementType/recipient/
+      // verified amount are unknown) — but the drift must NOT be silently
+      // dropped: it stays in `drifts` so the apply phase quarantines it.
       expect(plan.steps).toHaveLength(0);
+      expect(plan.drifts).toHaveLength(1);
+      expect(plan.drifts[0].type).toBe("missing_settlement");
     });
   });
 

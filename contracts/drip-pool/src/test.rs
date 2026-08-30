@@ -2754,6 +2754,94 @@ fn test_withdraw_after_wrap_reserves_first_slot() {
     assert_eq!(client.withdrawal_queue_head(), 1);
 }
 
+// ── #556: Withdrawal queue wraparound — duplicate guard & re-queue #513 ────
+//
+// #579 verified that tail/head wrap at u32::MAX is *intended* and that FIFO
+// is preserved across the boundary. These tests cover the two things #579
+// did not: the `ParticipantQueue(Address)` duplicate-request guard must still
+// hold once `WithdrawalQueueTail` has wrapped, and the same guard must be
+// correctly released (on fulfillment/cancel) so a participant can re-queue
+// through a wrapped slot without silently colliding with an old record.
+
+#[test]
+fn test_duplicate_guard_holds_across_wraparound() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.join(&alice);
+    client.join(&bob);
+    issuer.mint(&alice, &1_000);
+    issuer.mint(&bob, &1_000);
+    client.deposit(&alice, &1_000);
+    client.deposit(&bob, &1_000);
+
+    let strategy = env.register_contract(None, RealTokenStrategy);
+    client.set_strategy(&admin, &strategy);
+    client.deploy_to_strategy(&admin, &1_950);
+
+    // Seed so the next enqueue occupies slot u32::MAX and wraps tail to 0.
+    seed_queue_near_max(&env, u32::MAX, u32::MAX);
+
+    skip_lockup(&env);
+    assert_eq!(client.withdraw(&alice), 0); // alice gets slot u32::MAX
+    assert_eq!(client.withdrawal_queue_tail(), 0); // tail wrapped past u32::MAX
+
+    // Even though the counter wrapped, alice's ParticipantQueue entry must
+    // still block a second queue — otherwise a double-request could slip in.
+    assert_eq!(
+        client.try_withdraw(&alice),
+        Err(Ok(Error::WithdrawalAlreadyQueued))
+    );
+
+    // A *different* participant may still queue at the wrapped slot 0.
+    assert_eq!(client.withdraw(&bob), 0);
+    let other_qid = client.withdrawal_request_of(&bob).unwrap();
+    assert_eq!(other_qid, 0);
+    assert_eq!(client.withdrawal_queue_tail(), 1);
+
+    // Alice's original request at the boundary slot is untouched.
+    let alice_req = client.withdrawal_request(u32::MAX);
+    assert_eq!(alice_req.status, WithdrawalRequestStatus::Pending);
+}
+
+#[test]
+fn test_requeue_after_cancel_reuses_wrapped_slot_safely() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+    client.deposit(&alice, &1_000);
+
+    let strategy = env.register_contract(None, RealTokenStrategy);
+    client.set_strategy(&admin, &strategy);
+    client.deploy_to_strategy(&admin, &900); // 100 idle — enough to queue
+
+    // Alice queues at slot u32::MAX; tail wraps to 0.
+    seed_queue_near_max(&env, u32::MAX, u32::MAX);
+    skip_lockup(&env);
+    assert_eq!(client.withdraw(&alice), 0);
+    assert_eq!(client.withdrawal_queue_tail(), 0);
+    assert_eq!(client.withdrawal_request_of(&alice), Some(u32::MAX));
+
+    // Cancel the boundary-slot request: refunds principal and, crucially,
+    // releases alice's ParticipantQueue(Address) entry.
+    let refunded = client.cancel_withdrawal_request(&alice);
+    assert_eq!(refunded, 1_000);
+    assert!(client.withdrawal_request_of(&alice).is_none());
+
+    // Alice may now re-queue through the *already-wrapped* tail (slot 0).
+    // Because her guard was properly released, the fresh request lands on a
+    // brand-new ParticipantQueue entry — it must not silently collide with
+    // the old record or be rejected as a duplicate.
+    assert_eq!(client.withdraw(&alice), 0);
+    let qid = client.withdrawal_request_of(&alice).unwrap();
+    assert_eq!(qid, 0);
+    let fresh = client.withdrawal_request(qid);
+    assert_eq!(fresh.amount, 1_000);
+    assert_eq!(fresh.status, WithdrawalRequestStatus::Pending);
+    assert_eq!(client.withdrawal_queue_tail(), 1);
+}
+
 // ── #524: Security — Fail closed when token is unconfigured ────────────────
 
 #[test]

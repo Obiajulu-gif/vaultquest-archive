@@ -9,6 +9,19 @@
  *
  * Sessions are scoped to (wallet_address, public_key, network). Object-level
  * authorization checks ensure users can only access their own resources.
+ *
+ * # single-use nonce (#566):
+ * - Nonces are single-use. The authoritative consume is a conditionally-
+ *   scoped `updateMany (WHERE challengeId AND consumedAt = null AND
+ *   expiresAt > now)`; a concurrent double-verify can only win the consume
+ *   once, so the loser is rejected and creates no session.
+ * - Nonces expire after `challengeTtlMs` (5 min).
+ * - Signatures are bound to the challenge nonce (payload.nonce) and the
+ *   challenge is domain-separated, so a signature for nonce A cannot be
+ *   replayed against a session expecting nonce B.
+ * - The signature is verified against `challenge.publicKey` (not a
+ *   client-supplied key), so a nonce issued for wallet X cannot
+ *   authenticate wallet Y.
  */
 
 import { randomUUID } from "node:crypto";
@@ -149,11 +162,29 @@ export class WalletAuthService {
       throw AppError.unauthorized();
     }
 
-    // Mark challenge as consumed
-    await this.prisma.walletChallenge.update({
-      where: { challengeId: input.challengeId },
+    // Mark challenge as consumed — ATOMICALLY. The earlier `consumedAt !==
+    // null` read is only a cheap pre-check; the authoritative single-use
+    // enforcement happens here via a conditionally-scoped updateMany. Two
+    // concurrent verify requests for the same challenge can both pass the
+    // read check and even both verify cryptographically, but only ONE will
+    // match `WHERE consumedAt = null` at update time, so only one can
+    // consume the nonce and proceed to create a session (#566). The
+    // `expiresAt > now` clause also re-validates expiry at consume time,
+    // closing the read-then-expire TOCTOU as well.
+    const consumed = await this.prisma.walletChallenge.updateMany({
+      where: {
+        challengeId: input.challengeId,
+        consumedAt: null,
+        expiresAt: { gt: new Date() }
+      },
       data: { consumedAt: new Date() }
     });
+
+    // If this request didn't win the consume, the nonce was either already
+    // used (concurrent replay) or expired between the read and the update.
+    if (consumed.count !== 1) {
+      throw AppError.unauthorized();
+    }
 
     // Create session
     const token = randomUUID();

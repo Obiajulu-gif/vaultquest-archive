@@ -1,5 +1,17 @@
 # Pool capacity feature — implementation
 
+> **Withdrawal-queue counter note (#556):** the storage cap above does
+> **not** bound the FIFO withdrawal-queue counters (`WithdrawalQueueHead` /
+> `WithdrawalQueueTail: u32`). Those wrap at `u32::MAX` and wrap-around is
+> the *tested, intended* design (see `test_enqueue_wrapping_past_u32_max`,
+> #579). Near the boundary the `ParticipantQueue(Address)` duplicate-request
+> guard still holds across a wrap, and its entry is released on cancel/
+> fulfill so a participant can re-queue through a wrapped slot without
+> colliding with an old record (tests under #556). No `QueueExhausted`
+> error was introduced because wrapping is the chosen design; reaching 2^32
+> entries would require a queue that never drains, which the FIFO
+> head/tail invariant guards against in practice.
+
 Adds an optional per-pool cap on `total_deposited`. Unset (default) = unlimited,
 matching the existing `Token` config pattern (`has(...)` + `get(...)`) already
 used in this contract for #376.
@@ -352,6 +364,18 @@ mirror the pattern used in `proxy.rs`'s test module (`Env::default()`,
   — say the word and I'll wire that version instead.
 
 # Pool capacity feature — implementation
+
+> **Withdrawal-queue counter note (#556):** the storage cap above does
+> **not** bound the FIFO withdrawal-queue counters (`WithdrawalQueueHead` /
+> `WithdrawalQueueTail: u32`). Those wrap at `u32::MAX` and wrap-around is
+> the *tested, intended* design (see `test_enqueue_wrapping_past_u32_max`,
+> #579). Near the boundary the `ParticipantQueue(Address)` duplicate-request
+> guard still holds across a wrap, and its entry is released on cancel/
+> fulfill so a participant can re-queue through a wrapped slot without
+> colliding with an old record (tests under #556). No `QueueExhausted`
+> error was introduced because wrapping is the chosen design; reaching 2^32
+> entries would require a queue that never drains, which the FIFO
+> head/tail invariant guards against in practice.
 
 Adds an optional per-pool cap on `total_deposited`. Unset (default) = unlimited,
 matching the existing `Token` config pattern (`has(...)` + `get(...)`) already

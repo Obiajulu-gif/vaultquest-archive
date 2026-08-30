@@ -62,6 +62,34 @@ The background reconciliation engine (`reconciler.ts`) flags actions stuck in `o
 
 ---
 
+## 3b. Missing VaultSettlement drift (`missing_settlement`)
+
+### What triggers it
+
+The reconciliation engine flags a **confirmed** on-chain deposit/withdraw whose `actionPayload.vault_id` (or `pool_id`) has **no `VaultSettlement` row at all**. This means a vault the protocol believes it is holding funds for was never even created on the settlement side — a state where user funds could be stuck or unaccounted for (issue #561).
+
+Each detected drift emits a structured error log line (`event: "reconciliation.missing_settlement"`, with `txHash` / `vaultId` / `actionType` / `amount`) and increments a new Prometheus counter:
+
+* `missing_settlements_total` — cumulative missing_settlement drifts produced.
+
+The reconciler does **not** auto-repair this drift: safely creating a `VaultSettlement` requires a `settlementType`, `recipient`, and a **verified** amount (from the on-chain event, not the client-supplied `actionPayload`), which the drift record does not carry. Inventing those could trigger a bad payout. Instead the drift is **quarantined** for manual review and surfaced here so it is no longer a silent no-op.
+
+| Alert | Condition | Severity |
+|---|---|---|
+| `MissingSettlement` | `missing_settlements_total` increments on any run | Page (funds unaccounted for) |
+
+### Recommended response
+
+1. **Confirm the drift.**
+   ```bash
+   kubectl logs -l app=vaultquest-backend | grep missing_settlement
+   ```
+2. **Locate the confirmed action.** Use the `txHash` in the log line and check on-chain evidence on Stellar Expert / Horizon. Confirm the referenced `vaultId` genuinely has no `VaultSettlement`.
+3. **Reconcile manually**, don't auto-repair: create the missing `VaultSettlement` row in an `Unresolved` state (so it enters the normal settlement retry path) with the correct `settlementType`, `recipient`, and the amount verified from the on-chain event, then clear the `missing_settlements_total` counter after resolution.
+4. **Confirm recovery.** After resolution, the next reconciliation run should stop producing a `missing_settlement` drift for that `vaultId` and no new counter increments should appear.
+
+---
+
 ## 4. Troubleshooting & Recovery Procedures
 
 If the indexer reports a `lagging` or `degraded` state, follow these diagnostic steps sequentially:

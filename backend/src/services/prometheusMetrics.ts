@@ -45,6 +45,7 @@ export class PrometheusMetrics {
   // Reconciliation metrics
   readonly staleOrphansCurrent: Gauge;
   readonly staleOrphansTotal: Counter;
+  readonly missingSettlementsTotal: Counter;
 
   constructor(logger?: Logger) {
     this.registry = register;
@@ -197,6 +198,12 @@ export class PrometheusMetrics {
       registers: [this.registry],
     });
 
+    this.missingSettlementsTotal = new Counter({
+      name: "missing_settlements_total",
+      help: "Total number of missing_settlement drifts detected by the reconciler (confirmed action with no VaultSettlement row)",
+      registers: [this.registry],
+    });
+
     logger?.info("Prometheus metrics initialized");
   }
 
@@ -276,6 +283,14 @@ export class PrometheusMetrics {
    */
   incStaleOrphan(bucket: "7d" | "30d") {
     this.staleOrphansTotal.inc({ bucket });
+  }
+
+  /**
+   * Record a missing_settlement drift (called once per drift produced by
+   * buildRepairPlan).
+   */
+  incMissingSettlement() {
+    this.missingSettlementsTotal.inc();
   }
 
   /**

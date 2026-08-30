@@ -31,6 +31,36 @@ export interface VaultMetadataRecord {
   metadata_version?: number | null;
 }
 
+export interface PortfolioActivePosition {
+  vault_id: string;
+  balance: number;
+  token: string;
+}
+
+export interface PortfolioRecentActivity {
+  id: string;
+  action_type: string;
+  status: string;
+  tx_hash: string | null;
+  created_at: string;
+  payload: unknown;
+}
+
+/**
+ * Matches GET /portfolio/summary's real response shape exactly — see
+ * backend/src/services/ledger.ts's getPortfolioSummary() and
+ * backend/tests/portfolio.spec.ts for the contract this mirrors.
+ */
+export interface PortfolioSummary {
+  wallet_address: string;
+  total_deposits: number;
+  active_positions: PortfolioActivePosition[];
+  pending_rewards: number;
+  claimable_amount: number;
+  invalid_action_count: number;
+  recent_activity: PortfolioRecentActivity[];
+}
+
 type SavedPoolApiRecord = {
   id: string;
   wallet_address: string;
@@ -166,6 +196,15 @@ export class VaultApiClient {
     const body = await parseJsonResponse<ApiEnvelope<VaultMetadataRecord[]>>(
       await fetch(this.url("/vault-metadata"), { signal: options?.signal }),
       "Vault metadata request failed",
+    );
+    return body.data;
+  }
+
+  async getPortfolioSummary(walletAddress: string, options?: { signal?: AbortSignal }): Promise<PortfolioSummary> {
+    const params = new URLSearchParams({ wallet: walletAddress });
+    const body = await parseJsonResponse<ApiEnvelope<PortfolioSummary>>(
+      await fetch(this.url("/portfolio/summary", params), { signal: options?.signal }),
+      "Portfolio summary request failed",
     );
     return body.data;
   }

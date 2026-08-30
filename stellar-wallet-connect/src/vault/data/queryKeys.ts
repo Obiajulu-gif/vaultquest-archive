@@ -21,6 +21,7 @@ export const vaultQueryKeys = {
     ["vaultquest", "position", poolId, normalize(walletAddress)] as const,
   rewards: (walletAddress?: string | null) => ["vaultquest", "rewards", normalize(walletAddress)] as const,
   prizes: (walletAddress?: string | null) => ["vaultquest", "prizes", normalize(walletAddress)] as const,
+  portfolio: (walletAddress?: string | null) => ["vaultquest", "portfolio", normalize(walletAddress)] as const,
   savedPools: (walletAddress?: string | null, network?: string, contractId?: string) =>
     ["vaultquest", "saved-pools", normalize(walletAddress), network || "unknown", contractId || "unknown"] as const,
   transaction: (actionIdOrTxHash: string) => ["vaultquest", "transaction", actionIdOrTxHash] as const,

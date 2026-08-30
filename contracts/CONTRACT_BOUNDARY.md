@@ -84,3 +84,8 @@ For any already-deployed `contracts/_deprecated/vault` instance:
 
 No automated on-chain migration exists today; step 2 is an operational runbook,
 not a contract call, because the storage models don't map automatically.
+
+## Upgrade Rollback Runbook (#554)
+
+For emergency response procedures, anomaly detection, governance approval steps, and timelock management during proxy logic contract rollbacks, refer to the [Proxy Upgrade Rollback Runbook](docs/UPGRADE_ROLLBACK.md).
+

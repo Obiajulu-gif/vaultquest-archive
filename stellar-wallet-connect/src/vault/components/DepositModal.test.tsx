@@ -143,6 +143,58 @@ describe("DepositModal transaction states", () => {
   });
 });
 
+describe("DepositModal pool data freshness (#619)", () => {
+  it("refreshes pool/balance state before showing the review step when onRefreshBalance is provided", async () => {
+    const refresh = deferred<void>();
+    const onRefreshBalance = vi.fn(() => refresh.promise);
+    const user = userEvent.setup();
+
+    render(
+      <DepositModal
+        pool={pool}
+        walletBalance="100"
+        onClose={vi.fn()}
+        onRefreshBalance={onRefreshBalance}
+        onDeposit={vi.fn()}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("Amount"), "10");
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+
+    // Refresh is in flight: still on the input step, Continue shows a
+    // refreshing state, and the review step has not been rendered yet.
+    expect(onRefreshBalance).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole("button", { name: "Refreshing pool data..." })).toBeDisabled();
+    expect(screen.queryByText("Win chance change")).not.toBeInTheDocument();
+
+    refresh.resolve();
+
+    // Once the refresh resolves, the review step renders using the
+    // (now-current) pool data.
+    expect(await screen.findByText("Win chance change")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Confirm deposit" })).toBeInTheDocument();
+  });
+
+  it("does not attempt a refresh before review when onRefreshBalance is not provided", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <DepositModal
+        pool={pool}
+        walletBalance="100"
+        onClose={vi.fn()}
+        onDeposit={vi.fn()}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("Amount"), "10");
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(await screen.findByText("Win chance change")).toBeInTheDocument();
+  });
+});
+
 describe("DepositModal deposit concentration limits (#643)", () => {
   it("previews remaining per-wallet and pool capacity before signing", async () => {
     const cappedPool: PoolSummary = { ...pool, maxWalletDeposit: "500", maxPoolDeposit: "10000" };

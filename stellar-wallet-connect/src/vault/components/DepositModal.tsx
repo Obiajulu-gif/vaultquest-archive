@@ -112,7 +112,7 @@ export const DepositModal: FC<DepositModalProps> = ({
     setError(null);
   }, [maxDepositable]);
 
-  const handleContinue = useCallback(() => {
+  const handleContinue = useCallback(async () => {
     if (!isValid) {
       if (amountNum === 0) {
         setError("Enter an amount");
@@ -129,9 +129,30 @@ export const DepositModal: FC<DepositModalProps> = ({
       }
       return;
     }
+    // Refresh pool/balance state before locking in the numbers shown on the
+    // review step. Without this, a user who opens the modal and waits could
+    // confirm a deposit against a stale pool.tvl/participantCount snapshot
+    // from whenever the modal first mounted (#619).
+    if (onRefreshBalance) {
+      setRefreshing(true);
+      try {
+        await onRefreshBalance();
+      } finally {
+        setRefreshing(false);
+      }
+    }
     setStep("review");
     setError(null);
-  }, [isValid, amountNum, exceedsWalletCap, exceedsPoolCap, remainingWalletCapacity, remainingPoolCapacity, pool.asset]);
+  }, [
+    isValid,
+    amountNum,
+    exceedsWalletCap,
+    exceedsPoolCap,
+    remainingWalletCapacity,
+    remainingPoolCapacity,
+    pool.asset,
+    onRefreshBalance,
+  ]);
 
   const handleConfirm = useCallback(async () => {
     setStep("broadcasting");
@@ -298,10 +319,11 @@ export const DepositModal: FC<DepositModalProps> = ({
             <button
               type="button"
               onClick={handleContinue}
-              disabled={!isValid}
-              className="w-full rounded-xl bg-red-600 py-3 text-sm font-semibold text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#1A0505]"
+              disabled={!isValid || refreshing}
+              className="w-full flex items-center justify-center gap-2 rounded-xl bg-red-600 py-3 text-sm font-semibold text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#1A0505]"
             >
-              Continue
+              {refreshing && <Loader2 className="h-4 w-4 animate-spin" />}
+              {refreshing ? "Refreshing pool data..." : "Continue"}
             </button>
           </div>
         )}

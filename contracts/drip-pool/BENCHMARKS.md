@@ -308,3 +308,4 @@ The benchmark suite (`src/benchmarks.rs`) covers:
 
 ### Admin Operations
 - `bench_seed_admin`
+- `bench_prune_round_1000_participants`

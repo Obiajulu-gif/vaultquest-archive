@@ -21,7 +21,7 @@ import { MetricsService } from "./services/metricsService.js";
 import { DrawProofService } from "./services/drawProofService.js";
 import { drawProofRoutes } from "./routes/drawProofs.js";
 import { errorHandler } from "./middleware/errorHandler.js";
-import { rateLimiter } from "./middleware/rateLimiter.js";
+import { csrfProtection } from "./middleware/csrfProtection.js";
 import { etagPlugin } from "./middleware/etag.js";
 import { requireApiKey } from "./middleware/api-key-auth.js";
 import { createLogger } from "./logger.js";
@@ -75,8 +75,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   }
   app.register(rateLimit, rateLimitOptions);
 
-  // Register rate limiting and CSRF protection
-  app.register(rateLimiter);
+  // Register CSRF protection middleware
+  app.register(csrfProtection);
 
   // Register ETag and Cache-Control middleware
   app.register(etagPlugin);

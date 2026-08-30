@@ -421,8 +421,17 @@ pub(crate) fn deploy_to_strategy(env: &Env, caller: &Address, amount: i128) -> R
         }),
     ]);
 
+    // #623: a paused or degraded adapter must fail this call cleanly rather
+    // than panicking the whole transaction. `try_deposit` surfaces the
+    // adapter's `Result` instead of unwrapping it, so a rejected deposit
+    // (e.g. `ContractError::StrategyPaused`) becomes a normal contract error
+    // the caller can handle — principal never leaves pool custody and no
+    // state above is mutated.
     let client = YieldStrategyClient::new(env, &strategy);
-    client.deposit(&contract_addr, &token, &amount);
+    client
+        .try_deposit(&contract_addr, &token, &amount)
+        .map_err(|_| Error::StrategyPaused)? // host-level invoke failure
+        .map_err(|_| Error::StrategyPaused)?; // adapter-reported ContractError
 
     pool.principal_in_strategy += amount;
     env.storage().instance().set(&DataKey::Pool, &pool);
@@ -508,9 +517,17 @@ fn internal_harvest_strategy(env: &Env) -> Result<(i128, i128), Error> {
     // 2. Snapshot the strategy's actual balance before harvest
     let pre_strategy_balance = token_client.balance(&strategy);
 
-    // 3. Call harvest to trigger the strategy's internal reconciliation
+    // 3. Call harvest to trigger the strategy's internal reconciliation.
+    // #623: a paused or degraded adapter must fail this cleanly rather than
+    // panicking — `reconcile_strategy` calls this best-effort (discarding
+    // the error) precisely so a harvest failure never blocks reconciliation
+    // or rotation; that guarantee only holds if this returns `Err` instead
+    // of aborting the whole transaction.
     let client = YieldStrategyClient::new(env, &strategy);
-    let report = client.harvest(&token);
+    let report = client
+        .try_harvest(&token)
+        .map_err(|_| Error::StrategyPaused)? // host-level invoke failure
+        .map_err(|_| Error::StrategyPaused)?; // adapter-reported ContractError
 
     // 4. Read the strategy's actual balance AFTER harvest
     let post_strategy_balance = token_client.balance(&strategy);

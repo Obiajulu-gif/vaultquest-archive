@@ -1,9 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
+  ARCHIVE_STALE_THRESHOLD_MS,
   POOL_STATUS,
   ROUND_STATUS,
   getPoolStatusMeta,
   getRoundStatusMeta,
+  isArchiveEntryStale,
   normalizePoolStatus,
 } from "./pool-status";
 
@@ -58,5 +60,50 @@ describe("getRoundStatusMeta", () => {
     for (const roundStatus of Object.values(ROUND_STATUS)) {
       expect(poolStatuses.has(roundStatus)).toBe(true);
     }
+  });
+});
+
+describe("isArchiveEntryStale (#622)", () => {
+  const NOW = new Date("2026-06-15T12:00:00Z").getTime();
+
+  it("is not stale when verified within the threshold", () => {
+    const verifiedAt = new Date(NOW - 1 * 60 * 60 * 1000).toISOString(); // 1h ago
+    expect(isArchiveEntryStale(verifiedAt, NOW)).toBe(false);
+  });
+
+  it("is stale once verification age exceeds the threshold", () => {
+    const verifiedAt = new Date(NOW - (ARCHIVE_STALE_THRESHOLD_MS + 1)).toISOString();
+    expect(isArchiveEntryStale(verifiedAt, NOW)).toBe(true);
+  });
+
+  it("is exactly on the boundary as not-yet-stale", () => {
+    const verifiedAt = new Date(NOW - ARCHIVE_STALE_THRESHOLD_MS).toISOString();
+    expect(isArchiveEntryStale(verifiedAt, NOW)).toBe(false);
+  });
+
+  it("treats a missing or null verifiedAt as stale rather than trusting it silently", () => {
+    expect(isArchiveEntryStale(null, NOW)).toBe(true);
+    expect(isArchiveEntryStale(undefined, NOW)).toBe(true);
+    expect(isArchiveEntryStale("", NOW)).toBe(true);
+  });
+
+  it("treats an unparseable verifiedAt as stale", () => {
+    expect(isArchiveEntryStale("not-a-date", NOW)).toBe(true);
+  });
+
+  it("treats a verifiedAt in the future as stale (clock skew / bad data)", () => {
+    const verifiedAt = new Date(NOW + 60 * 60 * 1000).toISOString(); // 1h in the future
+    expect(isArchiveEntryStale(verifiedAt, NOW)).toBe(true);
+  });
+
+  it("accepts a custom threshold", () => {
+    const verifiedAt = new Date(NOW - 10 * 60 * 1000).toISOString(); // 10m ago
+    expect(isArchiveEntryStale(verifiedAt, NOW, 5 * 60 * 1000)).toBe(true);
+    expect(isArchiveEntryStale(verifiedAt, NOW, 15 * 60 * 1000)).toBe(false);
+  });
+
+  it("defaults `now` to the current time when omitted", () => {
+    const verifiedAt = new Date().toISOString();
+    expect(isArchiveEntryStale(verifiedAt)).toBe(false);
   });
 });

@@ -47,6 +47,15 @@ export interface PoolSummary {
    * tvl` itself (and risk drifting from whatever precision/rounding the
    * source of truth used). Omitted when `maxPoolDeposit` is unset. */
   remainingPoolCapacity?: string;
+  /**
+   * Mirrors the contract's `is_emergency` circuit breaker (#645). When true,
+   * `join`/`drip` (deposit), `draw_winner`, and yield-crediting are blocked
+   * on-chain — but `withdraw`, `withdraw_locked`, and `claim`/`claim_reward`
+   * are deliberately left open so participants can always exit. Optional
+   * because not every pool source (e.g. the factory/indexer summary) reads
+   * this flag yet.
+   */
+  isEmergency?: boolean;
 }
 
 export interface SavedPoolEntry extends PoolSummary {
@@ -136,7 +145,24 @@ export type ContractErrorKind =
   | "signature_rejected"
   | "rpc_failure"
   | "contract_error"
-  | "stale_data";
+  | "stale_data"
+  /**
+   * Withdrawal attempted before the pool's lockup period has elapsed
+   * (mirrors `Error::LockupActive` in contracts/drip-pool/src/lib.rs).
+   * Distinct from a generic `contract_error` so the UI can tell the user
+   * *why* the withdrawal was rejected and when they can retry, instead of
+   * showing an undifferentiated "transaction reverted" message (#620).
+   */
+  | "lockup_active"
+  /**
+   * Withdrawal exceeds the pool's currently available (idle) liquidity —
+   * the request must be queued rather than settled immediately (mirrors
+   * `WithdrawalAlreadyQueued` / the withdrawal-queue flow in
+   * contracts/drip-pool/src/lib.rs). Distinct from a generic
+   * `contract_error` so the UI can explain the funds are queued rather
+   * than rejected (#620).
+   */
+  | "insufficient_liquidity";
 
 export class ContractInterfaceError extends Error {
   readonly kind: ContractErrorKind;

@@ -95,10 +95,12 @@ export class DrawProofService {
     let poolState: Record<string, unknown> = {};
     let payoutTxHash = action.txHash || "";
     let payoutLedgerSeq = drawLedger + 1;
+    let roundPrincipalSnapshot: string | undefined;
 
     try {
       participants = await this.fetchParticipants(contractId, drawLedger);
       poolState = await this.fetchPoolState(contractId);
+      roundPrincipalSnapshot = await this.fetchRoundPrincipalSnapshot(contractId, roundId);
       if (action.txHash) {
         const tx = await this.rpc.getTransaction(action.txHash);
         if (tx) {
@@ -139,6 +141,7 @@ export class DrawProofService {
       payoutAsset: String(payload.asset || "USDC"),
       payoutConfirmed: true,
       contractSpecHash: options.contractSpecHash || "unknown",
+      ...(roundPrincipalSnapshot !== undefined && { roundPrincipalSnapshot }),
     };
 
     const proof = await assembleDrawProof(input);
@@ -369,6 +372,30 @@ export class DrawProofService {
       return JSON.parse(data.value) as Record<string, unknown>;
     } catch {
       return {};
+    }
+  }
+
+  /**
+   * Reads the contract's own `Round.principal_snapshot` for `roundId` (#642)
+   * — the deterministic cutoff balance the contract freezes at `lock_round`
+   * — so it can be recorded on the draw proof and later cross-checked
+   * against the off-chain `totalDeposits` figure. Returns `undefined` (never
+   * a fabricated value) when the round can't be fetched, e.g. it predates
+   * round-scoped accounting or the RPC call fails.
+   */
+  private async fetchRoundPrincipalSnapshot(
+    contractId: string,
+    roundId: number
+  ): Promise<string | undefined> {
+    if (!this.rpc) return undefined;
+
+    try {
+      const data = await this.rpc.getContractData(contractId, `Round:${roundId}`);
+      const round = JSON.parse(data.value) as Record<string, unknown>;
+      const snapshot = round.principal_snapshot ?? round.principalSnapshot;
+      return snapshot === undefined || snapshot === null ? undefined : String(snapshot);
+    } catch {
+      return undefined;
     }
   }
 

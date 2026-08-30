@@ -233,6 +233,35 @@ describe("applyRepairPlan", () => {
     expect(quarantined.length).toBeGreaterThan(0);
   });
 
+  it("quarantines missing_settlement drifts instead of silently dropping them (#561)", async () => {
+    // A confirmed-on-chain deposit whose referenced vault has no
+    // VaultSettlement row at all — user funds are effectively unaccounted for.
+    await seedAction(db.prisma, {
+      idempotencyKey: "apply-missing-setl",
+      status: "confirmed",
+      actionType: "deposit",
+      actionPayload: { vault_id: "vault-no-setl", amount: "1000000" },
+      txHash: "tx_missing_settlement"
+    });
+
+    const drifts = await detectDrift(db.prisma);
+    const missing = drifts.filter((d) => d.type === "missing_settlement");
+    expect(missing.length).toBeGreaterThan(0);
+
+    const plan = buildRepairPlan(drifts, false);
+    // No financial auto-repair step is invented for this drift type.
+    expect(plan.steps.filter((s) => s.provenance.includes("missing_settlement"))).toHaveLength(0);
+
+    const result = await applyRepairPlan(db.prisma, plan);
+    expect(result.applied).toBe(0);
+
+    // The drift is explicitly quarantined for operator review.
+    const quarantined = await db.prisma.repairQuarantine.findMany({
+      where: { driftType: "missing_settlement" }
+    });
+    expect(quarantined.length).toBeGreaterThan(0);
+  });
+
   it("is idempotent: re-applying same plan produces no new steps", async () => {
     const drifts = [{
       type: "stale_pending_event" as const,

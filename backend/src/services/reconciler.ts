@@ -272,7 +272,7 @@ export async function detectDrift(prisma: PrismaClient): Promise<DriftRecord[]> 
       status: "confirmed",
       actionType: { in: ["deposit", "withdraw"] }
     },
-    select: { id: true, actionPayload: true, txHash: true }
+    select: { id: true, actionType: true, actionPayload: true, txHash: true }
   });
   for (const a of confirmedDeposits) {
     const payload = a.actionPayload as Record<string, unknown> | null;
@@ -288,6 +288,9 @@ export async function detectDrift(prisma: PrismaClient): Promise<DriftRecord[]> 
           recordId: a.id,
           details: {
             txHash: a.txHash,
+            actionType: a.actionType,
+            amount: payload?.amount ?? null,
+            recipient: payload?.recipient ?? null,
             vaultId: String(vaultId),
             message: `Confirmed action references vault ${vaultId} but no VaultSettlement exists`
           }
@@ -480,8 +483,30 @@ export function buildRepairPlan(drifts: DriftRecord[], dryRun: boolean): RepairP
       }
 
       case "missing_settlement": {
-        // Confirmed action references a vault with no settlement.
-        // This is informational — no automatic repair.
+        // Confirmed action references a vault with no VaultSettlement row.
+        // This is a financial-stuck-state signal (#561): user funds may be
+        // unaccounted for. We deliberately do NOT auto-insert a settlement:
+        // constructing the right VaultSettlement requires settlementType,
+        // recipient and a verified amount which the drift record does not
+        // carry, and getting any of those wrong risks a bad on-chain payout.
+        // Instead we surface it loudly (structured error log + Prometheus
+        // metric) and quarantine it for operator review, so it is no longer a
+        // silent no-op.
+        const metrics = getPrometheusMetrics();
+        metrics.incMissingSettlement();
+
+        logger.error(
+          {
+            event: "reconciliation.missing_settlement",
+            recordId: drift.recordId,
+            txHash: drift.details.txHash ?? null,
+            vaultId: drift.details.vaultId ?? null,
+            actionType: drift.details.actionType ?? null,
+            amount: drift.details.amount ?? null
+          },
+          `missing_settlement: confirmed action ${drift.recordId} references vault ${drift.details.vaultId} but no VaultSettlement exists — quarantined for manual review`
+        );
+        quarantined.push(drift);
         break;
       }
 
@@ -595,7 +620,8 @@ export async function applyRepairPlan(
     if (
       drift.type === "contradiction" ||
       drift.type === "duplicate_tx_hash" ||
-      drift.type === "insolvency_drift"
+      drift.type === "insolvency_drift" ||
+      drift.type === "missing_settlement"
     ) {
       const existing = await prisma.repairQuarantine.findFirst({
         where: {

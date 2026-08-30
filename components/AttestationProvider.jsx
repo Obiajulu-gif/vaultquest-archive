@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import { loadManifestAsync, validateManifestAgainstEnv } from "@/lib/deployment-manifest";
 import { registerManifestLoader } from "@vaultquest/stellar-wallet-connect/core/env";
 import { registerManifestGetter } from "@vaultquest/stellar-wallet-connect/vault/data/config";
-import { setVaultAddressFromManifest } from "@/lib/contracts";
 import AttestationError from "@/components/AttestationError";
 
 export default function AttestationProvider({ children }) {
@@ -21,9 +20,7 @@ export default function AttestationProvider({ children }) {
 
         registerManifestGetter(() => manifest);
 
-        if (manifest.contracts?.evm?.address) {
-          setVaultAddressFromManifest(manifest.contracts.evm.address);
-        }
+        // Removed EVM address setting as lib/contracts.ts is deleted
 
         const envMismatches = validateManifestAgainstEnv(manifest);
         if (envMismatches.length > 0) {

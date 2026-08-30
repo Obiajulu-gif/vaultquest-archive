@@ -194,3 +194,146 @@ describe("DepositModal pool data freshness (#619)", () => {
     expect(await screen.findByText("Win chance change")).toBeInTheDocument();
   });
 });
+
+describe("DepositModal deposit concentration limits (#643)", () => {
+  it("previews remaining per-wallet and pool capacity before signing", async () => {
+    const cappedPool: PoolSummary = { ...pool, maxWalletDeposit: "500", maxPoolDeposit: "10000" };
+    render(
+      <DepositModal
+        pool={cappedPool}
+        walletBalance="1000"
+        walletDeposited="300"
+        onClose={vi.fn()}
+        onDeposit={vi.fn()}
+      />,
+    );
+
+    const preview = await screen.findByTestId("deposit-capacity-preview");
+    expect(preview).toHaveTextContent("Your remaining limit");
+    expect(preview).toHaveTextContent("200"); // 500 wallet cap - 300 already deposited
+    expect(preview).toHaveTextContent("Pool remaining capacity");
+  });
+
+  it("does not render a capacity preview for an uncapped pool", () => {
+    render(
+      <DepositModal pool={pool} walletBalance="1000" onClose={vi.fn()} onDeposit={vi.fn()} />,
+    );
+    expect(screen.queryByTestId("deposit-capacity-preview")).not.toBeInTheDocument();
+  });
+
+  it("disables Continue and explains the per-wallet limit when the amount exceeds it", async () => {
+    const cappedPool: PoolSummary = { ...pool, maxWalletDeposit: "500" };
+    const onDeposit = vi.fn();
+    render(
+      <DepositModal
+        pool={cappedPool}
+        walletBalance="1000"
+        walletDeposited="300"
+        onClose={vi.fn()}
+        onDeposit={onDeposit}
+      />,
+    );
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Amount"), "250"); // 300 + 250 = 550 > 500 cap
+
+    expect(await screen.findByText(/Amount exceeds your per-wallet limit/)).toBeInTheDocument();
+    const continueButton = screen.getByRole("button", { name: "Continue" });
+    expect(continueButton).toBeDisabled();
+
+    // Clicking a disabled button is a no-op — confirms this isn't merely a
+    // visual-only disabled state.
+    await user.click(continueButton);
+    expect(screen.queryByText("Pool")).not.toBeInTheDocument(); // never reached the review step
+    expect(onDeposit).not.toHaveBeenCalled();
+  });
+
+  it("disables Continue and explains the pool limit when the amount exceeds it", async () => {
+    const cappedPool: PoolSummary = { ...pool, maxPoolDeposit: "1000000000", remainingPoolCapacity: "50" };
+    const onDeposit = vi.fn();
+    render(
+      <DepositModal pool={cappedPool} walletBalance="1000" onClose={vi.fn()} onDeposit={onDeposit} />,
+    );
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Amount"), "60");
+
+    expect(await screen.findByText(/Amount exceeds this pool's remaining capacity/)).toBeInTheDocument();
+    const continueButton = screen.getByRole("button", { name: "Continue" });
+    expect(continueButton).toBeDisabled();
+
+    await user.click(continueButton);
+    expect(onDeposit).not.toHaveBeenCalled();
+  });
+
+  it("allows Continue at exactly the remaining wallet capacity", async () => {
+    const cappedPool: PoolSummary = { ...pool, maxWalletDeposit: "500" };
+    render(
+      <DepositModal
+        pool={cappedPool}
+        walletBalance="1000"
+        walletDeposited="300"
+        onClose={vi.fn()}
+        onDeposit={vi.fn()}
+      />,
+    );
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Amount"), "200"); // exactly the remaining 200
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(await screen.findByText("Pool")).toBeInTheDocument(); // reached the review step
+  });
+
+  it("'Max' fills in the tightest of balance, wallet cap, and pool cap", async () => {
+    const cappedPool: PoolSummary = { ...pool, maxWalletDeposit: "500", remainingPoolCapacity: "120" };
+    render(
+      <DepositModal
+        pool={cappedPool}
+        walletBalance="1000" // balance headroom: 999.5
+        walletDeposited="300" // wallet headroom: 200
+        onClose={vi.fn()}
+        onDeposit={vi.fn()}
+      />,
+    );
+
+    const user = userEvent.setup();
+    // Pool capacity (120) is the tightest constraint of the three.
+    await user.click(screen.getByRole("button", { name: "Max" }));
+    expect(screen.getByLabelText("Amount")).toHaveValue(120);
+  });
+
+  it("still surfaces a contract-level cap rejection even if the client-side preview missed it", async () => {
+    // Simulates a pool with no cap metadata provided to the UI (e.g. a
+    // backend that hasn't been updated yet) but where the contract itself
+    // enforces a cap — the authoritative on-chain rejection must still
+    // surface clearly, since the client-side preview is an optimization,
+    // not the source of truth.
+    const client = createMockVaultClient();
+    vi.spyOn(client, "submitAction").mockRejectedValue(
+      new ContractInterfaceError("contract_error", "Transaction reverted by the contract."),
+    );
+
+    render(
+      <DepositModal
+        pool={pool} // no maxWalletDeposit/maxPoolDeposit set
+        walletBalance="1000000"
+        onClose={vi.fn()}
+        onDeposit={async (amount) => {
+          await client.submitAction("drip", {
+            poolId: pool.id,
+            walletAddress: SAMPLE_ADDRESS,
+            amount,
+          });
+        }}
+      />,
+    );
+
+    const user = await enterReview("999999");
+    await user.click(screen.getByRole("button", { name: "Confirm deposit" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("Transaction reverted by the contract.")).toBeInTheDocument(),
+    );
+  });
+});

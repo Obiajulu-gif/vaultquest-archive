@@ -35,6 +35,19 @@ export interface PoolSummary {
   operationalStatus?: string;
   metadataVersion?: number;
   /**
+   * Deposit concentration limits (#643), in the same display units as `tvl`.
+   * "0" (or omitted) means uncapped, mirroring the contract's own
+   * `max_wallet_deposit`/`max_pool_deposit` convention so the UI never needs
+   * a separate "is this pool capped at all" flag.
+   */
+  maxWalletDeposit?: string;
+  maxPoolDeposit?: string;
+  /** Remaining protocol-wide headroom under `maxPoolDeposit`, precomputed by
+   * the backend/indexer so the UI doesn't need to recompute `maxPoolDeposit -
+   * tvl` itself (and risk drifting from whatever precision/rounding the
+   * source of truth used). Omitted when `maxPoolDeposit` is unset. */
+  remainingPoolCapacity?: string;
+  /**
    * Mirrors the contract's `is_emergency` circuit breaker (#645). When true,
    * `join`/`drip` (deposit), `draw_winner`, and yield-crediting are blocked
    * on-chain — but `withdraw`, `withdraw_locked`, and `claim`/`claim_reward`

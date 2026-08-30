@@ -18,6 +18,7 @@ import {
 } from "./services/stellarIndexer.js";
 import { setAttestationInfo } from "./routes/health.js";
 import type { ScheduledTask } from "node-cron";
+import { SCHEMA_VERSIONS } from "./constants.js";
 
 let loadManifest: typeof import("../../../lib/deployment-manifest.js").loadManifest | undefined;
 let validateManifestAgainstEnv: typeof import("../../../lib/deployment-manifest.js").validateManifestAgainstEnv | undefined;
@@ -142,7 +143,13 @@ if (env.SOROBAN_RPC_URL && env.INDEXER_CONTRACT_IDS) {
     indexer.setCursor(checkpoint.lastProcessedEventId);
   }
 
-  indexerCronTask = startIndexerCron({ prisma, indexer, ledger: indexerLedgerService, logger });
+  indexerCronTask = startIndexerCron({ 
+    prisma, 
+    indexer, 
+    ledger: indexerLedgerService, 
+    logger,
+    indexerVersion: SCHEMA_VERSIONS.INDEXER
+  });
   logger.info({ contractIds: staticContractIds, resumeCursor: checkpoint?.lastProcessedEventId ?? null }, "stellar indexer daemon started");
 }
 

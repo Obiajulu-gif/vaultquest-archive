@@ -970,10 +970,11 @@ export class LedgerService {
     lastProcessedEventId?: string | null;
     lastError?: string | null;
     success: boolean;
+    indexerVersion?: string;
   }): Promise<any> {
     const now = new Date();
     const needsExisting =
-      input.lastProcessedEventId === undefined || (!input.success && input.lastError === undefined);
+      input.lastProcessedEventId === undefined || (!input.success && input.lastError === undefined) || (input.indexerVersion === undefined);
     const existing = needsExisting ? await this.getIndexerCheckpoint() : null;
     const lastProcessedEventId =
       input.lastProcessedEventId !== undefined
@@ -984,6 +985,8 @@ export class LedgerService {
       : input.lastError !== undefined
         ? input.lastError
         : existing?.lastError ?? null;
+    const indexerVersion = input.indexerVersion !== undefined ? input.indexerVersion : existing?.indexerVersion ?? null;
+
     if (this.cacheService) {
       const lastSuccessSyncTime = input.success ? now : (existing?.lastSuccessSyncTime ?? now);
       await this.cacheService.setCheckpoint({
@@ -991,7 +994,8 @@ export class LedgerService {
         lastProcessedEventId,
         lastSyncTime: now,
         lastSuccessSyncTime,
-        lastError
+        lastError,
+        indexerVersion
       });
       return { id: "singleton" };
     }
@@ -1004,14 +1008,16 @@ export class LedgerService {
         lastProcessedEventId,
         lastSyncTime: now,
         lastError,
-        lastSuccessSyncTime: input.success ? now : undefined
+        lastSuccessSyncTime: input.success ? now : undefined,
+        indexerVersion
       },
       update: {
         latestLedger: input.latestLedger,
         lastProcessedEventId,
         lastSyncTime: now,
         lastError,
-        lastSuccessSyncTime: input.success ? now : undefined
+        lastSuccessSyncTime: input.success ? now : undefined,
+        indexerVersion
       }
     });
   }

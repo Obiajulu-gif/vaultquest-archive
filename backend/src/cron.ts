@@ -180,6 +180,7 @@ export function startIndexerCron(opts: {
   ledger: LedgerService;
   logger: Logger;
   schedule?: string;
+  indexerVersion?: string;
 }): cron.ScheduledTask {
   const schedule = opts.schedule ?? "*/1 * * * *";
   const leases = new LeaseService(opts.prisma);
@@ -200,7 +201,8 @@ export function startIndexerCron(opts: {
           await opts.ledger.updateIndexerCheckpoint({
             latestLedger: result.latestLedger,
             lastProcessedEventId: result.cursor,
-            success: true
+            success: true,
+            indexerVersion: opts.indexerVersion
           });
         }
       });
@@ -211,7 +213,8 @@ export function startIndexerCron(opts: {
         await opts.ledger.updateIndexerCheckpoint({
           latestLedger: existing?.latestLedger ?? 0,
           success: false,
-          lastError: err instanceof Error ? err.message : String(err)
+          lastError: err instanceof Error ? err.message : String(err),
+          indexerVersion: opts.indexerVersion
         });
       } catch {
         // best-effort; don't let checkpoint persistence mask the original error

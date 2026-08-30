@@ -8,7 +8,7 @@ import {
   WalletDisconnectedState,
 } from "../../components/FallbackStates";
 import { DataRefreshControl } from "../../components/DataRefreshControl";
-import type { PoolActionType, PoolStatus, PoolSummary, UserPosition } from "../contract/types";
+import type { PoolActionType, PoolSummary, UserPosition } from "../contract/types";
 import { formatAmount, formatDate, truncateAddress } from "../lib/format";
 import { OnboardingChecklist } from "./OnboardingChecklist";
 import { isNetworkMismatch } from "../../core/store.js";

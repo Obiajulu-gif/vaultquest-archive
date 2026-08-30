@@ -150,16 +150,20 @@ export class VaultApiClient {
       await fetch(this.url("/pools"), { signal: options?.signal }),
       "Pool discovery request failed",
     );
-    return body.data.map((pool) => ({
-      ...pool,
-      riskTier: pool.riskTier ?? pool.risk_tier ?? undefined,
-      strategy: pool.strategy ?? pool.strategy_name ?? undefined,
-      lockupDays: pool.lockupDays ?? pool.lockup_days ?? undefined,
-      feeBps: pool.feeBps ?? pool.fee_bps ?? undefined,
-      acceptedAsset: pool.acceptedAsset ?? pool.accepted_asset ?? undefined,
-      operationalStatus: pool.operationalStatus ?? pool.operational_status ?? undefined,
-      metadataVersion: pool.metadataVersion ?? pool.metadata_version ?? undefined,
-    }));
+    return body.data.map((pool) => {
+      const raw = pool as PoolSummary & Record<string, unknown>;
+      return {
+        ...pool,
+        riskTier: pool.riskTier ?? (raw.risk_tier as string | undefined),
+        strategy: pool.strategy ?? (raw.strategy_name as string | undefined),
+        lockupDays: pool.lockupDays ?? (raw.lockup_days as number | undefined),
+        feeBps: pool.feeBps ?? (raw.fee_bps as number | undefined),
+        acceptedAsset: pool.acceptedAsset ?? (raw.accepted_asset as string | undefined),
+        operationalStatus: pool.operationalStatus ?? (raw.operational_status as string | undefined),
+        metadataVersion: pool.metadataVersion ?? (raw.metadata_version as number | undefined),
+      };
+    });
+
   }
 
   async listVaultMetadata(options?: { signal?: AbortSignal }): Promise<VaultMetadataRecord[]> {

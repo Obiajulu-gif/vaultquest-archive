@@ -143,22 +143,27 @@ describe("PoolDetail", () => {
       render(<PoolDetail pool={basePool} tvlConfidence="conflicting" />);
       expect(screen.getByLabelText(/providers disagree/i)).toBeInTheDocument();
     });
-  it("does not show a pause banner or hide actions for a non-paused pool", () => {
-    render(<PoolDetail pool={basePool} position={null} />);
-    expect(screen.queryByText(/pool paused for recovery/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /join pool/i })).toBeInTheDocument();
   });
 
-  it("shows a pause banner and hides join when the pool is in emergency mode", () => {
-    render(<PoolDetail pool={{ ...basePool, isEmergency: true }} position={null} />);
-    expect(screen.getByText(/pool paused for recovery/i)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /join pool/i })).not.toBeInTheDocument();
-  });
+  describe("emergency pause banner and actions", () => {
+    it("does not show a pause banner or hide actions for a non-paused pool", () => {
+      render(<PoolDetail pool={basePool} position={null} />);
+      expect(screen.queryByText(/pool paused for recovery/i)).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /join pool/i })).toBeInTheDocument();
+    });
 
-  it("still shows withdraw (not gated on-chain) when paused and joined", () => {
-    render(<PoolDetail pool={{ ...basePool, isEmergency: true }} position={joined} />);
-    expect(screen.getByText(/pool paused for recovery/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /withdraw/i })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /add deposit/i })).not.toBeInTheDocument();
+    it("shows a pause banner and hides join when the pool is in emergency mode", () => {
+      render(<PoolDetail pool={{ ...basePool, isEmergency: true }} position={null} />);
+      expect(screen.getByText(/pool paused for recovery/i)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /join pool/i })).not.toBeInTheDocument();
+    });
+
+    it("still shows withdraw (not gated on-chain) when paused and joined", () => {
+      render(<PoolDetail pool={{ ...basePool, isEmergency: true }} position={joined} />);
+      expect(screen.getByText(/pool paused for recovery/i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /withdraw/i })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /add deposit/i })).not.toBeInTheDocument();
+    });
   });
 });
+

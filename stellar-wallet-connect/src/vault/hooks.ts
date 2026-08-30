@@ -23,6 +23,7 @@ import { defaultVaultDataConfig } from "./data/config";
 import { useVaultQuery, vaultQueryClient, type QueryState } from "./data/queryClient";
 import { vaultQueryKeys } from "./data/queryKeys";
 import { useTxFlow, type TxFlowOptions, type TxFlowResult } from "./lib/txStateMachine";
+import type { TimelineStage } from "../components/TransactionTimeline";
 
 export interface AsyncResource<T> {
   data: T | null;

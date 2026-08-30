@@ -55,6 +55,11 @@ const PROTOCOL_PARAMETERS = [
     value: "2 failed attempts",
     note: "Triggers manual review before retrying settlement.",
   },
+  {
+    label: "Sybil anti-abuse clustering check",
+    value: "Configurable / Auditable",
+    note: "Monitors deposit splitting without blocking legitimate users by default.",
+  },
 ];
 
 const ACTIVE_ROUNDS = [

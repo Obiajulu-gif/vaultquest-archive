@@ -7,7 +7,7 @@ import {
   WalletDisconnectedState,
 } from "../../components/FallbackStates";
 import { DataRefreshControl } from "../../components/DataRefreshControl";
-import type { SavedPoolEntry, PoolStatus } from "../contract/types";
+import type { SavedPoolEntry } from "../contract/types";
 import { formatAmount, formatDate } from "../lib/format";
 import PoolStatusBadge from "./PoolStatusBadge";
 

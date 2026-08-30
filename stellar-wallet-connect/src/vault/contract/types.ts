@@ -8,7 +8,7 @@
  * (create / join / drip / claim / withdraw) be tested without a live network.
  */
 
-export type PoolStatus = "open" | "locked" | "drawing" | "settled";
+export type PoolStatus = "open" | "locked" | "drawing" | "settled" | "closed" | "cancelled";
 
 export interface PoolSummary {
   id: string;

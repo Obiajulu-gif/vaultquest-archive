@@ -2,7 +2,7 @@ import type { FC, ReactNode } from "react";
 import { useMemo } from "react";
 import { Columns, Plus, X } from "lucide-react";
 import { EmptyState, LoadingState, StaleIndicator } from "../../components/FallbackStates";
-import type { PoolStatus, PoolSummary } from "../contract/types";
+import type { PoolSummary } from "../contract/types";
 import { formatAmount, formatDate } from "../lib/format";
 import { formatYieldLabel, YIELD_LABEL_TOOLTIP } from "../../../../lib/formatting";
 import PoolStatusBadge from "./PoolStatusBadge";

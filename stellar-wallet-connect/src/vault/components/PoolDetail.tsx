@@ -2,6 +2,7 @@ import type { FC, ReactNode } from "react";
 import { useStore } from "@nanostores/react";
 import { AlertTriangle, Bookmark, CheckCircle2, Coins, ShieldAlert, Trophy, Users } from "lucide-react";
 import {
+  EmergencyPausedBanner,
   ErrorState,
   LoadingState,
   WalletDisconnectedState,
@@ -100,20 +101,34 @@ const Stat: FC<{ icon: ReactNode; label: string; value: string; confidence?: Rea
   );
 };
 
+/**
+ * Actions blocked by the contract's `is_emergency` circuit breaker (#645).
+ * `withdraw` / `withdraw_locked` / `claim` are deliberately NOT gated
+ * on-chain, so users can always exit a paused pool.
+ */
+const EMERGENCY_BLOCKED_ACTIONS: ReadonlySet<PoolActionType> = new Set(["join", "drip"]);
+
 /** Actions available to the connected user given pool state and position. */
 export function availableActions(pool: PoolSummary, position: UserPosition | null): PoolActionType[] {
   const joined = position?.joined ?? false;
-  switch (pool.status) {
-    case "open":
-      return joined ? ["drip", "withdraw"] : ["join"];
-    case "locked":
-      return joined ? ["withdraw"] : [];
-    case "settled":
-      return joined ? ["claim", "withdraw"] : [];
-    case "drawing":
-    default:
-      return [];
+  const actions = (() => {
+    switch (pool.status) {
+      case "open":
+        return joined ? ["drip", "withdraw"] : ["join"];
+      case "locked":
+        return joined ? ["withdraw"] : [];
+      case "settled":
+        return joined ? ["claim", "withdraw"] : [];
+      case "drawing":
+      default:
+        return [];
+    }
+  })() as PoolActionType[];
+
+  if (!pool.isEmergency) {
+    return actions;
   }
+  return actions.filter((action) => !EMERGENCY_BLOCKED_ACTIONS.has(action));
 }
 
 const ACTION_LABEL: Record<PoolActionType, string> = {
@@ -164,6 +179,8 @@ export const PoolDetail: FC<PoolDetailProps> = ({
       {showOnboarding && <OnboardingChecklist />}
 
       <NetworkDiagnostics />
+
+      {pool.isEmergency && <EmergencyPausedBanner />}
 
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">

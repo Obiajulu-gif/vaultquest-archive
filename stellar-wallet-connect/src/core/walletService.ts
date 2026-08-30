@@ -270,8 +270,12 @@ async function getWalletHealth(): Promise<{
   try {
     // Route through the connection pool: distributes the lookup across the
     // configured Horizon nodes and retries on rate limits / node failures.
+    // This balance feeds funding/deposit decisions, so it's a critical read
+    // (#626): the pool won't give up just because every node is cooling
+    // down the way it would for a best-effort UI refresh.
     const resp = await getHorizonPool().request(`/accounts/${publicKey}`, {
       headers: { Accept: "application/json" },
+      criticality: "critical",
     });
 
     if (resp.status === 404) {

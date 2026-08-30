@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseAssetAmount, formatAssetAmount } from "@/lib/formatting";
+import { parseAssetAmount, formatAssetAmount, formatYieldLabel, YIELD_LABEL_QUALIFIER } from "@/lib/formatting";
 
 describe("shared asset decimal formatting utility", () => {
   describe("parseAssetAmount", () => {
@@ -37,6 +37,22 @@ describe("shared asset decimal formatting utility", () => {
     it("respects showSymbol and custom digit options", () => {
       expect(formatAssetAmount(12.34, "USDC", { showSymbol: false })).toBe("12.34");
       expect(formatAssetAmount(12.34, "USDC", { minimumFractionDigits: 4 })).toBe("12.3400 USDC");
+    });
+  });
+
+  describe("formatYieldLabel (#646)", () => {
+    it("prefixes an expected-yield string with a Projected qualifier", () => {
+      expect(formatYieldLabel("5.2% APY")).toBe("Projected 5.2% APY");
+    });
+
+    it("uses the shared qualifier constant so callers can rely on its exact wording", () => {
+      expect(formatYieldLabel("8% APY")).toBe(`${YIELD_LABEL_QUALIFIER} 8% APY`);
+    });
+
+    it("renders an em dash for missing/empty yield values instead of a bare qualifier", () => {
+      expect(formatYieldLabel(null)).toBe("—");
+      expect(formatYieldLabel(undefined)).toBe("—");
+      expect(formatYieldLabel("")).toBe("—");
     });
   });
 });

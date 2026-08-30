@@ -16,6 +16,7 @@ import {
   type ParticipantEntry,
   type TicketWeight,
 } from "@/lib/draw-proof";
+import { verifyDrawProofClient, type StellarRpcClient } from "@/lib/draw-proof-verifier";
 
 const PARTICIPANTS: ParticipantEntry[] = [
   { address: "addr-b", deposit: "1000000", lockupMultiplier: 150 },
@@ -467,6 +468,108 @@ describe("assembleDrawProof", () => {
     expect(proof.snapshot.participantCount).toBe(1);
     const result = await verifyProofIntegrity(proof, SIGNING_SECRET);
     expect(result.verified).toBe(true);
+  });
+
+  // ─── roundPrincipalSnapshot wiring (#642) ───────────────────────────────────
+  // The drip-pool contract already freezes a deterministic cutoff balance
+  // (`Round.principal_snapshot`) at `lock_round`. These tests confirm that
+  // value is wired into the proof's snapshot rather than silently dropped.
+
+  it("records roundPrincipalSnapshot on the proof when the caller supplies it", async () => {
+    const proof = await assembleSignedProof(
+      await makeInput({ roundPrincipalSnapshot: "3500000" })
+    );
+    expect(proof.snapshot.roundPrincipalSnapshot).toBe("3500000");
+  });
+
+  it("omits roundPrincipalSnapshot when the caller has no on-chain round data (never fabricates one)", async () => {
+    const proof = await assembleSignedProof(await makeInput());
+    expect(proof.snapshot.roundPrincipalSnapshot).toBeUndefined();
+  });
+});
+
+// ─── verifyDrawProofClient: round snapshot cross-check (#642) ────────────────
+
+function makeMockRpc(overrides: Partial<StellarRpcClient> = {}): StellarRpcClient {
+  return {
+    getLedger: async (sequence: number) => ({
+      id: "ledger-id",
+      sequence,
+      closedAt: "2026-07-24T00:00:00Z",
+      hash: "ledger-hash",
+    }),
+    getTransaction: async (hash: string) => ({
+      hash,
+      ledger: 1001,
+      successful: true,
+      status: "SUCCESS",
+    }),
+    getContractData: async () => ({ value: "{}", lastModifiedLedger: 1000 }),
+    ...overrides,
+  };
+}
+
+describe("verifyDrawProofClient — round snapshot cross-check", () => {
+  it("passes when the on-chain principal_snapshot matches the proof's recorded value", async () => {
+    const input = await makeInput({ roundPrincipalSnapshot: "3500000" });
+    const proof = await assembleSignedProof(input);
+
+    const rpc = makeMockRpc({
+      getContractData: async (_contractId, key) => {
+        if (key === "Round:1") {
+          return { value: JSON.stringify({ principal_snapshot: "3500000" }), lastModifiedLedger: 1000 };
+        }
+        return { value: "{}", lastModifiedLedger: 1000 };
+      },
+    });
+
+    const result = await verifyDrawProofClient(proof, rpc);
+    expect(result.fields).toContainEqual(
+      expect.objectContaining({ name: "round_snapshot", status: "pass" })
+    );
+  });
+
+  it("fails when the on-chain principal_snapshot disagrees with the proof's recorded value", async () => {
+    const input = await makeInput({ roundPrincipalSnapshot: "3500000" });
+    const proof = await assembleSignedProof(input);
+
+    const rpc = makeMockRpc({
+      getContractData: async (_contractId, key) => {
+        if (key === "Round:1") {
+          // A substituted/stale snapshot — the contract's frozen cutoff disagrees.
+          return { value: JSON.stringify({ principal_snapshot: "9999999" }), lastModifiedLedger: 1000 };
+        }
+        return { value: "{}", lastModifiedLedger: 1000 };
+      },
+    });
+
+    const result = await verifyDrawProofClient(proof, rpc);
+    expect(result.fields).toContainEqual(
+      expect.objectContaining({ name: "round_snapshot", status: "fail" })
+    );
+    expect(result.verified).toBe(false);
+  });
+
+  it("is unverified (not failed) for a pre-#642 proof with no recorded roundPrincipalSnapshot", async () => {
+    const input = await makeInput();
+    const proof = await assembleSignedProof(input);
+    expect(proof.snapshot.roundPrincipalSnapshot).toBeUndefined();
+
+    const rpc = makeMockRpc();
+    const result = await verifyDrawProofClient(proof, rpc);
+    expect(result.fields).toContainEqual(
+      expect.objectContaining({ name: "round_snapshot", status: "unverified" })
+    );
+  });
+
+  it("is unverified when no RPC client is provided at all", async () => {
+    const input = await makeInput({ roundPrincipalSnapshot: "3500000" });
+    const proof = await assembleSignedProof(input);
+
+    const result = await verifyDrawProofClient(proof);
+    expect(result.fields).toContainEqual(
+      expect.objectContaining({ name: "round_snapshot", status: "unverified" })
+    );
   });
 });
 

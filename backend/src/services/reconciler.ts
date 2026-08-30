@@ -318,6 +318,51 @@ export async function detectDrift(prisma: PrismaClient): Promise<DriftRecord[]> 
     });
   }
 
+  // 9. Insolvency drift: per-vault net tracked principal (confirmed deposits
+  //    minus confirmed withdrawals) goes negative, indicating more was paid
+  //    out than deposited — a critical accounting invariant violation for a
+  //    no-loss prize-savings protocol (#560).
+  const confirmedActions = await prisma.actionLedger.findMany({
+    where: {
+      status: "confirmed",
+      actionType: { in: ["deposit", "withdraw"] }
+    },
+    select: { id: true, actionType: true, actionPayload: true, txHash: true }
+  });
+
+  const vaultNetPrincipal = new Map<string, { net: number; actions: typeof confirmedActions }>();
+  for (const a of confirmedActions) {
+    const payload = a.actionPayload as Record<string, unknown> | null;
+    const vaultId = String(payload?.vault_id ?? payload?.pool_id ?? "unknown");
+    if (!vaultNetPrincipal.has(vaultId)) {
+      vaultNetPrincipal.set(vaultId, { net: 0, actions: [] });
+    }
+    const entry = vaultNetPrincipal.get(vaultId)!;
+    entry.actions.push(a);
+    const amount = Number(payload?.amount ?? 0);
+    if (a.actionType === "deposit") {
+      entry.net += amount;
+    } else if (a.actionType === "withdraw") {
+      entry.net -= amount;
+    }
+  }
+
+  for (const [vaultId, { net, actions }] of vaultNetPrincipal) {
+    if (net < 0) {
+      drifts.push({
+        type: "insolvency_drift",
+        recordType: "vault_settlement",
+        recordId: vaultId,
+        details: {
+          vaultId,
+          netTrackedPrincipal: net,
+          actionCount: actions.length,
+          message: `Vault ${vaultId} has negative net tracked principal (${net}): more withdrawn than deposited`
+        }
+      });
+    }
+  }
+
   return drifts;
 }
 
@@ -452,6 +497,23 @@ export function buildRepairPlan(drifts: DriftRecord[], dryRun: boolean): RepairP
         break;
       }
 
+      case "insolvency_drift": {
+        // Critical: vault has more tracked withdrawals than deposits.
+        // Quarantine for manual review — never auto-repair financial
+        // invariants (#560).
+        logger.error(
+          {
+            event: "reconciliation.insolvency_drift",
+            vaultId: drift.recordId,
+            netTrackedPrincipal: drift.details.netTrackedPrincipal,
+            actionCount: drift.details.actionCount
+          },
+          `insolvency_drift: vault ${drift.recordId} has negative net tracked principal (${drift.details.netTrackedPrincipal})`
+        );
+        quarantined.push(drift);
+        break;
+      }
+
       default:
         quarantined.push(drift);
     }
@@ -527,10 +589,14 @@ export async function applyRepairPlan(
     }
   }
 
-  // Quarantine contradictions and unresolvable drifts.
+  // Quarantine contradictions, duplicates, and insolvency drifts.
   let quarantined = 0;
   for (const drift of plan.drifts) {
-    if (drift.type === "contradiction" || drift.type === "duplicate_tx_hash") {
+    if (
+      drift.type === "contradiction" ||
+      drift.type === "duplicate_tx_hash" ||
+      drift.type === "insolvency_drift"
+    ) {
       const existing = await prisma.repairQuarantine.findFirst({
         where: {
           recordType: drift.recordType,

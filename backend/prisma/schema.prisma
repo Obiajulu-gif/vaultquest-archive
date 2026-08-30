@@ -118,6 +118,7 @@ model IndexerCheckpoint {
   lastSyncTime        DateTime @map("last_sync_time")
   lastError           String?  @map("last_error")
   lastSuccessSyncTime DateTime @default(now()) @map("last_success_sync_time")
+  indexerVersion      String?  @map("indexer_version")
 
   @@map("indexer_checkpoints")
 }

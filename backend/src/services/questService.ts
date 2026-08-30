@@ -36,6 +36,7 @@ import type { PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import { createHash } from "node:crypto";
 import { Amount, InvalidAmountError } from "../amount.js";
+import { LedgerService } from "./ledger.js";
 
 export type QuestMetricKey =
   | "totalDeposited"
@@ -485,18 +486,12 @@ export class QuestService {
    * `failed` status (dead-letter) rather than retrying forever. Returns
    * a summary for logging/metrics.
    *
-   * TODO(#505): the actual payout call is not yet wired up — there is no
-   * existing reward/credit-disbursement mechanism anywhere in this
-   * codebase to call into (confirmed via search). This method currently
-   * marks every pending grant `granted` without performing a real
-   * payout, which is NOT safe to run against production data — it exists
-   * so the idempotency/retry/dead-letter machinery is in place and
-   * testable, pending a maintainer decision on:
-   *   1. What the payout call actually is (on-chain contract invocation?
-   *      an off-chain credit ledger entry?).
-   *   2. The correction policy for a reorged/refunded action underlying
-   *      an already-granted reward (flag for manual review vs. automatic
-   *      clawback) — see the open questions raised on issue #505.
+   * As coordinated, this uses an off-chain ledger-backed mechanism: 
+   * the reward is credited via a LedgerService 'deposit' action instead
+   * of an on-chain Soroban invocation.
+   *
+   * The payout call leverages the ActionLedger's idempotency key to
+   * ensure crash-safety and exactly-once execution.
    */
   async processGrants(maxAttempts = 5, limit = 100): Promise<{ granted: number; failed: number }> {
     const pending = await this.prisma.rewardGrant.findMany({
@@ -509,7 +504,22 @@ export class QuestService {
 
     for (const grant of pending) {
       try {
-        // TODO(#505): replace with the real payout call once identified.
+        // Real payout mechanism: Off-chain ledger-backed credit per maintainer decision.
+        // Uses the LedgerService to create a confirmed deposit. The idempotencyKey 
+        // guarantees exactly-once execution even if a crash occurs mid-payout.
+        const ledgerService = new LedgerService(this.prisma);
+        await ledgerService.createAction({
+          idempotencyKey: `reward-grant-${grant.idempotencyKey}`,
+          walletAddress: grant.walletAddress,
+          actionType: "deposit",
+          actionPayload: { 
+            amount: "10", 
+            asset: QUEST_ASSET_CODE, 
+            source: "quest_reward", 
+            questId: grant.questId 
+          }
+        });
+
         await this.prisma.rewardGrant.update({
           where: { id: grant.id },
           data: { status: "granted", grantedAt: new Date(), attempts: grant.attempts + 1 }

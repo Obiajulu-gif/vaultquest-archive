@@ -148,3 +148,17 @@ To guarantee activity feed stability across indexer restarts and replay operatio
 - **Canonical Sorting Key:** `(ledgerSequence ASC, txIndex ASC, opIndex ASC, eventIndex ASC)`
 - **Stable Deduplication Key:** `${ledgerSequence}:${txIndex}:${opIndex}:${eventIndex}`
 - Replay tests verify that shuffled event ingestion produces an identical deterministic history stream.
+
+---
+
+## 7. Indexer Replay Guardrails & Concurrency Protection (#573)
+
+To prevent operational hazards such as accidental double-replays, concurrent race conditions, or unvalidated state overwrites during ledger replay simulations and executions:
+
+### Operational Guardrails
+1. **Mandatory Dry Run Simulation:** Operators must run a dry run simulation over the specified ledger range (`startLedger` to `endLedger`) prior to executing an active replay.
+2. **Explicit Confirmation Modal:** Active replay execution requires explicit manual confirmation with human-readable ledger count and safety summaries.
+3. **Concurrency Lock (Mutex):** The backend indexer acquires an exclusive in-flight execution lock (`isReplaying` mutex). Any concurrent replay requests or cursor adjustments are rejected with an error until the active run completes or fails.
+4. **UI Debouncing & Progress Indication:** The admin control panel (`IndexerReplayControl.jsx`) disables all action buttons during simulation/execution and renders an active progress bar with step status.
+5. **Idempotent Reconciliation:** Replayed events run through the standard idempotent reconciliation pipeline, guaranteeing duplicate events are skipped without corrupting existing action records.
+6. **Audit Trail Logging:** All replay simulations and executions record initiator metadata, targeted ledger ranges, and resulting reconciliation counts to the persistent audit log.

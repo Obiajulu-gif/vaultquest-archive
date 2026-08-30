@@ -230,6 +230,7 @@ export const sorobanNativeXdrDecoder: XdrDecoder = {
  */
 export class StellarIndexer {
   private cursor: string | null = null;
+  private isReplaying = false;
   private readonly opts: Required<
     Pick<StellarIndexerOptions, "batchSize" | "retryOptions">
   > & StellarIndexerOptions;
@@ -243,12 +244,45 @@ export class StellarIndexer {
   }
 
   setCursor(cursor: string | null): void {
+    if (this.isReplaying) {
+      throw new Error("Cannot set cursor while an indexer replay is currently in progress");
+    }
     this.cursor = cursor;
   }
 
   getCursor(): string | null {
     return this.cursor;
   }
+
+  isReplayActive(): boolean {
+    return this.isReplaying;
+  }
+
+  /**
+   * Bounded replay over a specific ledger range with concurrency protection (#573).
+   */
+  async replayRange(startLedger: number, endLedger: number): Promise<IndexResult> {
+    if (this.isReplaying) {
+      throw new Error("Indexer replay is already in progress. Concurrent replays are blocked.");
+    }
+    this.isReplaying = true;
+    try {
+      const savedCursor = this.cursor;
+      this.cursor = null;
+      const rawEvents = await this.opts.source.fetchEvents({
+        startLedger,
+        endLedger,
+        limit: this.opts.batchSize,
+      });
+
+      const result = await this.processRawEvents(rawEvents);
+      this.cursor = savedCursor;
+      return result;
+    } finally {
+      this.isReplaying = false;
+    }
+  }
+
 
   /**
    * Fetches one batch of events (with retry), decodes and reconciles each,
@@ -274,6 +308,15 @@ export class StellarIndexer {
       this.opts.retryOptions
     );
 
+    return this.processRawEvents(rawEvents);
+  }
+
+  /**
+   * Processes a list of raw Horizon/Soroban events through decoding, quarantine,
+   * batch reconciliation, and pool registry upsert.
+   */
+  async processRawEvents(rawEvents: RawHorizonEvent[]): Promise<IndexResult> {
+    const { ledger, decoder } = this.opts;
     let imported = 0;
     let duplicates = 0;
     let quarantined = 0;

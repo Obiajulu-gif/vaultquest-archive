@@ -1,15 +1,38 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { useAccount } from "wagmi";
 import { useConnectModal } from "@rainbow-me/rainbowkit";
 import {
   ArrowDownRight, ArrowUpRight, Gift, RefreshCw, Wallet,
-  ChevronLeft, ChevronRight, Filter, Clock, History, AlertCircle
+  ChevronLeft, ChevronRight, Filter, Clock, History, AlertCircle, EyeOff, Eye
 } from "lucide-react";
 import { DEMO_TRANSACTIONS } from "@/lib/demo-portfolio";
 import { ActivityExport } from "@vaultquest/stellar-wallet-connect/src/vault/components/ActivityExport";
 import TransactionHistoryModal from "@/components/app/TransactionHistoryModal";
+
+/**
+ * Client-side-only "privacy mode" preference (#655). Hides identifying
+ * pool/vault labels in the LOCAL activity feed on this device -- it has no
+ * effect on-chain and does not touch amounts, dates, or status, which are
+ * on-chain facts and stay visible either way. Persisted with the same
+ * localStorage pattern other per-device settings in this app use (see
+ * components/app/AppNav.jsx's high-contrast toggle).
+ */
+export const ACTIVITY_PRIVACY_MODE_KEY = "vaultquest-activity-privacy-mode";
+
+/**
+ * Resolve the label shown for one activity row, masking the identifying
+ * pool/vault name with a generic placeholder when privacy mode is on.
+ * Free-text messages (e.g. "System Upgrade Completed") are left unchanged
+ * either way -- they don't name a specific vault the wallet participated
+ * in, so there's nothing pool-identifying to hide.
+ */
+export function maskPoolLabel(tx, privacyMode) {
+  if (tx.message) return tx.message;
+  if (privacyMode && tx.pool) return "Vault activity";
+  return tx.pool;
+}
 
 const ACTIVITY_TYPES = {
   deposit: { label: "Deposit", icon: ArrowDownRight, color: "text-emerald-600 dark:text-emerald-400" },
@@ -30,7 +53,7 @@ const STATUS_LABELS = {
 
 const PAGE_SIZE = 10;
 
-function ActivityFeed({ transactions }) {
+export function ActivityFeed({ transactions, privacyMode = false }) {
   const [filter, setFilter] = useState("all");
   const [page, setPage] = useState(0);
 
@@ -101,7 +124,7 @@ function ActivityFeed({ transactions }) {
                     <span className={`text-xs font-medium ${statusInfo.class}`}>{statusInfo.label}</span>
                   </div>
                   <p className="text-xs text-vault-muted">
-                    {tx.message || tx.pool}
+                    {maskPoolLabel(tx, privacyMode)}
                   </p>
                   <p className="mt-0.5 text-xs text-vault-muted">
                     {new Date(tx.date).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })}
@@ -194,7 +217,23 @@ function EmptyActivity() {
 export default function ActivityPage() {
   const { isConnected, address } = useAccount();
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [privacyMode, setPrivacyMode] = useState(false);
   const enrichedTx = useMemo(() => DEMO_TRANSACTIONS.map((tx) => ({ ...tx })), []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setPrivacyMode(window.localStorage.getItem(ACTIVITY_PRIVACY_MODE_KEY) === "true");
+  }, []);
+
+  const togglePrivacyMode = useCallback(() => {
+    setPrivacyMode((prev) => {
+      const next = !prev;
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(ACTIVITY_PRIVACY_MODE_KEY, String(next));
+      }
+      return next;
+    });
+  }, []);
 
   const summary = useMemo(() => {
     if (!isConnected) return null;
@@ -207,15 +246,29 @@ export default function ActivityPage() {
 
   return (
     <div className="space-y-8">
-      <header>
-        <h1 className="text-3xl font-bold text-vault-text">Account Activity</h1>
-        <p className="mt-2 text-vault-muted">Track all deposits, withdrawals, prize claims, and status changes.</p>
+      <header className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold text-vault-text">Account Activity</h1>
+          <p className="mt-2 text-vault-muted">Track all deposits, withdrawals, prize claims, and status changes.</p>
+        </div>
+        {isConnected && (
+          <button
+            type="button"
+            onClick={togglePrivacyMode}
+            aria-pressed={privacyMode}
+            title="Hide vault/pool names in your local activity view. On-chain data is still public and unaffected."
+            className="vq-btn-ghost inline-flex items-center gap-2 text-sm"
+          >
+            {privacyMode ? <EyeOff className="h-4 w-4" aria-hidden="true" /> : <Eye className="h-4 w-4" aria-hidden="true" />}
+            {privacyMode ? "Privacy mode: On" : "Privacy mode: Off"}
+          </button>
+        )}
       </header>
 
       {isConnected ? (
         <>
           <ActivitySummary transactions={enrichedTx} />
-          <ActivityFeed transactions={enrichedTx} />
+          <ActivityFeed transactions={enrichedTx} privacyMode={privacyMode} />
           <ActivityExport
             walletAddress={address || null}
             walletConnected={isConnected}

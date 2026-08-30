@@ -121,6 +121,62 @@ describe("WithdrawalModal transaction states", () => {
     );
   });
 
+  it("shows a distinct queued state when the withdrawal was enqueued, not paid immediately (#654)", async () => {
+    render(
+      <WithdrawalModal
+        pool={pool}
+        position={position}
+        onClose={vi.fn()}
+        onWithdraw={async () => ({ queued: true })}
+      />,
+    );
+
+    const user = await enterReview("20");
+    await user.click(screen.getByRole("button", { name: "Confirm withdrawal" }));
+
+    expect(await screen.findByText("Withdrawal queued")).toBeInTheDocument();
+    expect(screen.getByText("Queued")).toBeInTheDocument();
+    expect(screen.queryByText("Withdrawal successful!")).not.toBeInTheDocument();
+    expect(screen.queryByText("Confirmed")).not.toBeInTheDocument();
+    expect(screen.getByText(/added to the pool's withdrawal queue/i)).toBeInTheDocument();
+  });
+
+  it("still shows the confirmed state when onWithdraw reports queued: false", async () => {
+    render(
+      <WithdrawalModal
+        pool={pool}
+        position={position}
+        onClose={vi.fn()}
+        onWithdraw={async () => ({ queued: false })}
+      />,
+    );
+
+    const user = await enterReview("20");
+    await user.click(screen.getByRole("button", { name: "Confirm withdrawal" }));
+
+    expect(await screen.findByText("Withdrawal successful!")).toBeInTheDocument();
+    expect(screen.getByText("Confirmed")).toBeInTheDocument();
+  });
+
+  it("defaults to the confirmed state when onWithdraw resolves with no outcome (back-compat)", async () => {
+    render(
+      <WithdrawalModal
+        pool={pool}
+        position={position}
+        onClose={vi.fn()}
+        onWithdraw={async () => {
+          /* legacy caller: no return value */
+        }}
+      />,
+    );
+
+    const user = await enterReview("20");
+    await user.click(screen.getByRole("button", { name: "Confirm withdrawal" }));
+
+    expect(await screen.findByText("Withdrawal successful!")).toBeInTheDocument();
+    expect(screen.getByText("Confirmed")).toBeInTheDocument();
+  });
+
   it.each([
     ["signature_rejected", "Withdrawal rejected in wallet."],
     ["rpc_failure", "RPC submission failed."],

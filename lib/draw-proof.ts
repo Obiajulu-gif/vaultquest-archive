@@ -9,6 +9,17 @@ const SnapshotSchema = z.object({
   participantCount: z.number().int().nonnegative(),
   totalDeposits: z.string().min(1),
   poolHash: z.string().min(1),
+  /**
+   * The drip-pool contract's own `Round.principal_snapshot` (#642) — the
+   * deterministic cutoff balance the contract freezes at `lock_round`, before
+   * `totalDeposits` above is ever computed off-chain from participant data.
+   * Optional so older proofs (pre-#642) still validate; when present it lets
+   * a verifier cross-check `totalDeposits` against the contract's own frozen
+   * eligibility snapshot for this round via `getContractData` (see
+   * `verifyRoundSnapshot` in draw-proof-verifier.ts) instead of trusting the
+   * off-chain sum alone.
+   */
+  roundPrincipalSnapshot: z.string().min(1).optional(),
 });
 
 const RandomnessSchema = z.object({
@@ -357,6 +368,13 @@ export interface DrawProofInput {
   payoutAsset: string;
   payoutConfirmed: boolean;
   contractSpecHash: string;
+  /**
+   * The contract's own `Round.principal_snapshot` for `roundId`, read via
+   * `getContractData` (#642). Optional: absent when the caller couldn't
+   * fetch on-chain round state, in which case the proof simply omits
+   * `snapshot.roundPrincipalSnapshot` rather than fabricating a value.
+   */
+  roundPrincipalSnapshot?: string;
 }
 
 export interface AssembleDrawProofOptions {
@@ -417,6 +435,9 @@ export async function assembleDrawProof(
       participantCount: input.participants.length,
       totalDeposits,
       poolHash,
+      ...(input.roundPrincipalSnapshot !== undefined && {
+        roundPrincipalSnapshot: input.roundPrincipalSnapshot,
+      }),
     },
     randomness: {
       source: input.randomnessSource,

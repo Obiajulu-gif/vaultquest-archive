@@ -35,7 +35,62 @@ Sync lag is calculated dynamically by checking the last successful sync time and
 
 ---
 
-## 3. Troubleshooting & Recovery Procedures
+## 3. Stale Orphan Alert
+
+### What triggers it
+
+The background reconciliation engine (`reconciler.ts`) flags actions stuck in `orphaned` status for more than **7 days** as `stale_orphan` drifts. Each detected drift emits a structured log line (`event: "reconciliation.stale_orphan"`) and updates two Prometheus metrics (see `backend/PROMETHEUS_SETUP.md`):
+
+* `stale_orphans_current{bucket="7d"|"30d"}` — current count per age bucket, as of the last reconciliation run.
+* `stale_orphans_total{bucket=...}` — cumulative drifts produced.
+
+| Alert | Condition | Severity |
+|---|---|---|
+| `StaleOrphansPresent` | `stale_orphans_current{bucket="7d"} > 0` for 30m | Warning |
+| `StaleOrphansEscalated` | `stale_orphans_current{bucket="30d"} > 0` for 10m | Page (operator intervention) |
+
+### Recommended response
+
+1. **Confirm the drift.** Query the log for the offending `recordId`/`txHash`:
+   ```bash
+   kubectl logs -l app=vaultquest-backend | grep stale_orphan
+   ```
+2. **Investigate the orphaned action.** The action is a deposit/withdraw whose on-chain evidence never resolved. Check the tx on Stellar Expert / Horizon using the `txHash` from the log line.
+3. **Resolve or quarantine.** If the chain evidence exists but the DB row is stale, reconcile the action status manually (`POST /internal/reconcile` or the reconciliation admin route). If the action is unrecoverable, quarantine it (see `RECONCILIATION.md`) so it stops re-appearing in every run.
+4. **Escalated (30d+) orphans** indicate a systemic gap (e.g. indexer down, RPC outages, fee-bump exhaustion) — treat as an incident and check the indexer health endpoint (`/health/indexer`) and sync-lag section above before resolving individual rows.
+5. **Confirm recovery.** After resolution, the next reconciliation run should drop `stale_orphans_current` to `0` for that bucket.
+
+---
+
+## 3b. Missing VaultSettlement drift (`missing_settlement`)
+
+### What triggers it
+
+The reconciliation engine flags a **confirmed** on-chain deposit/withdraw whose `actionPayload.vault_id` (or `pool_id`) has **no `VaultSettlement` row at all**. This means a vault the protocol believes it is holding funds for was never even created on the settlement side — a state where user funds could be stuck or unaccounted for (issue #561).
+
+Each detected drift emits a structured error log line (`event: "reconciliation.missing_settlement"`, with `txHash` / `vaultId` / `actionType` / `amount`) and increments a new Prometheus counter:
+
+* `missing_settlements_total` — cumulative missing_settlement drifts produced.
+
+The reconciler does **not** auto-repair this drift: safely creating a `VaultSettlement` requires a `settlementType`, `recipient`, and a **verified** amount (from the on-chain event, not the client-supplied `actionPayload`), which the drift record does not carry. Inventing those could trigger a bad payout. Instead the drift is **quarantined** for manual review and surfaced here so it is no longer a silent no-op.
+
+| Alert | Condition | Severity |
+|---|---|---|
+| `MissingSettlement` | `missing_settlements_total` increments on any run | Page (funds unaccounted for) |
+
+### Recommended response
+
+1. **Confirm the drift.**
+   ```bash
+   kubectl logs -l app=vaultquest-backend | grep missing_settlement
+   ```
+2. **Locate the confirmed action.** Use the `txHash` in the log line and check on-chain evidence on Stellar Expert / Horizon. Confirm the referenced `vaultId` genuinely has no `VaultSettlement`.
+3. **Reconcile manually**, don't auto-repair: create the missing `VaultSettlement` row in an `Unresolved` state (so it enters the normal settlement retry path) with the correct `settlementType`, `recipient`, and the amount verified from the on-chain event, then clear the `missing_settlements_total` counter after resolution.
+4. **Confirm recovery.** After resolution, the next reconciliation run should stop producing a `missing_settlement` drift for that `vaultId` and no new counter increments should appear.
+
+---
+
+## 4. Troubleshooting & Recovery Procedures
 
 If the indexer reports a `lagging` or `degraded` state, follow these diagnostic steps sequentially:
 
@@ -84,7 +139,7 @@ Example Degraded Output:
 
 ---
 
-## 4. Operational Commands (Manual Interventions)
+## 5. Operational Commands (Manual Interventions)
 
 ### View Current Checkpoint in Database
 Connect to the database via `psql` or Prisma Studio and query the database directly:
@@ -108,7 +163,30 @@ If the indexer needs to re-process transactions from a past block due to missing
 
 ---
 
-## 5. Security & Access Control
+## 6. Security & Access Control
 
 * The `/internal/checkpoint` and `/internal/reconcile` routes MUST always be guarded by a secure service auth key.
 * Ensure that the `X-Service-Auth` token configured in the indexer matches `INTERNAL_SECRET` in the backend environment. Never expose this key in client-side bundles.
+
+---
+
+## 6. Deterministic Event Ordering & Replay Verification (#648)
+
+To guarantee activity feed stability across indexer restarts and replay operations:
+- **Canonical Sorting Key:** `(ledgerSequence ASC, txIndex ASC, opIndex ASC, eventIndex ASC)`
+- **Stable Deduplication Key:** `${ledgerSequence}:${txIndex}:${opIndex}:${eventIndex}`
+- Replay tests verify that shuffled event ingestion produces an identical deterministic history stream.
+
+---
+
+## 7. Indexer Replay Guardrails & Concurrency Protection (#573)
+
+To prevent operational hazards such as accidental double-replays, concurrent race conditions, or unvalidated state overwrites during ledger replay simulations and executions:
+
+### Operational Guardrails
+1. **Mandatory Dry Run Simulation:** Operators must run a dry run simulation over the specified ledger range (`startLedger` to `endLedger`) prior to executing an active replay.
+2. **Explicit Confirmation Modal:** Active replay execution requires explicit manual confirmation with human-readable ledger count and safety summaries.
+3. **Concurrency Lock (Mutex):** The backend indexer acquires an exclusive in-flight execution lock (`isReplaying` mutex). Any concurrent replay requests or cursor adjustments are rejected with an error until the active run completes or fails.
+4. **UI Debouncing & Progress Indication:** The admin control panel (`IndexerReplayControl.jsx`) disables all action buttons during simulation/execution and renders an active progress bar with step status.
+5. **Idempotent Reconciliation:** Replayed events run through the standard idempotent reconciliation pipeline, guaranteeing duplicate events are skipped without corrupting existing action records.
+6. **Audit Trail Logging:** All replay simulations and executions record initiator metadata, targeted ledger ranges, and resulting reconciliation counts to the persistent audit log.

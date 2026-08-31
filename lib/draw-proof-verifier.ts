@@ -2,8 +2,6 @@ import {
   type DrawProof,
   type VerificationResult,
   type VerificationField,
-  computeHash,
-  computeWinnerProofHash,
   verifyProofIntegrity,
 } from "./draw-proof";
 
@@ -41,26 +39,6 @@ function fieldFail(name: string, detail: string): VerificationField {
 
 function fieldUnverified(name: string, detail: string): VerificationField {
   return { name, status: "unverified", detail };
-}
-
-async function verifyDocumentIntegrity(proof: DrawProof): Promise<VerificationField> {
-  const result = await verifyProofIntegrity(proof);
-  const docField = result.fields.find((f) => f.name === "document_integrity");
-  return docField ?? fieldFail("document_integrity", "missing from integrity check");
-}
-
-async function verifyWinnerHashChain(proof: DrawProof): Promise<VerificationField> {
-  const result = await verifyProofIntegrity(proof);
-  const winnerField = result.fields.find((f) => f.name === "winner_proof_hash");
-  return winnerField ?? fieldFail("winner_proof_hash", "missing from integrity check");
-}
-
-async function verifySeedHash(proof: DrawProof): Promise<VerificationField> {
-  const recomputed = await computeHash(proof.randomness.seed);
-  if (recomputed === proof.randomness.seedHash) {
-    return fieldPass("seed_hash");
-  }
-  return fieldFail("seed_hash", `expected ${recomputed}, got ${proof.randomness.seedHash}`);
 }
 
 /**
@@ -147,6 +125,61 @@ async function verifySnapshotLedger(
   }
 }
 
+/**
+ * Cross-checks the proof's `snapshot.totalDeposits` (summed off-chain from
+ * participant data) against the drip-pool contract's own
+ * `Round.principal_snapshot` for this round (#642) — the deterministic
+ * cutoff balance the contract freezes at `lock_round`, before which no late
+ * deposit can be counted. Without this check, a proof's `totalDeposits`
+ * figure is trusted purely from the off-chain participants list; this reads
+ * the contract's frozen storage directly and fails the check if they
+ * disagree, so eligible-balance evidence is independently verifiable rather
+ * than only self-consistent.
+ *
+ * `unverified` (not `fail`) when the proof predates #642 and never recorded
+ * `roundPrincipalSnapshot` — there is nothing to cross-check, not a mismatch.
+ */
+async function verifyRoundSnapshot(
+  proof: DrawProof,
+  rpc: StellarRpcClient
+): Promise<VerificationField> {
+  if (!proof.snapshot.roundPrincipalSnapshot) {
+    return fieldUnverified(
+      "round_snapshot",
+      "Proof does not record a roundPrincipalSnapshot (pre-#642 proof format)"
+    );
+  }
+
+  try {
+    const data = await rpc.getContractData(proof.contractId, `Round:${proof.roundId}`);
+    const round = JSON.parse(data.value) as Record<string, unknown>;
+    const onChainSnapshot = String(
+      round.principal_snapshot ?? round.principalSnapshot ?? ""
+    );
+
+    if (!onChainSnapshot) {
+      return fieldUnverified(
+        "round_snapshot",
+        `Contract round ${proof.roundId} has no principal_snapshot field in storage`
+      );
+    }
+
+    if (onChainSnapshot !== proof.snapshot.roundPrincipalSnapshot) {
+      return fieldFail(
+        "round_snapshot",
+        `expected on-chain principal_snapshot ${onChainSnapshot}, proof recorded ${proof.snapshot.roundPrincipalSnapshot}`
+      );
+    }
+
+    return fieldPass("round_snapshot");
+  } catch (err) {
+    return fieldUnverified(
+      "round_snapshot",
+      `RPC error: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
 // ─── Main Verifier ────────────────────────────────────────────────────────────
 
 export interface ClientVerificationResult extends VerificationResult {
@@ -160,18 +193,25 @@ export async function verifyDrawProofClient(
 ): Promise<ClientVerificationResult> {
   const fields: VerificationField[] = [];
 
-  fields.push(await verifyDocumentIntegrity(proof));
-  fields.push(await verifyWinnerHashChain(proof));
-  fields.push(await verifySeedHash(proof));
+  // Surface the FULL per-field output of the document-only integrity engine
+  // (#572) instead of collapsing it to a single boolean: every check —
+  // document_integrity, winner_proof_hash, seed_hash, randomness_commitment
+  // (and randomness_evidence on schema failure) — is forwarded verbatim so
+  // the UI can render each one with its pass/fail/unverified state and the
+  // `detail` string explaining *why* a check failed.
+  const integrity = await verifyProofIntegrity(proof);
+  fields.push(...integrity.fields);
 
   if (rpc) {
     fields.push(await verifySnapshotLedger(proof, rpc));
     fields.push(await verifyPayoutTransaction(proof, rpc));
     fields.push(await verifyRandomnessReveal(proof, rpc));
+    fields.push(await verifyRoundSnapshot(proof, rpc));
   } else {
     fields.push(fieldUnverified("snapshot_ledger", "No RPC client provided"));
     fields.push(fieldUnverified("payout_tx", "No RPC client provided"));
     fields.push(fieldUnverified("randomness_reveal", "No RPC client provided"));
+    fields.push(fieldUnverified("round_snapshot", "No RPC client provided"));
   }
 
   // Randomness evidence must be independently confirmed on-chain: without an

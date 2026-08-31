@@ -4,7 +4,7 @@
 //!
 //! This is the **authoritative** contract for VaultQuest pool state: principal,
 //! rewards/yield, round/draw state, pause, and winner settlement all live here.
-//! `contracts/vault` is a deprecated, incompatible skeleton (single-admin, no
+//! `contracts/_deprecated/vault` is a deprecated, incompatible skeleton (single-admin, no
 //! rounds/lockups/claim-deadlines, no real token custody) and MUST NOT be used
 //! for new deployments — see `contracts/CONTRACT_BOUNDARY.md` for the full
 //! decision record and legacy-deployment compatibility path. The backend,
@@ -122,6 +122,8 @@ pub enum DataKey {
                     // Participant to avoid unbounded per-participant storage growth (#508)
     TokenDecimals,             // u8 — token decimal precision for exact unit handling (#599)
     AllowedStrategyCodeHashes, // Vec<BytesN<32>> — allowlisted strategy WASM hashes (#602)
+    MaxWalletDeposit, // i128 — per-wallet cap on cumulative Participant.deposited; 0 = uncapped (#643)
+    MaxPoolDeposit,   // i128 — protocol-wide cap on pool.total_deposited; 0 = uncapped (#643)
 }
 
 // ── Errors ─────────────────────────────────────────────────────────────────
@@ -181,6 +183,9 @@ pub enum Error {
     TokenDecimalsNotConfigured = 75, // token decimals not set (#599)
     StrategyCodeHashNotAllowed = 76, // strategy code hash not on allowlist (#602)
     BalanceVerificationFailed = 77,  // strategy reported values not backed by real balance (#601)
+    RoundHasOutstandingDeposits = 78, // prune_round called but participants still have unclaimed deposits (#558)
+    WalletDepositCapExceeded = 80, // deposit would push Participant.deposited above MaxWalletDeposit (#643)
+    PoolDepositCapExceeded = 81, // deposit would push pool.total_deposited above MaxPoolDeposit (#643)
 }
 
 // ── Structs ────────────────────────────────────────────────────────────────
@@ -1078,6 +1083,16 @@ impl DripPool {
             env.storage().persistent().get(&key)
         };
 
+        // Deposit concentration limits (#643) — checked against the
+        // pre-transfer state, before any tokens move, so a capped deposit
+        // never transfers funds it's about to reject.
+        Self::check_deposit_caps(
+            &env,
+            old_participant.as_ref().map(|p| p.deposited).unwrap_or(0),
+            old_pool.total_deposited,
+            amount,
+        )?;
+
         // Transfer tokens from caller to this contract (#376)
         let contract_addr = env.current_contract_address();
         Self::transfer_tokens(&env, &who, &contract_addr, &amount)?;
@@ -1124,9 +1139,19 @@ impl DripPool {
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
-        if !env.storage().instance().has(&DataKey::Pool) {
-            return Err(Error::NotInitialized);
-        }
+        let old_pool: Pool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pool)
+            .ok_or(Error::NotInitialized)?;
+
+        // Deposit concentration limits (#643) — same check as `deposit`,
+        // against pre-transfer state. `apply_time_locked_deposit` below
+        // requires an existing Participant record (this path is documented
+        // as "caller must already be joined"), so loading it here to read
+        // the current deposited amount is safe.
+        let current_wallet_deposited = Self::load_participant(&env, &who)?.deposited;
+        Self::check_deposit_caps(&env, current_wallet_deposited, old_pool.total_deposited, amount)?;
 
         // Transfer tokens from caller to this contract (#376)
         let contract_addr = env.current_contract_address();
@@ -1450,6 +1475,133 @@ impl DripPool {
             .instance()
             .get(&DataKey::MinIdleReserve)
             .unwrap_or(0)
+    }
+
+    // ── Deposit concentration limits (#643) ────────────────────────────────
+
+    /// Governed: set the maximum cumulative principal a single wallet may
+    /// hold in this pool (`Participant.deposited`, checked in `deposit` and
+    /// `deposit_with_duration`). `0` means uncapped — the default, so an
+    /// unconfigured pool behaves exactly as it did before this cap existed.
+    pub fn set_max_wallet_deposit(env: Env, caller: Address, amount: i128) -> Result<(), Error> {
+        caller.require_auth();
+        Self::require_signer(&env, &caller)?;
+        Self::require_compatible_config(&env)?;
+        if amount < 0 {
+            return Err(Error::InvalidAmount);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxWalletDeposit, &amount);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("pool"), symbol_short!("walletcap")), amount);
+        Ok(())
+    }
+
+    /// View the configured per-wallet deposit cap. `0` means uncapped (#643).
+    pub fn max_wallet_deposit(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxWalletDeposit)
+            .unwrap_or(0)
+    }
+
+    /// Governed: set the maximum protocol-wide principal this pool may hold
+    /// (`pool.total_deposited`, checked in `deposit` and
+    /// `deposit_with_duration`). `0` means uncapped — the default.
+    pub fn set_max_pool_deposit(env: Env, caller: Address, amount: i128) -> Result<(), Error> {
+        caller.require_auth();
+        Self::require_signer(&env, &caller)?;
+        Self::require_compatible_config(&env)?;
+        if amount < 0 {
+            return Err(Error::InvalidAmount);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxPoolDeposit, &amount);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("pool"), symbol_short!("poolcap")), amount);
+        Ok(())
+    }
+
+    /// View the configured protocol-wide deposit cap. `0` means uncapped (#643).
+    pub fn max_pool_deposit(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxPoolDeposit)
+            .unwrap_or(0)
+    }
+
+    /// Remaining per-wallet capacity for `who`, in the same units as
+    /// `deposit`'s `amount`. `i128::MAX` when uncapped, so a caller doesn't
+    /// need to special-case "no cap" separately from "very large headroom"
+    /// (#643).
+    pub fn remaining_wallet_capacity(env: Env, who: Address) -> i128 {
+        let cap = Self::max_wallet_deposit(env.clone());
+        if cap == 0 {
+            return i128::MAX;
+        }
+        let deposited: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Participant(who))
+            .map(|p: Participant| p.deposited)
+            .unwrap_or(0);
+        cap.saturating_sub(deposited).max(0)
+    }
+
+    /// Remaining protocol-wide capacity, in the same units as `deposit`'s
+    /// `amount`. `i128::MAX` when uncapped (#643).
+    pub fn remaining_pool_capacity(env: Env) -> i128 {
+        let cap = Self::max_pool_deposit(env.clone());
+        if cap == 0 {
+            return i128::MAX;
+        }
+        let total_deposited: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pool)
+            .map(|p: Pool| p.total_deposited)
+            .unwrap_or(0);
+        cap.saturating_sub(total_deposited).max(0)
+    }
+
+    /// Shared cap-enforcement check for every entry point that increases
+    /// `Participant.deposited`/`pool.total_deposited`
+    /// (`deposit`/`deposit_with_duration`). Reads both caps and both current
+    /// totals fresh from storage on every call — Soroban applies
+    /// transactions to a contract sequentially within a ledger close, so a
+    /// check against storage read at the top of this call, in the same
+    /// invocation that then writes the updated totals, cannot be raced by a
+    /// concurrently-submitted deposit the way a client-side pre-check could
+    /// (#643).
+    fn check_deposit_caps(
+        env: &Env,
+        current_wallet_deposited: i128,
+        current_pool_deposited: i128,
+        amount: i128,
+    ) -> Result<(), Error> {
+        let wallet_cap: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxWalletDeposit)
+            .unwrap_or(0);
+        if wallet_cap > 0 && current_wallet_deposited.saturating_add(amount) > wallet_cap {
+            return Err(Error::WalletDepositCapExceeded);
+        }
+
+        let pool_cap: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxPoolDeposit)
+            .unwrap_or(0);
+        if pool_cap > 0 && current_pool_deposited.saturating_add(amount) > pool_cap {
+            return Err(Error::PoolDepositCapExceeded);
+        }
+
+        Ok(())
     }
 
     /// Governed: pay out pending withdrawal requests from the head of the
@@ -2218,6 +2370,56 @@ impl DripPool {
             (who, round_id, share),
         );
         Ok(share)
+    }
+
+    /// Admin-only: prune `RoundDeposit` entries and the `Round` itself for
+    /// a fully settled round whose participants have all claimed. Accepts a
+    /// list of participant addresses whose deposits should be removed — each
+    /// must have a zero `round_deposit_of` (already claimed). If all listed
+    /// participants have claimed, the `Round` entry is also removed to
+    /// reclaim persistent storage. Rejects pruning a round that still has
+    /// outstanding unclaimed deposits (#558).
+    pub fn prune_round(
+        env: Env,
+        caller: Address,
+        round_id: u32,
+        participants: Vec<Address>,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+        Self::require_signer(&env, &caller)?;
+        Self::require_compatible_config(&env)?;
+
+        let round = Self::load_round(&env, round_id)?;
+        if round.status != RoundStatus::Settled {
+            return Err(Error::RoundNotLocked);
+        }
+
+        for i in 0..participants.len() {
+            let who = participants.get(i).unwrap();
+            let deposit: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::RoundDeposit(who.clone(), round_id))
+                .unwrap_or(0);
+            if deposit > 0 {
+                return Err(Error::RoundHasOutstandingDeposits);
+            }
+            env.storage()
+                .persistent()
+                .remove(&DataKey::RoundDeposit(who, round_id));
+        }
+
+        // Remove the round entry itself to reclaim storage.
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Round(round_id));
+        Self::bump_instance(&env);
+
+        env.events().publish(
+            (symbol_short!("round"), symbol_short!("pruned")),
+            round_id,
+        );
+        Ok(())
     }
 
     fn load_round(env: &Env, round_id: u32) -> Result<Round, Error> {

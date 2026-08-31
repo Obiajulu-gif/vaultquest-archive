@@ -159,3 +159,5 @@ VaultQuest deployments are boundary-driven by configuration:
   boundaries.
 - [`backend/docs/ARCHITECTURE.md`](../backend/docs/ARCHITECTURE.md) — backend service layout
   and reconciliation details.
+- [`docs/QUEST_REWARDS.md`](./QUEST_REWARDS.md) — quest-completion metrics, exactly-once
+  reward-grant idempotency, reorg correction policy, and payout status.

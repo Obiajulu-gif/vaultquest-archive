@@ -42,6 +42,11 @@ export class PrometheusMetrics {
   readonly indexerLastSyncTime: Gauge;
   readonly indexerSyncErrors: Counter;
 
+  // Reconciliation metrics
+  readonly staleOrphansCurrent: Gauge;
+  readonly staleOrphansTotal: Counter;
+  readonly missingSettlementsTotal: Counter;
+
   constructor(logger?: Logger) {
     this.registry = register;
 
@@ -177,6 +182,28 @@ export class PrometheusMetrics {
       registers: [this.registry],
     });
 
+    // Initialize Reconciliation metrics
+    // `bucket` distinguishes 7d (7–30 days old) from 30d (escalated, >30 days old).
+    this.staleOrphansCurrent = new Gauge({
+      name: "stale_orphans_current",
+      help: "Current number of stale orphaned actions (>7 days old) by age bucket, as of the last reconciliation run",
+      labelNames: ["bucket"],
+      registers: [this.registry],
+    });
+
+    this.staleOrphansTotal = new Counter({
+      name: "stale_orphans_total",
+      help: "Total number of stale_orphan drifts produced by the reconciler, by age bucket",
+      labelNames: ["bucket"],
+      registers: [this.registry],
+    });
+
+    this.missingSettlementsTotal = new Counter({
+      name: "missing_settlements_total",
+      help: "Total number of missing_settlement drifts detected by the reconciler (confirmed action with no VaultSettlement row)",
+      registers: [this.registry],
+    });
+
     logger?.info("Prometheus metrics initialized");
   }
 
@@ -249,6 +276,29 @@ export class PrometheusMetrics {
 
   recordIndexerSyncError() {
     this.indexerSyncErrors.inc();
+  }
+
+  /**
+   * Record a stale_orphan drift (called once per drift produced by buildRepairPlan).
+   */
+  incStaleOrphan(bucket: "7d" | "30d") {
+    this.staleOrphansTotal.inc({ bucket });
+  }
+
+  /**
+   * Record a missing_settlement drift (called once per drift produced by
+   * buildRepairPlan).
+   */
+  incMissingSettlement() {
+    this.missingSettlementsTotal.inc();
+  }
+
+  /**
+   * Set the current stale-orphan count for a bucket (called once per
+   * reconciliation run so the gauge reflects current state, not cumulative drifts).
+   */
+  setStaleOrphans(bucket: "7d" | "30d", count: number) {
+    this.staleOrphansCurrent.set({ bucket }, count);
   }
 
   /**

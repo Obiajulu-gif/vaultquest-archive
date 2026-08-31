@@ -37,7 +37,7 @@ export class SchemaVersionService {
 
   /**
    * Get current indexer schema version
-   * This is a placeholder - actual version should come from indexer metadata
+   * Reads from the indexer_version field populated by the indexer on startup.
    */
   async getIndexerVersion(): Promise<string> {
     try {
@@ -45,9 +45,8 @@ export class SchemaVersionService {
         where: { id: "singleton" },
       });
       
-      // For now, we'll use a version field if it exists, otherwise default
-      // In production, this should be a proper version field in the schema
-      return checkpoint ? "1.2.0" : "unknown";
+      // Reads the real version from the checkpoint table
+      return checkpoint?.indexerVersion || "unknown";
     } catch (error) {
       console.error("Failed to get indexer version:", error);
       return "unknown";

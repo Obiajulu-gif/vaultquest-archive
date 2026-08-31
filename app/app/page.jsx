@@ -3,10 +3,12 @@
 import { useState, useMemo, useEffect } from "react";
 import Link from "next/link";
 import { useConnectModal } from "@rainbow-me/rainbowkit";
-import { useAccount } from "wagmi";
+import { useAccount, useChainId } from "wagmi";
 import { useTranslation } from "next-i18next";
 import { Sparkles } from "lucide-react";
 import { VaultApiClient } from "@vaultquest/stellar-wallet-connect/src/vault/data/apiClient";
+import { usePortfolioSummary } from "@vaultquest/stellar-wallet-connect/src/vault/hooks";
+import { SUPPORTED_CHAINS } from "@/lib/wagmi";
 import OnboardingCards from "@/components/app/OnboardingCards";
 import PublicStatsBar from "@/components/app/PublicStatsBar";
 import VaultMetricsCards from "@/components/app/VaultMetricsCards";
@@ -97,12 +99,24 @@ function DashboardSkeleton() {
 export default function AppDashboardPage() {
   const { t } = useTranslation("common");
   const { isConnected, address, chain } = useAccount();
+  const chainId = useChainId();
   const { openConnectModal } = useConnectModal();
   const [onboardingStep, setOnboardingStep] = useState(0);
-  const [hasJoinedVault] = useState(false);
   const [onboardingForceOpen, setOnboardingForceOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [vaultMetadata, setVaultMetadata] = useState([]);
+
+  // Real wallet/vault state driving the onboarding checklist (#628) — no
+  // more hardcoded `useState(false)`. `usePortfolioSummary` reads
+  // GET /portfolio/summary, the same real deposit/position data
+  // `useAccount view`/the account page uses, so "has this wallet joined a
+  // vault" means exactly one thing across the app.
+  const portfolio = usePortfolioSummary(isConnected ? address : null);
+  const hasJoinedVault = Boolean(portfolio.data?.active_positions?.length);
+  // Matches UnsupportedNetworkBanner's own network-support check exactly,
+  // so the checklist's "correct network" step and the banner never
+  // disagree about whether the current chain is supported.
+  const networkSupported = SUPPORTED_CHAINS.some((c) => c.id === chainId);
 
   useEffect(() => {
     setMounted(true);
@@ -218,8 +232,13 @@ export default function AppDashboardPage() {
         {/* Left Column */}
         <main className="space-y-8 lg:col-span-8">
           <ActivitySummaryWidget />
-          <OnboardingChecklist walletConnected={isConnected} hasJoinedVault={hasJoinedVault} />
-          
+          <OnboardingChecklist
+            walletConnected={isConnected}
+            networkSupported={networkSupported}
+            hasDeposited={hasJoinedVault}
+            loading={isConnected && portfolio.loading && !portfolio.data}
+          />
+
           <FirstDepositOnboarding
             hasJoinedVault={hasJoinedVault && !onboardingForceOpen}
           />

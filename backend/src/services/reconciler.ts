@@ -20,6 +20,14 @@ import type { PrismaClient } from "@prisma/client";
 import { ERROR_CODES } from "../constants.js";
 import { AppError } from "../errors.js";
 import type { LedgerService } from "./ledger.js";
+import { createLogger } from "../logger.js";
+import { getPrometheusMetrics } from "./prometheusMetrics.js";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const STALE_ORPHAN_THRESHOLD_DAYS = 7;
+const STALE_ORPHAN_ESCALATION_DAYS = 30;
+
+const logger = createLogger(process.env.LOG_LEVEL ?? "info");
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -75,6 +83,17 @@ export interface ReconciliationResult {
   stepsApplied: number;
   quarantined: number;
   plan: RepairPlan;
+}
+
+/**
+ * Age bucket for a stale_orphan drift. Orphans older than 30 days escalate
+ * to the "30d" bucket (operator intervention required); the rest are "7d".
+ */
+export type StaleOrphanBucket = "7d" | "30d";
+
+export function staleOrphanBucket(updatedAt: Date): StaleOrphanBucket {
+  const ageMs = Date.now() - updatedAt.getTime();
+  return ageMs > STALE_ORPHAN_ESCALATION_DAYS * DAY_MS ? "30d" : "7d";
 }
 
 // ─── Drift detection ──────────────────────────────────────────────────────────
@@ -253,7 +272,7 @@ export async function detectDrift(prisma: PrismaClient): Promise<DriftRecord[]> 
       status: "confirmed",
       actionType: { in: ["deposit", "withdraw"] }
     },
-    select: { id: true, actionPayload: true, txHash: true }
+    select: { id: true, actionType: true, actionPayload: true, txHash: true }
   });
   for (const a of confirmedDeposits) {
     const payload = a.actionPayload as Record<string, unknown> | null;
@@ -269,6 +288,9 @@ export async function detectDrift(prisma: PrismaClient): Promise<DriftRecord[]> 
           recordId: a.id,
           details: {
             txHash: a.txHash,
+            actionType: a.actionType,
+            amount: payload?.amount ?? null,
+            recipient: payload?.recipient ?? null,
             vaultId: String(vaultId),
             message: `Confirmed action references vault ${vaultId} but no VaultSettlement exists`
           }
@@ -297,6 +319,51 @@ export async function detectDrift(prisma: PrismaClient): Promise<DriftRecord[]> 
         message: "Pending event unconsumed for > 24 hours"
       }
     });
+  }
+
+  // 9. Insolvency drift: per-vault net tracked principal (confirmed deposits
+  //    minus confirmed withdrawals) goes negative, indicating more was paid
+  //    out than deposited — a critical accounting invariant violation for a
+  //    no-loss prize-savings protocol (#560).
+  const confirmedActions = await prisma.actionLedger.findMany({
+    where: {
+      status: "confirmed",
+      actionType: { in: ["deposit", "withdraw"] }
+    },
+    select: { id: true, actionType: true, actionPayload: true, txHash: true }
+  });
+
+  const vaultNetPrincipal = new Map<string, { net: number; actions: typeof confirmedActions }>();
+  for (const a of confirmedActions) {
+    const payload = a.actionPayload as Record<string, unknown> | null;
+    const vaultId = String(payload?.vault_id ?? payload?.pool_id ?? "unknown");
+    if (!vaultNetPrincipal.has(vaultId)) {
+      vaultNetPrincipal.set(vaultId, { net: 0, actions: [] });
+    }
+    const entry = vaultNetPrincipal.get(vaultId)!;
+    entry.actions.push(a);
+    const amount = Number(payload?.amount ?? 0);
+    if (a.actionType === "deposit") {
+      entry.net += amount;
+    } else if (a.actionType === "withdraw") {
+      entry.net -= amount;
+    }
+  }
+
+  for (const [vaultId, { net, actions }] of vaultNetPrincipal) {
+    if (net < 0) {
+      drifts.push({
+        type: "insolvency_drift",
+        recordType: "vault_settlement",
+        recordId: vaultId,
+        details: {
+          vaultId,
+          netTrackedPrincipal: net,
+          actionCount: actions.length,
+          message: `Vault ${vaultId} has negative net tracked principal (${net}): more withdrawn than deposited`
+        }
+      });
+    }
   }
 
   return drifts;
@@ -359,7 +426,37 @@ export function buildRepairPlan(drifts: DriftRecord[], dryRun: boolean): RepairP
 
       case "stale_orphan": {
         // Already orphaned. No further action needed — operator can review.
-        // Just log it.
+        // Surface it loudly: structured warning/error log + Prometheus metric,
+        // so an operator doesn't have to know to query reconciliation output.
+        const updatedAt = new Date(drift.details.updatedAt as string);
+        const ageMs = Date.now() - updatedAt.getTime();
+        const ageDays = Math.max(0, Math.floor(ageMs / DAY_MS));
+        const bucket = staleOrphanBucket(updatedAt);
+
+        const metrics = getPrometheusMetrics();
+        metrics.incStaleOrphan(bucket);
+
+        const logFields = {
+          event: "reconciliation.stale_orphan",
+          recordId: drift.recordId,
+          txHash: drift.details.txHash ?? null,
+          errorCode: drift.details.errorCode ?? null,
+          ageDays,
+          bucket
+        };
+
+        if (bucket === "30d") {
+          // Escalated: orphaned for > 30 days — needs operator intervention.
+          logger.error(
+            logFields,
+            `stale_orphan: action ${drift.recordId} orphaned for ${ageDays} days (>${STALE_ORPHAN_ESCALATION_DAYS}d escalation)`
+          );
+        } else {
+          logger.warn(
+            logFields,
+            `stale_orphan: action ${drift.recordId} orphaned for ${ageDays} days (exceeds ${STALE_ORPHAN_THRESHOLD_DAYS}d threshold)`
+          );
+        }
         break;
       }
 
@@ -386,8 +483,30 @@ export function buildRepairPlan(drifts: DriftRecord[], dryRun: boolean): RepairP
       }
 
       case "missing_settlement": {
-        // Confirmed action references a vault with no settlement.
-        // This is informational — no automatic repair.
+        // Confirmed action references a vault with no VaultSettlement row.
+        // This is a financial-stuck-state signal (#561): user funds may be
+        // unaccounted for. We deliberately do NOT auto-insert a settlement:
+        // constructing the right VaultSettlement requires settlementType,
+        // recipient and a verified amount which the drift record does not
+        // carry, and getting any of those wrong risks a bad on-chain payout.
+        // Instead we surface it loudly (structured error log + Prometheus
+        // metric) and quarantine it for operator review, so it is no longer a
+        // silent no-op.
+        const metrics = getPrometheusMetrics();
+        metrics.incMissingSettlement();
+
+        logger.error(
+          {
+            event: "reconciliation.missing_settlement",
+            recordId: drift.recordId,
+            txHash: drift.details.txHash ?? null,
+            vaultId: drift.details.vaultId ?? null,
+            actionType: drift.details.actionType ?? null,
+            amount: drift.details.amount ?? null
+          },
+          `missing_settlement: confirmed action ${drift.recordId} references vault ${drift.details.vaultId} but no VaultSettlement exists — quarantined for manual review`
+        );
+        quarantined.push(drift);
         break;
       }
 
@@ -400,6 +519,23 @@ export function buildRepairPlan(drifts: DriftRecord[], dryRun: boolean): RepairP
           data: {},
           provenance: `drift:stale_pending_event:${drift.recordId}`
         });
+        break;
+      }
+
+      case "insolvency_drift": {
+        // Critical: vault has more tracked withdrawals than deposits.
+        // Quarantine for manual review — never auto-repair financial
+        // invariants (#560).
+        logger.error(
+          {
+            event: "reconciliation.insolvency_drift",
+            vaultId: drift.recordId,
+            netTrackedPrincipal: drift.details.netTrackedPrincipal,
+            actionCount: drift.details.actionCount
+          },
+          `insolvency_drift: vault ${drift.recordId} has negative net tracked principal (${drift.details.netTrackedPrincipal})`
+        );
+        quarantined.push(drift);
         break;
       }
 
@@ -478,10 +614,15 @@ export async function applyRepairPlan(
     }
   }
 
-  // Quarantine contradictions and unresolvable drifts.
+  // Quarantine contradictions, duplicates, and insolvency drifts.
   let quarantined = 0;
   for (const drift of plan.drifts) {
-    if (drift.type === "contradiction" || drift.type === "duplicate_tx_hash") {
+    if (
+      drift.type === "contradiction" ||
+      drift.type === "duplicate_tx_hash" ||
+      drift.type === "insolvency_drift" ||
+      drift.type === "missing_settlement"
+    ) {
       const existing = await prisma.repairQuarantine.findFirst({
         where: {
           recordType: drift.recordType,
@@ -533,6 +674,24 @@ export async function reconcileAll(
   const dryRun = opts.dryRun ?? false;
 
   const drifts = await detectDrift(prisma);
+
+  // Keep the current stale-orphan gauge in sync with what this run actually
+  // found, so it reflects current state rather than cumulative history.
+  const metrics = getPrometheusMetrics();
+  let staleOrphan7d = 0;
+  let staleOrphan30d = 0;
+  for (const drift of drifts) {
+    if (drift.type !== "stale_orphan") continue;
+    const updatedAt = new Date(drift.details.updatedAt as string);
+    if (staleOrphanBucket(updatedAt) === "30d") {
+      staleOrphan30d += 1;
+    } else {
+      staleOrphan7d += 1;
+    }
+  }
+  metrics.setStaleOrphans("7d", staleOrphan7d);
+  metrics.setStaleOrphans("30d", staleOrphan30d);
+
   const plan = buildRepairPlan(drifts, dryRun);
 
   let stepsApplied = 0;

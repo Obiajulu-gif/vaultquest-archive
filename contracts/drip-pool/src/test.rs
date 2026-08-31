@@ -2754,6 +2754,94 @@ fn test_withdraw_after_wrap_reserves_first_slot() {
     assert_eq!(client.withdrawal_queue_head(), 1);
 }
 
+// ── #556: Withdrawal queue wraparound — duplicate guard & re-queue #513 ────
+//
+// #579 verified that tail/head wrap at u32::MAX is *intended* and that FIFO
+// is preserved across the boundary. These tests cover the two things #579
+// did not: the `ParticipantQueue(Address)` duplicate-request guard must still
+// hold once `WithdrawalQueueTail` has wrapped, and the same guard must be
+// correctly released (on fulfillment/cancel) so a participant can re-queue
+// through a wrapped slot without silently colliding with an old record.
+
+#[test]
+fn test_duplicate_guard_holds_across_wraparound() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.join(&alice);
+    client.join(&bob);
+    issuer.mint(&alice, &1_000);
+    issuer.mint(&bob, &1_000);
+    client.deposit(&alice, &1_000);
+    client.deposit(&bob, &1_000);
+
+    let strategy = env.register_contract(None, RealTokenStrategy);
+    client.set_strategy(&admin, &strategy);
+    client.deploy_to_strategy(&admin, &1_950);
+
+    // Seed so the next enqueue occupies slot u32::MAX and wraps tail to 0.
+    seed_queue_near_max(&env, u32::MAX, u32::MAX);
+
+    skip_lockup(&env);
+    assert_eq!(client.withdraw(&alice), 0); // alice gets slot u32::MAX
+    assert_eq!(client.withdrawal_queue_tail(), 0); // tail wrapped past u32::MAX
+
+    // Even though the counter wrapped, alice's ParticipantQueue entry must
+    // still block a second queue — otherwise a double-request could slip in.
+    assert_eq!(
+        client.try_withdraw(&alice),
+        Err(Ok(Error::WithdrawalAlreadyQueued))
+    );
+
+    // A *different* participant may still queue at the wrapped slot 0.
+    assert_eq!(client.withdraw(&bob), 0);
+    let other_qid = client.withdrawal_request_of(&bob).unwrap();
+    assert_eq!(other_qid, 0);
+    assert_eq!(client.withdrawal_queue_tail(), 1);
+
+    // Alice's original request at the boundary slot is untouched.
+    let alice_req = client.withdrawal_request(u32::MAX);
+    assert_eq!(alice_req.status, WithdrawalRequestStatus::Pending);
+}
+
+#[test]
+fn test_requeue_after_cancel_reuses_wrapped_slot_safely() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+    client.deposit(&alice, &1_000);
+
+    let strategy = env.register_contract(None, RealTokenStrategy);
+    client.set_strategy(&admin, &strategy);
+    client.deploy_to_strategy(&admin, &900); // 100 idle — enough to queue
+
+    // Alice queues at slot u32::MAX; tail wraps to 0.
+    seed_queue_near_max(&env, u32::MAX, u32::MAX);
+    skip_lockup(&env);
+    assert_eq!(client.withdraw(&alice), 0);
+    assert_eq!(client.withdrawal_queue_tail(), 0);
+    assert_eq!(client.withdrawal_request_of(&alice), Some(u32::MAX));
+
+    // Cancel the boundary-slot request: refunds principal and, crucially,
+    // releases alice's ParticipantQueue(Address) entry.
+    let refunded = client.cancel_withdrawal_request(&alice);
+    assert_eq!(refunded, 1_000);
+    assert!(client.withdrawal_request_of(&alice).is_none());
+
+    // Alice may now re-queue through the *already-wrapped* tail (slot 0).
+    // Because her guard was properly released, the fresh request lands on a
+    // brand-new ParticipantQueue entry — it must not silently collide with
+    // the old record or be rejected as a duplicate.
+    assert_eq!(client.withdraw(&alice), 0);
+    let qid = client.withdrawal_request_of(&alice).unwrap();
+    assert_eq!(qid, 0);
+    let fresh = client.withdrawal_request(qid);
+    assert_eq!(fresh.amount, 1_000);
+    assert_eq!(fresh.status, WithdrawalRequestStatus::Pending);
+    assert_eq!(client.withdrawal_queue_tail(), 1);
+}
+
 // ── #524: Security — Fail closed when token is unconfigured ────────────────
 
 #[test]
@@ -3141,4 +3229,712 @@ fn test_validate_strategy_rejects_inflated_total_assets() {
         .get(&DataKey::StrategyRotationPhase)
         .unwrap();
     assert_ne!(phase, vaultquest_common::strategy::StrategyRotationPhase::Idle);
+}
+
+// ── deposit concentration limits (#643) ─────────────────────────────────────
+
+#[test]
+fn deposit_caps_default_to_uncapped() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    assert_eq!(client.max_wallet_deposit(), 0);
+    assert_eq!(client.max_pool_deposit(), 0);
+    let alice = Address::generate(&env);
+    assert_eq!(client.remaining_wallet_capacity(&alice), i128::MAX);
+    assert_eq!(client.remaining_pool_capacity(), i128::MAX);
+}
+
+#[test]
+fn only_a_signer_can_set_deposit_caps() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let outsider = Address::generate(&env);
+
+    assert_eq!(
+        client.try_set_max_wallet_deposit(&outsider, &1_000),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(
+        client.try_set_max_pool_deposit(&outsider, &1_000),
+        Err(Ok(Error::Unauthorized))
+    );
+
+    // The admin (a signer by default, per `create`) can.
+    client.set_max_wallet_deposit(&admin, &1_000);
+    client.set_max_pool_deposit(&admin, &5_000);
+    assert_eq!(client.max_wallet_deposit(), 1_000);
+    assert_eq!(client.max_pool_deposit(), 5_000);
+}
+
+#[test]
+fn negative_cap_is_rejected() {
+    let (_env, client, admin) = setup();
+    client.create(&admin);
+    assert_eq!(
+        client.try_set_max_wallet_deposit(&admin, &-1),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(
+        client.try_set_max_pool_deposit(&admin, &-1),
+        Err(Ok(Error::InvalidAmount))
+    );
+}
+
+#[test]
+fn deposit_at_exact_wallet_cap_succeeds() {
+    let (env, client, admin, _token, issuer) = setup_with_token();
+    client.set_max_wallet_deposit(&admin, &1_000);
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+
+    client.deposit(&alice, &1_000);
+    assert_eq!(client.savings(&alice).deposited, 1_000);
+    assert_eq!(client.remaining_wallet_capacity(&alice), 0);
+}
+
+#[test]
+fn deposit_one_over_wallet_cap_fails_and_transfers_nothing() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    client.set_max_wallet_deposit(&admin, &1_000);
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_001);
+
+    assert_eq!(
+        client.try_deposit(&alice, &1_001),
+        Err(Ok(Error::WalletDepositCapExceeded))
+    );
+    // The cap check runs before the token transfer — a rejected deposit
+    // must not move funds.
+    assert_eq!(token.balance(&alice), 1_001);
+    assert_eq!(client.savings(&alice).deposited, 0);
+    assert_eq!(client.pool().total_deposited, 0);
+}
+
+#[test]
+fn wallet_cap_is_cumulative_across_multiple_deposits() {
+    let (env, client, admin, _token, issuer) = setup_with_token();
+    client.set_max_wallet_deposit(&admin, &1_000);
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+
+    client.deposit(&alice, &600);
+    assert_eq!(client.remaining_wallet_capacity(&alice), 400);
+
+    // A second deposit that individually looks fine (400 <= balance) but
+    // pushes the wallet's cumulative total past the cap must still fail.
+    assert_eq!(
+        client.try_deposit(&alice, &401),
+        Err(Ok(Error::WalletDepositCapExceeded))
+    );
+    // Exactly the remaining headroom succeeds.
+    client.deposit(&alice, &400);
+    assert_eq!(client.savings(&alice).deposited, 1_000);
+}
+
+#[test]
+fn wallet_cap_does_not_affect_other_wallets() {
+    let (env, client, admin, _token, issuer) = setup_with_token();
+    client.set_max_wallet_deposit(&admin, &1_000);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.join(&alice);
+    client.join(&bob);
+    issuer.mint(&alice, &1_000);
+    issuer.mint(&bob, &1_000);
+
+    client.deposit(&alice, &1_000);
+    // Bob's own headroom is untouched by Alice's deposit.
+    assert_eq!(client.remaining_wallet_capacity(&bob), 1_000);
+    client.deposit(&bob, &1_000);
+    assert_eq!(client.savings(&bob).deposited, 1_000);
+}
+
+#[test]
+fn deposit_at_exact_pool_cap_succeeds() {
+    let (env, client, admin, _token, issuer) = setup_with_token();
+    client.set_max_pool_deposit(&admin, &1_500);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.join(&alice);
+    client.join(&bob);
+    issuer.mint(&alice, &1_000);
+    issuer.mint(&bob, &500);
+
+    client.deposit(&alice, &1_000);
+    client.deposit(&bob, &500);
+    assert_eq!(client.pool().total_deposited, 1_500);
+    assert_eq!(client.remaining_pool_capacity(), 0);
+}
+
+#[test]
+fn deposit_over_pool_cap_fails_even_when_under_the_wallet_cap() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    client.set_max_wallet_deposit(&admin, &10_000); // generous — not the binding constraint
+    client.set_max_pool_deposit(&admin, &1_000);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.join(&alice);
+    client.join(&bob);
+    issuer.mint(&alice, &900);
+    issuer.mint(&bob, &200);
+
+    client.deposit(&alice, &900);
+    assert_eq!(client.remaining_pool_capacity(), 100);
+
+    // Bob's own wallet cap has plenty of headroom (10_000), but the pool as
+    // a whole only has 100 left.
+    assert_eq!(
+        client.try_deposit(&bob, &200),
+        Err(Ok(Error::PoolDepositCapExceeded))
+    );
+    assert_eq!(token.balance(&bob), 200); // nothing transferred
+    client.deposit(&bob, &100); // exactly the remaining pool headroom
+    assert_eq!(client.pool().total_deposited, 1_000);
+}
+
+#[test]
+fn concurrent_style_deposits_race_for_the_last_of_the_pool_cap() {
+    // Soroban applies submitted transactions to a contract sequentially
+    // within a ledger close — there is no interleaved-write race inside a
+    // single invocation. What "concurrent deposits" means for cap
+    // enforcement here is two deposits that were BOTH independently valid
+    // against the state each depositor observed before submitting (e.g. via
+    // `remaining_pool_capacity` in the UI), but where only one can actually
+    // fit once they are applied in some order. This test asserts the second
+    // one to actually execute is rejected rather than silently pushing the
+    // pool over its cap — the cap is enforced against live storage at
+    // execution time, not against whatever the caller observed earlier.
+    let (env, client, admin, token, issuer) = setup_with_token();
+    client.set_max_pool_deposit(&admin, &1_000);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.join(&alice);
+    client.join(&bob);
+    issuer.mint(&alice, &700);
+    issuer.mint(&bob, &700);
+
+    // Both alice and bob observe the same pre-state: 1_000 total headroom,
+    // and both independently decide to deposit 700 (each individually valid
+    // against that shared observation, since 700 <= 1_000).
+    assert_eq!(client.remaining_pool_capacity(), 1_000);
+
+    // alice's transaction executes first and succeeds.
+    client.deposit(&alice, &700);
+    assert_eq!(client.remaining_pool_capacity(), 300);
+
+    // bob's transaction, executing second against the now-updated storage,
+    // is rejected — even though 700 looked valid when bob's client checked
+    // headroom before alice's deposit landed.
+    assert_eq!(
+        client.try_deposit(&bob, &700),
+        Err(Ok(Error::PoolDepositCapExceeded))
+    );
+    assert_eq!(token.balance(&bob), 700); // bob's funds never moved
+    assert_eq!(client.pool().total_deposited, 700); // only alice's deposit counted
+}
+
+#[test]
+fn deposit_with_duration_is_subject_to_the_same_caps() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    client.set_max_wallet_deposit(&admin, &1_000);
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_500);
+
+    client.deposit_with_duration(&alice, &600, &7);
+    assert_eq!(
+        client.try_deposit_with_duration(&alice, &500, &7),
+        Err(Ok(Error::WalletDepositCapExceeded))
+    );
+    assert_eq!(token.balance(&alice), 900); // only the first 600 transferred
+    client.deposit_with_duration(&alice, &400, &7); // exactly the remaining headroom
+    assert_eq!(client.savings(&alice).deposited, 1_000);
+}
+
+#[test]
+fn raising_the_cap_unblocks_a_previously_rejected_amount() {
+    let (env, client, admin, _token, issuer) = setup_with_token();
+    client.set_max_wallet_deposit(&admin, &500);
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+
+    assert_eq!(
+        client.try_deposit(&alice, &1_000),
+        Err(Ok(Error::WalletDepositCapExceeded))
+    );
+
+    // Governance raises the cap — the same amount now succeeds.
+    client.set_max_wallet_deposit(&admin, &1_000);
+    client.deposit(&alice, &1_000);
+    assert_eq!(client.savings(&alice).deposited, 1_000);
+}
+
+#[test]
+fn lowering_the_cap_below_existing_balance_does_not_retroactively_fail_but_blocks_top_ups() {
+    let (env, client, admin, _token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+    client.deposit(&alice, &1_000); // no cap yet — succeeds
+
+    // Governance sets a cap below alice's existing balance.
+    client.set_max_wallet_deposit(&admin, &500);
+    assert_eq!(client.savings(&alice).deposited, 1_000); // untouched — no retroactive slashing
+    assert_eq!(client.remaining_wallet_capacity(&alice), 0); // saturates at 0, not negative
+
+    // Any further top-up is rejected while over-cap.
+    assert_eq!(
+        client.try_deposit(&alice, &1),
+        Err(Ok(Error::WalletDepositCapExceeded))
+    );
+}
+
+// ── #557: Strategy rotation edge-case tests ─────────────────────────────────
+
+/// Proposing a second rotation while one is already pending must be rejected.
+#[test]
+fn test_propose_second_rotation_while_pending_fails() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let s1 = env.register_contract(None, MockStrategy);
+    let s2 = env.register_contract(None, MockStrategy);
+    let s3 = env.register_contract(None, MockStrategy);
+
+    client.set_strategy(&admin, &s1);
+    client.propose_strategy(&admin, &s2, &500);
+
+    // Second propose while first is still in Proposed phase — must fail.
+    assert_eq!(
+        client.try_propose_strategy(&admin, &s3, &600),
+        Err(Ok(Error::StrategyRotationPending))
+    );
+}
+
+/// Cancelling a pending rotation clears ProposedStrategy, ProposedExposureCap,
+/// and StrategyRotationReadyAt, and the phase returns to Idle.
+#[test]
+fn test_cancel_rotation_clears_proposed_state() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let s1 = env.register_contract(None, MockStrategy);
+    let s2 = env.register_contract(None, MockStrategy);
+
+    client.set_strategy(&admin, &s1);
+    client.propose_strategy(&admin, &s2, &500);
+
+    // Confirm rotation is pending.
+    let phase: vaultquest_common::strategy::StrategyRotationPhase = env
+        .storage()
+        .instance()
+        .get(&DataKey::StrategyRotationPhase)
+        .unwrap();
+    assert_eq!(phase, vaultquest_common::strategy::StrategyRotationPhase::Proposed);
+
+    let proposed: Option<Address> = env
+        .storage()
+        .instance()
+        .get(&DataKey::ProposedStrategy)
+        .flatten();
+    assert!(proposed.is_some());
+
+    client.cancel_strategy_rotation(&admin);
+
+    // Phase returns to Idle.
+    let phase_after: vaultquest_common::strategy::StrategyRotationPhase = env
+        .storage()
+        .instance()
+        .get(&DataKey::StrategyRotationPhase)
+        .unwrap();
+    assert_eq!(phase_after, vaultquest_common::strategy::StrategyRotationPhase::Idle);
+
+    // Proposed state is cleared.
+    let proposed_after: Option<Address> = env
+        .storage()
+        .instance()
+        .get(&DataKey::ProposedStrategy)
+        .flatten();
+    assert!(proposed_after.is_none());
+
+    let cap_after: Option<i128> = env
+        .storage()
+        .instance()
+        .get(&DataKey::ProposedExposureCap);
+    assert!(cap_after.is_none());
+
+    let ready: Option<u32> = env
+        .storage()
+        .instance()
+        .get(&DataKey::StrategyRotationReadyAt);
+    assert!(ready.is_none());
+}
+
+/// An admin set change (bumping GovernanceEpoch) while a rotation is pending
+/// does NOT invalidate the rotation — strategy rotation does not snapshot the
+/// governance epoch (unlike multisig proposals). The rotation can still
+/// activate once its timelock elapses.
+#[test]
+fn test_admin_epoch_change_does_not_invalidate_pending_rotation() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let signer2 = Address::generate(&env);
+    client.seed_admin(&admin, &signer2);
+
+    let s1 = env.register_contract(None, MockStrategy);
+    let s2 = env.register_contract(None, MockStrategy);
+
+    client.set_strategy(&admin, &s1);
+    client.propose_strategy(&admin, &s2, &500);
+
+    // Bump governance epoch via SetThreshold (high-risk, delayed).
+    let set_pid = client.propose(&admin, &ProposalAction::SetThreshold(1));
+    client.approve(&signer2, &set_pid);
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&signer2, &set_pid);
+    assert!(client.governance_epoch() > 0);
+
+    // Rotation is still pending — strategy rotation doesn't use epoch checks.
+    let phase: vaultquest_common::strategy::StrategyRotationPhase = env
+        .storage()
+        .instance()
+        .get(&DataKey::StrategyRotationPhase)
+        .unwrap();
+    assert_eq!(phase, vaultquest_common::strategy::StrategyRotationPhase::Proposed);
+
+    // After timelock, activate still works.
+    skip_high_risk_delay(&env);
+    client.activate_strategy(&admin);
+    let pool = client.pool();
+    assert_eq!(pool.strategy, Some(s2));
+}
+
+// ── #558: RoundDeposit pruning tests ────────────────────────────────────────
+
+/// Pruning a fully settled round with all claims done succeeds and removes
+/// the RoundDeposit entries and the Round itself.
+#[test]
+fn test_prune_round_removes_entries() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    let round_id = client.open_round(&admin);
+    client.round_deposit(&alice, &round_id, &100);
+    client.round_deposit(&bob, &round_id, &200);
+    client.lock_round(&admin, &round_id);
+    client.settle_round(&admin, &round_id, &50, &0);
+
+    // Both participants claim.
+    client.round_claim(&alice, &round_id);
+    client.round_claim(&bob, &round_id);
+
+    // Deposits are now zero.
+    assert_eq!(client.round_deposit_of(&alice, &round_id), 0);
+    assert_eq!(client.round_deposit_of(&bob, &round_id), 0);
+
+    // Prune succeeds.
+    let participants = vec![&env, alice.clone(), bob.clone()];
+    client.prune_round(&admin, &round_id, &participants);
+
+    // Round entry is removed.
+    assert_eq!(
+        client.try_round(&round_id),
+        Err(Ok(Error::RoundNotFound))
+    );
+}
+
+/// Pruning a round with outstanding unclaimed deposits is rejected.
+#[test]
+fn test_prune_round_rejects_outstanding_deposits() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let alice = Address::generate(&env);
+
+    let round_id = client.open_round(&admin);
+    client.round_deposit(&alice, &round_id, &100);
+    client.lock_round(&admin, &round_id);
+    client.settle_round(&admin, &round_id, &50, &0);
+
+    // Alice has NOT claimed yet — her deposit is still 100.
+    assert_eq!(client.round_deposit_of(&alice, &round_id), 100);
+
+    let participants = vec![&env, alice.clone()];
+    assert_eq!(
+        client.try_prune_round(&admin, &round_id, &participants),
+        Err(Ok(Error::RoundHasOutstandingDeposits))
+    );
+}
+
+/// Pruning a round that is not Settled is rejected.
+#[test]
+fn test_prune_round_rejects_non_settled() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let round_id = client.open_round(&admin);
+    let participants = vec![&env];
+    assert_eq!(
+        client.try_prune_round(&admin, &round_id, &participants),
+        Err(Ok(Error::RoundNotFound))
+    );
+}
+
+/// Pruning by a non-signer is rejected.
+#[test]
+fn test_prune_round_unauthorized() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let alice = Address::generate(&env);
+    let round_id = client.open_round(&admin);
+    client.round_deposit(&alice, &round_id, &100);
+    client.lock_round(&admin, &round_id);
+    client.settle_round(&admin, &round_id, &50, &0);
+    client.round_claim(&alice, &round_id);
+
+    let rando = Address::generate(&env);
+    let participants = vec![&env, alice.clone()];
+    assert_eq!(
+        client.try_prune_round(&rando, &round_id, &participants),
+        Err(Ok(Error::Unauthorized))
+    );
+// ── #623: strategy adapter failure isolation (paused/degraded strategies) ──
+//
+// A conforming strategy (see `mock-yield`) can reject `deposit` while paused
+// and always honours `redeem` so an emergency recall can never be stranded.
+// These tests exercise the *pool's* call sites into that interface with a
+// mock adapter that moves real SAC tokens but can be toggled to reject
+// deposit/harvest, verifying the pool surfaces a clean contract error
+// instead of an uncontrolled panic, and that no pool state or custody
+// changes when the adapter rejects the call.
+
+#[contracttype]
+#[derive(Clone)]
+pub enum FailableKey {
+    DepositFails,
+    HarvestFails,
+}
+
+/// Strategy stub that moves real SAC tokens like `RealTokenStrategy`, but can
+/// be toggled (via `set_deposit_fails` / `set_harvest_fails`) to reject
+/// `deposit` or `harvest` the way a paused or degraded adapter would (#623).
+/// `redeem` always succeeds, mirroring `mock-yield`'s pause semantics: an
+/// emergency recall must never be blockable by adapter failure.
+#[contract]
+pub struct FailableStrategy;
+
+#[contractimpl]
+impl FailableStrategy {
+    pub fn set_deposit_fails(env: Env, fails: bool) {
+        env.storage().instance().set(&FailableKey::DepositFails, &fails);
+    }
+
+    pub fn set_harvest_fails(env: Env, fails: bool) {
+        env.storage().instance().set(&FailableKey::HarvestFails, &fails);
+    }
+
+    pub fn interface_version(_env: Env) -> u32 {
+        1
+    }
+
+    pub fn deposit(
+        env: Env,
+        from: Address,
+        asset: Address,
+        amount: i128,
+    ) -> Result<(), vaultquest_common::ContractError> {
+        let fails: bool = env
+            .storage()
+            .instance()
+            .get(&FailableKey::DepositFails)
+            .unwrap_or(false);
+        if fails {
+            return Err(vaultquest_common::ContractError::StrategyPaused);
+        }
+        let token = token::TokenClient::new(&env, &asset);
+        token.transfer(&from, &env.current_contract_address(), &amount);
+        Ok(())
+    }
+
+    pub fn redeem(
+        env: Env,
+        to: Address,
+        asset: Address,
+        amount: i128,
+    ) -> Result<i128, vaultquest_common::ContractError> {
+        let token = token::TokenClient::new(&env, &asset);
+        let available = token.balance(&env.current_contract_address());
+        let redeemed = if amount < available { amount } else { available };
+        if redeemed > 0 {
+            token.transfer(&env.current_contract_address(), &to, &redeemed);
+        }
+        Ok(redeemed)
+    }
+
+    pub fn harvest(
+        env: Env,
+        asset: Address,
+    ) -> Result<vaultquest_common::StrategyReport, vaultquest_common::ContractError> {
+        let fails: bool = env
+            .storage()
+            .instance()
+            .get(&FailableKey::HarvestFails)
+            .unwrap_or(false);
+        if fails {
+            return Err(vaultquest_common::ContractError::StrategyPaused);
+        }
+        let balance =
+            token::TokenClient::new(&env, &asset).balance(&env.current_contract_address());
+        Ok(vaultquest_common::StrategyReport {
+            realized_yield: 0,
+            realized_loss: 0,
+            total_assets: balance,
+        })
+    }
+
+    pub fn total_assets(env: Env, asset: Address) -> i128 {
+        token::TokenClient::new(&env, &asset).balance(&env.current_contract_address())
+    }
+}
+
+/// `deploy_to_strategy` must fail cleanly — not panic — when the adapter
+/// rejects the deposit (paused), and must leave pool state and token
+/// custody completely unchanged.
+#[test]
+fn deploy_to_strategy_fails_cleanly_when_adapter_is_paused() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+    client.deposit(&alice, &1_000);
+
+    let strategy_id = env.register_contract(None, FailableStrategy);
+    let strategy = FailableStrategyClient::new(&env, &strategy_id);
+    client.set_strategy(&admin, &strategy_id);
+
+    strategy.set_deposit_fails(&true);
+
+    let res = client.try_deploy_to_strategy(&admin, &500);
+    assert_eq!(res, Err(Ok(Error::StrategyPaused)));
+
+    // No state mutated: principal never left the pool's custody.
+    assert_eq!(client.pool().principal_in_strategy, 0);
+    assert_eq!(token.balance(&client.address), 1_000);
+    assert_eq!(token.balance(&strategy_id), 0);
+}
+
+/// Once the adapter is unpaused, the same deploy call succeeds normally —
+/// confirms the failure path above didn't corrupt state that would block a
+/// legitimate retry.
+#[test]
+fn deploy_to_strategy_succeeds_after_adapter_unpauses() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+    client.deposit(&alice, &1_000);
+
+    let strategy_id = env.register_contract(None, FailableStrategy);
+    let strategy = FailableStrategyClient::new(&env, &strategy_id);
+    client.set_strategy(&admin, &strategy_id);
+
+    strategy.set_deposit_fails(&true);
+    assert!(client.try_deploy_to_strategy(&admin, &500).is_err());
+
+    strategy.set_deposit_fails(&false);
+    client.deploy_to_strategy(&admin, &500);
+
+    assert_eq!(client.pool().principal_in_strategy, 500);
+    assert_eq!(token.balance(&strategy_id), 500);
+}
+
+/// `harvest_strategy` must fail cleanly — not panic — when the adapter
+/// rejects harvest (degraded), leaving distributable yield and principal
+/// untouched.
+#[test]
+fn harvest_strategy_fails_cleanly_when_adapter_is_degraded() {
+    let (env, client, admin, _token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+    client.deposit(&alice, &1_000);
+
+    let strategy_id = env.register_contract(None, FailableStrategy);
+    let strategy = FailableStrategyClient::new(&env, &strategy_id);
+    client.set_strategy(&admin, &strategy_id);
+    client.deploy_to_strategy(&admin, &500);
+
+    strategy.set_harvest_fails(&true);
+
+    let res = client.try_harvest_strategy(&admin);
+    assert_eq!(res, Err(Ok(Error::StrategyPaused)));
+
+    // Harvest failure must not mutate distributable yield or principal.
+    let pool = client.pool();
+    assert_eq!(pool.distributable_yield, 0);
+    assert_eq!(pool.principal_in_strategy, 500);
+}
+
+/// `reconcile_strategy` calls harvest best-effort (discarding its error, see
+/// `internal_harvest_strategy`'s caller). A degraded adapter must not panic
+/// that best-effort call — reconciliation should still be reachable once
+/// principal is fully drained, independent of harvest succeeding.
+#[test]
+fn reconcile_strategy_tolerates_degraded_adapter_harvest_failure() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let s1 = env.register_contract(None, FailableStrategy);
+    let s1_client = FailableStrategyClient::new(&env, &s1);
+    let s2 = env.register_contract(None, MockStrategy);
+
+    client.set_strategy(&admin, &s1);
+    client.propose_strategy(&admin, &s2, &500);
+
+    // No principal was ever deployed into s1, but harvest is still attempted
+    // during reconcile. A degraded adapter rejecting harvest must not panic
+    // the whole reconcile call.
+    s1_client.set_harvest_fails(&true);
+    client.reconcile_strategy(&admin);
+
+    let phase: vaultquest_common::strategy::StrategyRotationPhase = env
+        .storage()
+        .instance()
+        .get(&DataKey::StrategyRotationPhase)
+        .unwrap();
+    assert_eq!(phase, vaultquest_common::strategy::StrategyRotationPhase::Reconciled);
+}
+
+/// Emergency recall must always succeed even while the adapter's `deposit`
+/// path is paused — `redeem` is a distinct entrypoint per the `YieldStrategy`
+/// contract and a conforming adapter (mirrored here) never blocks it.
+#[test]
+fn emergency_recall_succeeds_while_adapter_deposit_is_paused() {
+    let (env, client, admin, token, issuer) = setup_with_token();
+    let alice = Address::generate(&env);
+    client.join(&alice);
+    issuer.mint(&alice, &1_000);
+    client.deposit(&alice, &1_000);
+
+    let strategy_id = env.register_contract(None, FailableStrategy);
+    let strategy = FailableStrategyClient::new(&env, &strategy_id);
+    client.set_strategy(&admin, &strategy_id);
+    client.deploy_to_strategy(&admin, &500);
+
+    // Pause deposit only — redeem must remain unaffected.
+    strategy.set_deposit_fails(&true);
+
+    let recalled = client.emergency_recall_strategy(&admin);
+    assert_eq!(recalled, 500);
+    assert_eq!(client.pool().principal_in_strategy, 0);
+    assert_eq!(token.balance(&client.address), 1_000);
 }

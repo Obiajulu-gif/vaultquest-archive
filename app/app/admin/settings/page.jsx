@@ -41,9 +41,14 @@ const PROTOCOL_PARAMETERS = [
     note: "Keeps operational churn low for small deposits.",
   },
   {
-    label: "Maximum deposit per vault",
+    label: "Maximum deposit per wallet",
     value: "250,000 XLM",
-    note: "Prevents single-wallet concentration risk.",
+    note: "Enforced on-chain by drip-pool's max_wallet_deposit (#643) — a deposit that would push a wallet's cumulative principal past this value is rejected by the contract itself, not only validated here.",
+  },
+  {
+    label: "Maximum deposit per vault (protocol-wide)",
+    value: "10,000,000 XLM",
+    note: "Enforced on-chain by drip-pool's max_pool_deposit (#643), independently of the per-wallet limit above — a vault can reject a deposit for being over the protocol-wide cap even when the depositing wallet is well under its own limit.",
   },
   {
     label: "Treasury fee",
@@ -59,6 +64,11 @@ const PROTOCOL_PARAMETERS = [
     label: "Emergency pause threshold",
     value: "2 failed attempts",
     note: "Triggers manual review before retrying settlement.",
+  },
+  {
+    label: "Sybil anti-abuse clustering check",
+    value: "Configurable / Auditable",
+    note: "Monitors deposit splitting without blocking legitimate users by default.",
   },
 ];
 

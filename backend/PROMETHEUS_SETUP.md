@@ -130,6 +130,49 @@ Timestamp of the last successful indexer sync (Unix timestamp).
 
 Total number of indexer sync errors.
 
+### Reconciliation Metrics
+
+These metrics come from the background reconciliation engine (`reconciler.ts`) and surface **stale orphaned actions** — actions stuck in `orphaned` status for more than 7 days with no resolution. They exist so operators don't have to know to query reconciliation output manually.
+
+Both metrics carry a `bucket` label:
+
+| Bucket | Meaning |
+|---|---|
+| `7d` | Orphaned for 7–30 days — warning severity. |
+| `30d` | Orphaned for more than 30 days — escalated, operator intervention required. |
+
+#### `stale_orphans_current` (Gauge)
+
+Current number of stale orphaned actions per age bucket, as of the last reconciliation run. Reset/recomputed on every run.
+
+#### `stale_orphans_total` (Counter)
+
+Cumulative total of `stale_orphan` drifts produced by the reconciler, per age bucket. Each detected stale orphan increments it.
+
+Recommended alert rule:
+
+```yaml
+groups:
+  - name: vaultquest-reconciliation
+    rules:
+      - alert: StaleOrphansEscalated
+        expr: stale_orphans_current{bucket="30d"} > 0
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "Stale orphaned actions older than 30 days require operator intervention"
+          description: "{{ $value }} action(s) have been orphaned for over 30 days. See docs/INDEXER_RUNBOOK.md -> Stale Orphan Alert."
+      - alert: StaleOrphansPresent
+        expr: stale_orphans_current{bucket="7d"} > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Stale orphaned actions detected (>7 days)"
+          description: "{{ $value }} action(s) orphaned for 7+ days. See docs/INDEXER_RUNBOOK.md -> Stale Orphan Alert."
+```
+
 ### Default Node.js Metrics
 
 The following standard Node.js metrics are also exposed:

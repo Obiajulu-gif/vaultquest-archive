@@ -180,6 +180,7 @@ export function startIndexerCron(opts: {
   ledger: LedgerService;
   logger: Logger;
   schedule?: string;
+  indexerVersion?: string;
 }): cron.ScheduledTask {
   const schedule = opts.schedule ?? "*/1 * * * *";
   const leases = new LeaseService(opts.prisma);
@@ -200,7 +201,8 @@ export function startIndexerCron(opts: {
           await opts.ledger.updateIndexerCheckpoint({
             latestLedger: result.latestLedger,
             lastProcessedEventId: result.cursor,
-            success: true
+            success: true,
+            indexerVersion: opts.indexerVersion
           });
         }
       });
@@ -211,7 +213,8 @@ export function startIndexerCron(opts: {
         await opts.ledger.updateIndexerCheckpoint({
           latestLedger: existing?.latestLedger ?? 0,
           success: false,
-          lastError: err instanceof Error ? err.message : String(err)
+          lastError: err instanceof Error ? err.message : String(err),
+          indexerVersion: opts.indexerVersion
         });
       } catch {
         // best-effort; don't let checkpoint persistence mask the original error
@@ -295,3 +298,44 @@ export function startNotificationReminderCron(opts: {
   });
   return task;
 }
+
+/**
+ * Periodically executes a disaster recovery restore drill (issue #565).
+ * Verifies the latest database backup and restores it into a scratch database.
+ */
+export function startRestoreDrillCron(opts: {
+  backupDir: string;
+  databaseUrl: string;
+  scratchDatabaseUrl: string;
+  retainDays?: number;
+  pgDumpPath?: string;
+  pgRestorePath?: string;
+  logger: Logger;
+  schedule?: string;
+  prisma: PrismaClient;
+}): cron.ScheduledTask {
+  const schedule = opts.schedule ?? "0 4 * * 0"; // default: weekly at 04:00 on Sunday
+  const svc = new BackupService({
+    backupDir: opts.backupDir,
+    databaseUrl: opts.databaseUrl,
+    retainDays: opts.retainDays,
+    pgDumpPath: opts.pgDumpPath,
+    pgRestorePath: opts.pgRestorePath,
+    logger: opts.logger
+  });
+  const leases = new LeaseService(opts.prisma);
+  const leaseTtlMs = 60 * 60 * 1000;
+
+  const task = cron.schedule(schedule, async () => {
+    try {
+      await withJobLease(leases, "db-restore-drill", leaseTtlMs, opts.logger, async () => {
+        const result = await svc.runRestoreDrill(opts.scratchDatabaseUrl);
+        opts.logger.info({ result }, "restore-drill: completed");
+      });
+    } catch (err) {
+      opts.logger.error({ err }, "restore-drill: failed");
+    }
+  });
+  return task;
+}
+

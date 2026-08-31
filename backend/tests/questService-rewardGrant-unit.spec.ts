@@ -141,12 +141,16 @@ describe("QuestService reward-grant idempotency Unit Tests (No Database Required
 });
 
 describe("QuestService.processGrants Unit Tests (No Database Required) (#505)", () => {
-  it("marks pending grants as granted (placeholder payout, pending #505 clarification)", async () => {
-    const grant = { id: "g1", attempts: 0, status: "pending" };
+  it("marks pending grants as granted and performs a real payout via LedgerService", async () => {
+    const grant = { id: "g1", idempotencyKey: "k1", walletAddress: "W1", questId: "q1", attempts: 0, status: "pending" };
     const mockPrisma = {
       rewardGrant: {
         findMany: vi.fn(async () => [grant]),
         update: vi.fn(async () => ({}))
+      },
+      actionLedger: {
+        findUnique: vi.fn(async () => null),
+        create: vi.fn(async () => ({}))
       }
     } as any;
 
@@ -154,6 +158,16 @@ describe("QuestService.processGrants Unit Tests (No Database Required) (#505)", 
     const result = await svc.processGrants();
 
     expect(result).toEqual({ granted: 1, failed: 0 });
+    
+    // Verifies the real payout call happened
+    expect(mockPrisma.actionLedger.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        idempotencyKey: "reward-grant-k1",
+        actionType: "deposit",
+        walletAddress: "W1"
+      })
+    });
+
     expect(mockPrisma.rewardGrant.update).toHaveBeenCalledWith({
       where: { id: "g1" },
       data: expect.objectContaining({ status: "granted", attempts: 1 })
@@ -162,7 +176,7 @@ describe("QuestService.processGrants Unit Tests (No Database Required) (#505)", 
 
   it("only fetches grants below maxAttempts, so exhausted grants are excluded from the query", async () => {
     const findMany = vi.fn(async () => []);
-    const mockPrisma = { rewardGrant: { findMany, update: vi.fn() } } as any;
+    const mockPrisma = { rewardGrant: { findMany, update: vi.fn() }, actionLedger: { findUnique: vi.fn(), create: vi.fn() } } as any;
 
     const svc = new QuestService(mockPrisma);
     await svc.processGrants(5);
@@ -175,14 +189,15 @@ describe("QuestService.processGrants Unit Tests (No Database Required) (#505)", 
   });
 
   it("increments attempts and stays pending on failure below maxAttempts", async () => {
-    const grant = { id: "g1", attempts: 1, status: "pending" };
+    const grant = { id: "g1", idempotencyKey: "k1", walletAddress: "W1", attempts: 1, status: "pending" };
     const mockPrisma = {
       rewardGrant: {
         findMany: vi.fn(async () => [grant]),
-        update: vi
-          .fn()
-          .mockRejectedValueOnce(new Error("payout failed"))
-          .mockResolvedValueOnce({})
+        update: vi.fn()
+      },
+      actionLedger: {
+        findUnique: vi.fn(async () => null),
+        create: vi.fn(async () => { throw new Error("payout failed") })
       }
     } as any;
 
@@ -190,7 +205,7 @@ describe("QuestService.processGrants Unit Tests (No Database Required) (#505)", 
     const result = await svc.processGrants(5);
 
     expect(result).toEqual({ granted: 0, failed: 1 });
-    expect(mockPrisma.rewardGrant.update).toHaveBeenNthCalledWith(2, {
+    expect(mockPrisma.rewardGrant.update).toHaveBeenCalledWith({
       where: { id: "g1" },
       data: {
         attempts: 2,
@@ -201,14 +216,15 @@ describe("QuestService.processGrants Unit Tests (No Database Required) (#505)", 
   });
 
   it("flips to failed (dead-letter) once attempts reaches maxAttempts", async () => {
-    const grant = { id: "g1", attempts: 4, status: "pending" }; // one more failure hits maxAttempts=5
+    const grant = { id: "g1", idempotencyKey: "k1", walletAddress: "W1", attempts: 4, status: "pending" }; // one more failure hits maxAttempts=5
     const mockPrisma = {
       rewardGrant: {
         findMany: vi.fn(async () => [grant]),
-        update: vi
-          .fn()
-          .mockRejectedValueOnce(new Error("payout failed"))
-          .mockResolvedValueOnce({})
+        update: vi.fn()
+      },
+      actionLedger: {
+        findUnique: vi.fn(async () => null),
+        create: vi.fn(async () => { throw new Error("payout failed") })
       }
     } as any;
 
@@ -216,7 +232,7 @@ describe("QuestService.processGrants Unit Tests (No Database Required) (#505)", 
     const result = await svc.processGrants(5);
 
     expect(result).toEqual({ granted: 0, failed: 1 });
-    expect(mockPrisma.rewardGrant.update).toHaveBeenNthCalledWith(2, {
+    expect(mockPrisma.rewardGrant.update).toHaveBeenCalledWith({
       where: { id: "g1" },
       data: {
         attempts: 5,

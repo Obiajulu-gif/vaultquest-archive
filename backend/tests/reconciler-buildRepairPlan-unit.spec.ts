@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { buildRepairPlan, type DriftRecord } from "../src/services/reconciler.js";
+import {
+  buildRepairPlan,
+  staleOrphanBucket,
+  type DriftRecord
+} from "../src/services/reconciler.js";
+import { getPrometheusMetrics } from "../src/services/prometheusMetrics.js";
 
 function makeDrift(overrides: Partial<DriftRecord> & { type: DriftRecord["type"] }): DriftRecord {
   return {
@@ -120,6 +125,55 @@ describe("buildRepairPlan — branch coverage for every DriftType", () => {
       const plan = buildRepairPlan(drifts, true);
       expect(plan.steps).toHaveLength(0);
     });
+
+    it("fires the Prometheus stale_orphan counter when a stale orphan is produced", () => {
+      const metrics = getPrometheusMetrics();
+      const before = metrics.staleOrphansTotal.get({ bucket: "7d" });
+
+      const drifts = [
+        makeDrift({
+          type: "stale_orphan",
+          recordId: "action-stale",
+          details: {
+            txHash: "tx_stale",
+            errorCode: "ORPHAN_TTL_EXPIRED",
+            updatedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(),
+          },
+        }),
+      ];
+      const plan = buildRepairPlan(drifts, true);
+
+      // No repair step, but the metric must fire — not silence.
+      expect(plan.steps).toHaveLength(0);
+      expect(metrics.staleOrphansTotal.get({ bucket: "7d" })).toBe(before + 1);
+    });
+
+    it("escalates orphans older than 30 days to the 30d bucket", () => {
+      const metrics = getPrometheusMetrics();
+      const before = metrics.staleOrphansTotal.get({ bucket: "30d" });
+
+      const drifts = [
+        makeDrift({
+          type: "stale_orphan",
+          recordId: "action-very-stale",
+          details: {
+            txHash: "tx_very_stale",
+            errorCode: "ORPHAN_TTL_EXPIRED",
+            updatedAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString(),
+          },
+        }),
+      ];
+      const plan = buildRepairPlan(drifts, true);
+
+      expect(plan.steps).toHaveLength(0);
+      expect(metrics.staleOrphansTotal.get({ bucket: "30d" })).toBe(before + 1);
+      expect(
+        staleOrphanBucket(new Date(Date.now() - 31 * 24 * 60 * 60 * 1000))
+      ).toBe("30d");
+      expect(
+        staleOrphanBucket(new Date(Date.now() - 8 * 24 * 60 * 60 * 1000))
+      ).toBe("7d");
+    });
   });
 
   // ── contradiction ────────────────────────────────────────────────────────
@@ -164,16 +218,21 @@ describe("buildRepairPlan — branch coverage for every DriftType", () => {
   // ── missing_settlement ───────────────────────────────────────────────────
 
   describe("missing_settlement", () => {
-    it("produces no repair step (informational only)", () => {
+    it("produces no auto-repair step but retains the drift for quarantining (#561)", () => {
       const drifts = [
         makeDrift({
           type: "missing_settlement",
           recordId: "action-no-settlement",
-          details: { vaultId: "v-missing" },
+          details: { vaultId: "v-missing", actionType: "deposit", amount: 100 },
         }),
       ];
       const plan = buildRepairPlan(drifts, true);
+      // No financial auto-repair step is invented (settlementType/recipient/
+      // verified amount are unknown) — but the drift must NOT be silently
+      // dropped: it stays in `drifts` so the apply phase quarantines it.
       expect(plan.steps).toHaveLength(0);
+      expect(plan.drifts).toHaveLength(1);
+      expect(plan.drifts[0].type).toBe("missing_settlement");
     });
   });
 

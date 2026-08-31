@@ -54,6 +54,18 @@ export type RecoveryLeaseResult = {
   expired: number;
 };
 
+export interface ReconcileEventInput {
+  txHash: string;
+  sorobanEventId: string;
+  eventPayload: unknown;
+  statusHint: "confirmed" | "reverted";
+}
+
+export interface ReconcileEventOutcome {
+  txHash: string;
+  matched: boolean;
+}
+
 function stableStringify(value: unknown): string {
   if (value === null || typeof value !== "object") {
     return JSON.stringify(value);
@@ -420,12 +432,7 @@ export class LedgerService {
     return { items: items as unknown as ActionRecord[], nextCursor };
   }
 
-  async reconcileEvent(input: {
-    txHash: string;
-    sorobanEventId: string;
-    eventPayload: unknown;
-    statusHint: "confirmed" | "reverted";
-  }): Promise<{ matched: boolean }> {
+  async reconcileEvent(input: ReconcileEventInput): Promise<{ matched: boolean }> {
     return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const row = await tx.actionLedger.findFirst({ where: { txHash: input.txHash } });
 
@@ -482,6 +489,129 @@ export class LedgerService {
 
       await tx.actionLease.deleteMany({ where: { actionId: row.id } });
       return { matched: true };
+    });
+  }
+
+  /**
+   * Batch variant of `reconcileEvent` (#588): reconciles many independent
+   * events in a single transaction instead of N sequential round-trips.
+   *
+   * Outcome semantics are identical to calling `reconcileEvent` per event:
+   *
+   *   - unmatched tx hashes are parked in `pending_events` (createMany with
+   *     skipDuplicates, so re-delivered events from a previous tick are
+   *     silently ignored — same idempotency as the per-event upsert);
+   *   - matched rows transition to confirmed/reverted exactly as before,
+   *     with leases released and the onActionConfirmed callback fired for
+   *     confirmed `select_winner` events;
+   *   - rows already in a terminal state (confirmed/reverted) are skipped
+   *     without rewriting them.
+   *
+   * Only independent events should be batched together (distinct tx hashes).
+   * Risk note: a batch shares one transaction, so it holds row locks for the
+   * whole batch and a single bad row rolls the entire batch back — the
+   * caller (StellarIndexer.tick) batches only events that already decoded
+   * successfully, keeps batches bounded by the indexer's batchSize (default
+   * 50), and never includes quarantined events. Keep batches modest to avoid
+   * long-held transactions on heavily contended tables.
+   */
+  async reconcileEvents(
+    events: ReconcileEventInput[]
+  ): Promise<ReconcileEventOutcome[]> {
+    if (events.length === 0) return [];
+
+    const confirmedSelectWinners: string[] = [];
+
+    return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      const txHashes = [...new Set(events.map((e) => e.txHash))];
+
+      // Single duplicate-detection read for the whole batch instead of one
+      // findFirst per event.
+      const rows = await tx.actionLedger.findMany({
+        where: { txHash: { in: txHashes } },
+        select: { id: true, txHash: true, status: true, actionType: true }
+      });
+      const rowByHash = new Map(rows.map((r) => [r.txHash, r]));
+
+      const outcomes: ReconcileEventOutcome[] = [];
+      const unmatched: ReconcileEventInput[] = [];
+      const pendingUpdates: Array<{
+        id: string;
+        input: ReconcileEventInput;
+        actionType: string;
+      }> = [];
+
+      for (const input of events) {
+        const row = rowByHash.get(input.txHash);
+        if (!row) {
+          unmatched.push(input);
+          outcomes.push({ txHash: input.txHash, matched: false });
+        } else if (row.status === "confirmed" || row.status === "reverted") {
+          // Already terminal — same no-op as reconcileEvent.
+          outcomes.push({ txHash: input.txHash, matched: true });
+        } else {
+          pendingUpdates.push({ id: row.id, input, actionType: row.actionType });
+          outcomes.push({ txHash: input.txHash, matched: true });
+        }
+      }
+
+      if (unmatched.length > 0) {
+        await tx.pendingEvent.createMany({
+          data: unmatched.map((e) => ({
+            txHash: e.txHash,
+            sorobanEventId: e.sorobanEventId,
+            eventPayload: e.eventPayload as object,
+            statusHint: e.statusHint
+          })),
+          skipDuplicates: true
+        });
+      }
+
+      for (const { id, input, actionType } of pendingUpdates) {
+        const confirmed = input.statusHint === "confirmed";
+        await tx.actionLedger.update({
+          where: { id },
+          data: {
+            status: confirmed ? "confirmed" : "reverted",
+            sorobanEventId: input.sorobanEventId,
+            verifiedPayload: input.eventPayload as object,
+            confirmedAt: new Date(),
+            errorCode: confirmed ? null : ERROR_CODES.REVERTED_ON_CHAIN
+          }
+        });
+        await tx.actionLease.deleteMany({ where: { actionId: id } });
+        if (confirmed && actionType === "select_winner") {
+          confirmedSelectWinners.push(id);
+        }
+      }
+
+      return outcomes;
+    }).then(async (outcomes) => {
+      // Non-transactional side effects, applied after the batch commits so a
+      // cache or callback failure can never roll back the DB writes.
+      for (const actionId of confirmedSelectWinners) {
+        try {
+          this.onActionConfirmedCallback?.(actionId, "select_winner");
+        } catch {
+          // callback errors should not break reconciliation
+        }
+      }
+
+      if (this.cacheService) {
+        for (const input of events) {
+          if (!outcomes.some((o) => o.txHash === input.txHash && o.matched)) {
+            await this.cacheService.setPendingEvent({
+              txHash: input.txHash,
+              sorobanEventId: input.sorobanEventId,
+              eventPayload: input.eventPayload,
+              statusHint: input.statusHint,
+              receivedAt: new Date(),
+              consumedAt: null
+            });
+          }
+        }
+      }
+      return outcomes;
     });
   }
 
@@ -840,10 +970,11 @@ export class LedgerService {
     lastProcessedEventId?: string | null;
     lastError?: string | null;
     success: boolean;
+    indexerVersion?: string;
   }): Promise<any> {
     const now = new Date();
     const needsExisting =
-      input.lastProcessedEventId === undefined || (!input.success && input.lastError === undefined);
+      input.lastProcessedEventId === undefined || (!input.success && input.lastError === undefined) || (input.indexerVersion === undefined);
     const existing = needsExisting ? await this.getIndexerCheckpoint() : null;
     const lastProcessedEventId =
       input.lastProcessedEventId !== undefined
@@ -854,6 +985,8 @@ export class LedgerService {
       : input.lastError !== undefined
         ? input.lastError
         : existing?.lastError ?? null;
+    const indexerVersion = input.indexerVersion !== undefined ? input.indexerVersion : existing?.indexerVersion ?? null;
+
     if (this.cacheService) {
       const lastSuccessSyncTime = input.success ? now : (existing?.lastSuccessSyncTime ?? now);
       await this.cacheService.setCheckpoint({
@@ -861,7 +994,8 @@ export class LedgerService {
         lastProcessedEventId,
         lastSyncTime: now,
         lastSuccessSyncTime,
-        lastError
+        lastError,
+        indexerVersion
       });
       return { id: "singleton" };
     }
@@ -874,14 +1008,16 @@ export class LedgerService {
         lastProcessedEventId,
         lastSyncTime: now,
         lastError,
-        lastSuccessSyncTime: input.success ? now : undefined
+        lastSuccessSyncTime: input.success ? now : undefined,
+        indexerVersion
       },
       update: {
         latestLedger: input.latestLedger,
         lastProcessedEventId,
         lastSyncTime: now,
         lastError,
-        lastSuccessSyncTime: input.success ? now : undefined
+        lastSuccessSyncTime: input.success ? now : undefined,
+        indexerVersion
       }
     });
   }

@@ -12,7 +12,11 @@ const mockEntries: SavedPoolEntry[] = [
     status: "open",
     tvl: "50000000",
     asset: "USDC",
+    participantCount: 10,
     expectedYield: "4.5%",
+    opensAt: "2026-08-01T00:00:00Z",
+    locksAt: "2026-08-08T00:00:00Z",
+    drawsAt: "2026-08-09T00:00:00Z",
     walletAddress: "GABC",
     savedAt: "2026-08-01T12:00:00Z",
     updatedAt: "2026-08-01T12:00:00Z"
@@ -23,7 +27,11 @@ const mockEntries: SavedPoolEntry[] = [
     status: "closed",
     tvl: "250000000",
     asset: "XLM",
+    participantCount: 25,
     expectedYield: "0%",
+    opensAt: "2026-07-01T00:00:00Z",
+    locksAt: "2026-07-08T00:00:00Z",
+    drawsAt: "2026-07-09T00:00:00Z",
     walletAddress: "GABC",
     savedAt: "2026-08-02T12:00:00Z",
     updatedAt: "2026-08-02T12:00:00Z"
@@ -34,12 +42,17 @@ const mockEntries: SavedPoolEntry[] = [
     status: "cancelled",
     tvl: "0",
     asset: "USDC",
+    participantCount: 0,
     expectedYield: "0%",
+    opensAt: "2026-06-01T00:00:00Z",
+    locksAt: "2026-06-08T00:00:00Z",
+    drawsAt: "2026-06-09T00:00:00Z",
     walletAddress: "GABC",
     savedAt: "2026-08-03T12:00:00Z",
     updatedAt: "2026-08-03T12:00:00Z"
   }
 ];
+
 
 describe("SavedPoolsWatchlist", () => {
   it("renders empty state when there are no entries", () => {

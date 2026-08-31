@@ -4,6 +4,8 @@ import { AlertTriangle, Check, Loader2, RefreshCw } from "lucide-react";
 import Modal from "../../components/Modal";
 import type { PoolSummary } from "../contract/types";
 import { formatAmount } from "../lib/format";
+import { calculateDepositPreview } from "../lib/depositPreview";
+
 
 type Step = "input" | "review" | "broadcasting" | "success";
 
@@ -79,6 +81,10 @@ export const DepositModal: FC<DepositModalProps> = ({
 
   const remainingBalance = useMemo(() => Math.max(0, balanceNum - amountNum - GAS_BUFFER), [balanceNum, amountNum]);
   const isValid = amountNum > 0 && !exceedsBalance && !exceedsWalletCap && !exceedsPoolCap;
+
+  // Deposit preview simulation (#685)
+  const depositPreview = useMemo(() => calculateDepositPreview(pool, amount), [pool, amount]);
+
 
   // The tightest of wallet balance, per-wallet cap, and pool-wide cap —
   // what "Max" should actually fill in, and what quick-amount percentages
@@ -267,6 +273,69 @@ export const DepositModal: FC<DepositModalProps> = ({
               </div>
             )}
 
+            {/* Post-deposit vault state preview (#685) */}
+            {amountNum > 0 && (
+              <div className="rounded-xl border border-red-900/20 bg-[#1A0505]/40 p-3 space-y-2" data-testid="deposit-simulation-preview">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium text-gray-400">Post-deposit pool state preview</p>
+                  <span className="text-[10px] uppercase font-semibold text-gray-500">Simulated</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-gray-500">Post-deposit TVL</span>
+                  <span className="text-gray-300 font-medium">{formatAmount(String(depositPreview.postDepositTvl), pool.asset)}</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-gray-500">Strategy exposure</span>
+                  <span className="text-gray-300">
+                    {(depositPreview.currentStrategyExposureBps / 100).toFixed(1)}% → <strong className="text-white">{(depositPreview.postDepositStrategyExposureBps / 100).toFixed(1)}%</strong>
+                  </span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-gray-500">Idle pool liquidity</span>
+                  <span className="text-emerald-400 font-medium">
+                    {formatAmount(String(depositPreview.postDepositIdleLiquidity), pool.asset)} ({(depositPreview.postDepositIdleRatioBps / 100).toFixed(1)}%)
+                  </span>
+                </div>
+                {depositPreview.queuedWithdrawals > 0 && (
+                  <div className="flex justify-between text-xs border-t border-red-900/20 pt-1.5">
+                    <span className="text-gray-500">Queued withdrawals coverage</span>
+                    <span className={depositPreview.queueDeficit > 0 ? "text-amber-400 font-medium" : "text-emerald-400 font-medium"}>
+                      {depositPreview.queueCoverageRatio === Number.POSITIVE_INFINITY
+                        ? "100%"
+                        : `${Math.min(100, Math.round(depositPreview.queueCoverageRatio * 100))}%`}
+                      {depositPreview.queueDeficit > 0 && ` (${formatAmount(String(depositPreview.queueDeficit), pool.asset)} deficit)`}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Risk Warning Banners (#685) */}
+            {depositPreview.warnings.map((warning) => (
+              <div
+                key={warning.code}
+                className={`flex items-start gap-2 rounded-lg border p-3 text-sm ${
+                  warning.severity === "danger"
+                    ? "border-red-900/60 bg-red-900/20 text-red-300"
+                    : "border-amber-900/40 bg-amber-900/10 text-amber-300"
+                }`}
+                data-testid={`risk-warning-${warning.code.toLowerCase().replace(/_/g, "-")}`}
+              >
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div>
+                  <p className="font-semibold text-xs uppercase tracking-wider">
+                    {warning.code === "HIGH_STRATEGY_EXPOSURE"
+                      ? "High Strategy Risk"
+                      : warning.code === "LOW_IDLE_LIQUIDITY"
+                        ? "Low Idle Reserves"
+                        : "Queued Withdrawal Pressure"}
+                  </p>
+                  <p className="mt-0.5 text-xs">{warning.message}</p>
+                </div>
+              </div>
+            ))}
+
+
             {exceedsBalance && (
               <div className="flex items-start gap-2 rounded-lg border border-amber-900/40 bg-amber-900/10 p-3 text-sm text-amber-300">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -348,11 +417,24 @@ export const DepositModal: FC<DepositModalProps> = ({
                 <span className="text-white">~0.001 XLM</span>
               </div>
               <div className="flex justify-between text-sm">
+                <span className="text-gray-400">Post-deposit strategy exposure</span>
+                <span className="text-white font-medium">
+                  {(depositPreview.postDepositStrategyExposureBps / 100).toFixed(1)}%
+                </span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-400">Post-deposit idle reserve</span>
+                <span className="text-emerald-400 font-medium">
+                  {formatAmount(String(depositPreview.postDepositIdleLiquidity), pool.asset)}
+                </span>
+              </div>
+              <div className="flex justify-between text-sm">
                 <span className="text-gray-400">Win chance change</span>
                 <span className="text-emerald-400 font-semibold">
                   +{estimateWinChanceChange(BigInt(pool.tvl || "0"), BigInt(Math.round(amountNum * 1e7)), pool.participantCount)}
                 </span>
               </div>
+
             </div>
 
             {error && (

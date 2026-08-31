@@ -325,7 +325,7 @@ export async function detectDrift(prisma: PrismaClient): Promise<DriftRecord[]> 
   //    minus confirmed withdrawals) goes negative, indicating more was paid
   //    out than deposited — a critical accounting invariant violation for a
   //    no-loss prize-savings protocol (#560).
-  const confirmedActions = await prisma.actionLedger.findMany({
+  const depositWithdrawActions = await prisma.actionLedger.findMany({
     where: {
       status: "confirmed",
       actionType: { in: ["deposit", "withdraw"] }
@@ -333,8 +333,8 @@ export async function detectDrift(prisma: PrismaClient): Promise<DriftRecord[]> 
     select: { id: true, actionType: true, actionPayload: true, txHash: true }
   });
 
-  const vaultNetPrincipal = new Map<string, { net: number; actions: typeof confirmedActions }>();
-  for (const a of confirmedActions) {
+  const vaultNetPrincipal = new Map<string, { net: number; actions: typeof depositWithdrawActions }>();
+  for (const a of depositWithdrawActions) {
     const payload = a.actionPayload as Record<string, unknown> | null;
     const vaultId = String(payload?.vault_id ?? payload?.pool_id ?? "unknown");
     if (!vaultNetPrincipal.has(vaultId)) {

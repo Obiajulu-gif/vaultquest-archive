@@ -61,19 +61,23 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   });
 
   // Register global rate limiting with Redis store if available
-  const rateLimitOptions: any = {
-    global: true,
-    max: 100,
-    timeWindow: 60_000, // 1 minute
-    keyGenerator(req: FastifyRequest) {
-      return req.headers["x-forwarded-for"]?.toString().split(",")[0].trim() || req.ip;
-    },
-  };
-  const redisClient = deps.cacheService?.redisClient;
-  if (redisClient) {
-    rateLimitOptions.redis = redisClient;
+  // Note: @fastify/rate-limit 11.x requires Fastify 5.x; skipped for Fastify 4.x (#567)
+  const majorFastifyVersion = parseInt(Fastify.VERSION?.split(".")[0] ?? "4");
+  if (majorFastifyVersion >= 5) {
+    const rateLimitOptions: any = {
+      global: true,
+      max: 100,
+      timeWindow: 60_000, // 1 minute
+      keyGenerator(req: FastifyRequest) {
+        return req.headers["x-forwarded-for"]?.toString().split(",")[0].trim() || req.ip;
+      },
+    };
+    const redisClient = deps.cacheService?.redisClient;
+    if (redisClient) {
+      rateLimitOptions.redis = redisClient;
+    }
+    app.register(rateLimit, rateLimitOptions);
   }
-  app.register(rateLimit, rateLimitOptions);
 
   // Register CSRF protection middleware
   app.register(csrfProtection);
@@ -143,12 +147,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   const categorySvc = new CategoryService(deps.prisma, deps.cacheService, deps.categoriesCacheTtlSeconds);
   const notificationSvc = new NotificationService(deps.prisma, deps.reminderLeadHours);
 
-  app.get("/health", async () => ok({ ok: true }));
-  app.get("/health/indexer", async () => {
-    const health = await svc.getIndexerHealth();
-    return ok(health);
-  });
-
+  // Register routes (healthRoutes already includes /health endpoint)
   app.register(actionsRoutes(svc, apiKeyGuard));
   app.register(walletAuthRoutes(walletAuthSvc));
   app.register(healthRoutes(svc));

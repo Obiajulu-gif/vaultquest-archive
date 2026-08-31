@@ -50,6 +50,9 @@ pub enum Error {
     WasmHashNotApproved = 6, // deploying with anything but the currently-approved drip-pool build
     PoolNotFound = 7,
     MetadataStale = 8,
+    FeeBelowStringency = 9, // fee_bps below the hard floor (#649)
+    FeeExceedsCap = 10,     // fee_bps above 100.00% (#649)
+    LockupDaysExceedsCap = 11, // lockup_days above the 10-year cap (#649)
 }
 
 #[derive(Clone)]
@@ -249,7 +252,7 @@ impl VaultFactory {
             risk_tier: symbol_short!("medium"),
             strategy: symbol_short!("default"),
             lockup_days: 0,
-            fee_bps: 0,
+            fee_bps: 75, // default treasury fee 0.75% (75 bps), above the floor
             accepted_asset: asset.clone(),
             operational_status: symbol_short!("active"),
             metadata_version: 1,
@@ -297,6 +300,22 @@ impl VaultFactory {
 
         if metadata.expected_version != pool.metadata_version {
             return Err(Error::MetadataStale);
+        }
+
+        // Parameter stringencies (#649). The frontend simulation caratlogs 0.5 bps
+        // as the treasury fee floor; `fee_bps` is stored as a whole-basis-point
+        // u32, so the floor is 1 bp here to keep the on-chain bound as tight as
+        // representation allows. Mirrors `admin-parameter-simulation.ts` so a value
+        // the UI marks as blocked can never be written on-chain regardless of who
+        // is calling.
+        if metadata.fee_bps < 1 {
+            return Err(Error::FeeBelowStringency);
+        }
+        if metadata.fee_bps > 10_000 {
+            return Err(Error::FeeExceedsCap);
+        }
+        if metadata.lockup_days > 3650 {
+            return Err(Error::LockupDaysExceedsCap);
         }
 
         let approved_assets = Self::get_approved_assets(&env);

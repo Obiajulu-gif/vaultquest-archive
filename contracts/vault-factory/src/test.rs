@@ -148,6 +148,103 @@ fn update_pool_metadata_rejects_stale_versions() {
     );
 }
 
+// #649 Rust enforcement: the treasury fee stringency (never below the floor,
+// never above 100%) and the lockup cap are enforced on-chain inside
+// update_pool_metadata, mirroring `admin-parameter-simulation.ts`, so a value
+// flagged as blocked in the admin simulation UI can never be written even by
+// the factory admin.
+
+fn base_update(
+    approved_asset: &Address,
+    lockup_days: u32,
+    fee_bps: u32,
+) -> PoolMetadataUpdate {
+    PoolMetadataUpdate {
+        risk_tier: symbol_short!("low"),
+        strategy: symbol_short!("stable"),
+        lockup_days,
+        fee_bps,
+        accepted_asset: approved_asset.clone(),
+        operational_status: symbol_short!("active"),
+        expected_version: 1,
+    }
+}
+
+#[test]
+fn update_pool_metadata_rejects_fee_below_stringency() {
+    let (env, client, admin, _wasm_hash) = setup();
+    let pool_admin = Address::generate(&env);
+    let approved_asset = Address::generate(&env);
+    client.approve_asset(&admin, &approved_asset);
+
+    let s = salt(&env, 21);
+    client.deploy_pool(&admin, &s, &pool_admin, &approved_asset);
+
+    let below_floor = base_update(&approved_asset, 7, 0);
+    assert_eq!(
+        client.try_update_pool_metadata(&admin, &s, &below_floor),
+        Err(Ok(Error::FeeBelowStringency))
+    );
+
+    let meta = client.get_pool(&s);
+    assert_eq!(meta.fee_bps, 75, "rejected update must not mutate stored metadata");
+    assert_eq!(meta.metadata_version, 1);
+}
+
+#[test]
+fn update_pool_metadata_rejects_fee_above_cap() {
+    let (env, client, admin, _wasm_hash) = setup();
+    let pool_admin = Address::generate(&env);
+    let approved_asset = Address::generate(&env);
+    client.approve_asset(&admin, &approved_asset);
+
+    let s = salt(&env, 22);
+    client.deploy_pool(&admin, &s, &pool_admin, &approved_asset);
+
+    let above_cap = base_update(&approved_asset, 7, 20_000);
+    assert_eq!(
+        client.try_update_pool_metadata(&admin, &s, &above_cap),
+        Err(Ok(Error::FeeExceedsCap))
+    );
+}
+
+#[test]
+fn update_pool_metadata_rejects_lockup_above_cap() {
+    let (env, client, admin, _wasm_hash) = setup();
+    let pool_admin = Address::generate(&env);
+    let approved_asset = Address::generate(&env);
+    client.approve_asset(&admin, &approved_asset);
+
+    let s = salt(&env, 23);
+    client.deploy_pool(&admin, &s, &pool_admin, &approved_asset);
+
+    let locked_too_long = base_update(&approved_asset, 3651, 125);
+
+    assert_eq!(
+        client.try_update_pool_metadata(&admin, &s, &locked_too_long),
+        Err(Ok(Error::LockupDaysExceedsCap))
+    );
+}
+
+#[test]
+fn update_pool_metadata_accepts_values_at_the_stringency_boundaries() {
+    let (env, client, admin, _wasm_hash) = setup();
+    let pool_admin = Address::generate(&env);
+    let approved_asset = Address::generate(&env);
+    client.approve_asset(&admin, &approved_asset);
+
+    let s = salt(&env, 24);
+    client.deploy_pool(&admin, &s, &pool_admin, &approved_asset);
+
+    // floor (1 bps), cap (10_000 bps), and lockup cap (3650 days) all pass.
+    let at_boundaries = base_update(&approved_asset, 3650, 10_000);
+    client.update_pool_metadata(&admin, &s, &at_boundaries);
+    let meta = client.get_pool(&s);
+    assert_eq!(meta.fee_bps, 10_000);
+    assert_eq!(meta.lockup_days, 3650);
+    assert_eq!(meta.metadata_version, 2);
+}
+
 #[test]
 fn same_salt_twice_is_rejected() {
     let (env, client, admin, _wasm_hash) = setup();

@@ -27,3 +27,39 @@ This document defines the operational health states, alert thresholds, and diagn
 ## Security & Sensitive Config Handling
 
 All diagnostic endpoints and dashboard UI components MUST sanitize sensitive URL parameters (API keys, bearer tokens, secret keys) prior to rendering or logging. Sensitive credentials are automatically redacted to `***REDACTED***`.
+
+## Notification Delivery & Deduplication (#652)
+
+Operational alerts (RPC degradation, indexer lag, contract errors, withdraw batching) are surfaced in the VaultQuest notification center. To prevent alert storms from repeated or overlapping events, notifications are **deduplicated by identity and scope**.
+
+### Identity & Scope Model
+- Every notification has an **identity key**: `type::scope::subject`.
+- **Scope** is one of:
+  - `wallet` — subject is a wallet address (e.g. `reward_event::wallet::GBBD...FLA5`);
+  - `vault` — subject is a vault name (e.g. `apy_change::vault::XLM Drip Vault`);
+  - `global` — protocol-wide, no subject (`vault_pause::global::global`).
+- A wallet alert and a global alert for the same subject are **distinct identities** and are both retained.
+
+### Collapsing Semantics
+- A repeated alert (identical identity key **and** identical title/message/timestamp) collapses into the existing notification — the center keeps **one current notification per identity**.
+- A refreshed alert (same identity, new content) replaces its predecessor **in place**, becomes unread again, and bumps a `version` counter shown as `Updated ×N`.
+- A user who dismissed an alert stays **dismissed across refreshes** of the same alert family — refreshed alerts do not re-notify.
+
+### Lifecycle
+- Read/dismissed state is **persisted** to `localStorage` under `vaultquest:notifications:<scopeKey>`, where `scopeKey` is `wallet@network`, so dismissed state cannot leak across accounts/networks.
+- Alerts can carry an `expiresAt`; `clearExpired` prunes stale alerts and is applied on load.
+
+### Enabling a Repeat Alert for the Dashboard
+Emit the alert through the notification center with a stable identity and the latest payload; the provider collapses duplicates automatically:
+
+```ts
+dispatchAlert({
+  type: "protocol_alert",
+  scope: "global",
+  title: "Indexer lag spike",
+  message: `Indexer lagged ${ledgers} ledgers`,
+  expiresAt,
+});
+```
+
+Tests: `tests/notification-dedup.test.tsx` (identity/scope collisions, collapsing, dismiss persistence, cross-scope isolation).

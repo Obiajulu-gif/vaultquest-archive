@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import { useTranslation } from "next-i18next";
 import {
@@ -8,16 +8,26 @@ import {
   ArrowRight,
   CheckCircle2,
   Clock3,
+  FlaskConical,
   Gauge,
+  GitCompareArrows,
   Server,
   Shield,
+  ShieldAlert,
   Settings,
   SquareStack,
   Plus,
   AlertCircle,
+  Download,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { getFrontendEnv, getManifestAttestation, attestManifest } from "@vaultquest/stellar-wallet-connect";
+import {
+  PROTOCOL_PARAMETER_CATALOG,
+  createParameterDiffPreview,
+  formatSimulatedValue,
+  serializeDiffPreview,
+} from "@/lib/admin-parameter-simulation";
 
 const PROTOCOL_PARAMETERS = [
   {
@@ -226,6 +236,50 @@ export default function AdminSettingsPage() {
     rpcLayer: { status: "loading", detail: "Checking Horizon RPC..." },
   });
   const [attestation, setAttestation] = useState(null);
+
+  // #649 — parameter simulation & diff preview.
+  const [selectedParamId, setSelectedParamId] = useState(PROTOCOL_PARAMETER_CATALOG[0].id);
+  const [proposedValueInput, setProposedValueInput] = useState(String(PROTOCOL_PARAMETER_CATALOG[0].current));
+  const [rationaleInput, setRationaleInput] = useState("");
+  const [proposals, setProposals] = useState([]);
+  const [overrideBlocked, setOverrideBlocked] = useState(false);
+  const [createdAt, setCreatedAt] = useState(null);
+
+  const diffPreview = useMemo(
+    () => createParameterDiffPreview(proposals, { createdAt, author: "maintainer", overrideBlocked }),
+    [proposals, createdAt, overrideBlocked],
+  );
+
+  const selectedSpec = PROTOCOL_PARAMETER_CATALOG.find((spec) => spec.id === selectedParamId);
+
+  const addProposal = () => {
+    const value = Number(proposedValueInput);
+    setProposals((current) => [
+      ...current.filter((proposal) => proposal.paramId !== selectedParamId),
+      { paramId: selectedParamId, proposedValue: value, rationale: rationaleInput.trim() || undefined },
+    ]);
+    setCreatedAt(new Date().toISOString());
+  };
+
+  const downloadPreview = () => {
+    if (proposals.length === 0) return;
+    const blob = new Blob([serializeDiffPreview(diffPreview)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `param-simulation-${diffPreview.id}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const riskStyle = {
+    none: "border-vault-border bg-vault-surface text-vault-muted",
+    low: "border-sky-400/30 bg-sky-500/10 text-sky-300",
+    medium: "border-amber-400/30 bg-amber-500/10 text-amber-300",
+    high: "border-red-400/40 bg-red-500/15 text-red-300",
+  };
 
   useEffect(() => {
     let active = true;
@@ -532,6 +586,192 @@ export default function AdminSettingsPage() {
             </tbody>
           </table>
         </div>
+      </section>
+
+      <section className="vq-glass p-5 sm:p-6" aria-labelledby="simulation-title">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 id="simulation-title" className="flex items-center gap-2 text-lg font-semibold text-vault-text">
+              <FlaskConical className="h-5 w-5 text-red-400" aria-hidden="true" />
+              Parameter simulation &amp; diff preview
+            </h2>
+            <p className="mt-1 text-sm text-vault-muted">
+              Draft a parameter change and preview the before→after diff, risk level, and affected services before it is routed to a governance proposal.
+            </p>
+          </div>
+          <span className="inline-flex items-center gap-2 rounded-full border border-vault-border bg-vault-surface px-3 py-1.5 text-xs font-medium text-vault-muted">
+            <GitCompareArrows className="h-3.5 w-3.5" aria-hidden="true" />
+            No on-chain writes
+          </span>
+        </div>
+
+        <form
+          className="mt-5 grid gap-3 lg:grid-cols-[minmax(0,1fr)_repeat(3,minmax(0,1fr))_auto] lg:items-end"
+          onSubmit={(e) => { e.preventDefault(); addProposal(); }}
+        >
+          <div className="flex flex-col gap-1">
+            <label htmlFor="sim-param" className="text-xs font-medium text-vault-muted">Parameter</label>
+            <select
+              id="sim-param"
+              value={selectedParamId}
+              onChange={(e) => {
+                const spec = PROTOCOL_PARAMETER_CATALOG.find((item) => item.id === e.target.value);
+                setSelectedParamId(e.target.value);
+                setProposedValueInput(String(spec ? spec.current : ""));
+              }}
+              className="rounded-lg border border-vault-border bg-vault-surface px-3 py-2 text-sm text-vault-text focus:outline-none focus:ring-2 focus:ring-red-500"
+            >
+              {PROTOCOL_PARAMETER_CATALOG.map((spec) => (
+                <option key={spec.id} value={spec.id}>{spec.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label htmlFor="sim-value" className="text-xs font-medium text-vault-muted">
+              Proposed value {selectedSpec ? `(${selectedSpec.unit}, current ${selectedSpec.current})` : ""}
+            </label>
+            <input
+              id="sim-value"
+              type="number"
+              inputMode="decimal"
+              step="any"
+              value={proposedValueInput}
+              onChange={(e) => setProposedValueInput(e.target.value)}
+              className="rounded-lg border border-vault-border bg-vault-surface px-3 py-2 text-sm text-vault-text focus:outline-none focus:ring-2 focus:ring-red-500"
+            />
+          </div>
+          <div className="flex flex-col gap-1 lg:col-span-2">
+            <label htmlFor="sim-rationale" className="text-xs font-medium text-vault-muted">Rationale (optional)</label>
+            <input
+              id="sim-rationale"
+              type="text"
+              value={rationaleInput}
+              onChange={(e) => setRationaleInput(e.target.value)}
+              placeholder="Why this change is needed…"
+              className="rounded-lg border border-vault-border bg-vault-surface px-3 py-2 text-sm text-vault-text focus:outline-none focus:ring-2 focus:ring-red-500"
+            />
+          </div>
+          {selectedSpec && (
+            <p className="text-xs text-vault-muted lg:col-span-4">{selectedSpec.description} {selectedSpec.boundaryNote}</p>
+          )}
+          <button type="submit" className="vq-btn-primary lg:col-span-4">
+            <GitCompareArrows className="h-4 w-4" aria-hidden="true" />
+            Add to simulation
+          </button>
+        </form>
+
+        {proposals.length === 0 ? (
+          <div className="mt-5 rounded-2xl border border-dashed border-vault-border bg-vault-bg/40 px-4 py-10 text-center">
+            <FlaskConical className="mx-auto h-8 w-8 text-vault-muted" aria-hidden="true" />
+            <p className="mt-3 text-sm text-vault-muted">
+              Propose a change above to generate a live diff preview with risk scoring and a downloadable JSON payload.
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4" aria-label="Simulation summary">
+              <div className="rounded-xl border border-vault-border bg-vault-surface/40 p-4">
+                <p className="text-xs font-bold uppercase tracking-wide text-vault-muted">Proposals</p>
+                <p className="mt-1 text-xl font-black text-vault-text">{diffPreview.summary.total}</p>
+              </div>
+              <div className="rounded-xl border border-vault-border bg-vault-surface/40 p-4">
+                <p className="text-xs font-bold uppercase tracking-wide text-vault-muted">Valid</p>
+                <p className="mt-1 text-xl font-black text-emerald-400">{diffPreview.summary.valid}</p>
+              </div>
+              <div className="rounded-xl border border-vault-border bg-vault-surface/40 p-4">
+                <p className="text-xs font-bold uppercase tracking-wide text-vault-muted">Blocked</p>
+                <p className="mt-1 text-xl font-black text-red-400">{diffPreview.summary.blocked}</p>
+              </div>
+              <div className="rounded-xl border border-vault-border bg-vault-surface/40 p-4">
+                <p className="text-xs font-bold uppercase tracking-wide text-vault-muted">High risk</p>
+                <p className="mt-1 text-xl font-black text-amber-400">{diffPreview.summary.highRisk}</p>
+              </div>
+            </div>
+
+            {diffPreview.conflicts.length > 0 && (
+              <div role="alert" className="mt-4 space-y-1 rounded-xl border border-amber-400/30 bg-amber-500/10 p-3 text-sm text-amber-200">
+                {diffPreview.conflicts.map((conflict) => (
+                  <p key={conflict} className="flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
+                    {conflict}
+                  </p>
+                ))}
+              </div>
+            )}
+
+            <ul className="mt-5 space-y-3" role="list">
+              {diffPreview.results.map((result) => (
+                <li key={result.paramId} className="rounded-2xl border border-vault-border bg-vault-surface/40 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="font-semibold text-vault-text">{result.label}</h3>
+                        <span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold capitalize ${riskStyle[result.riskLevel] ?? riskStyle.none}`}>
+                          {result.riskLevel} risk
+                        </span>
+                        {result.blocked && (
+                          <span className="rounded-full border border-red-400/40 bg-red-500/15 px-2.5 py-0.5 text-xs font-semibold text-red-300">
+                            Blocked change
+                          </span>
+                        )}
+                        {result.overridden && (
+                          <span className="rounded-full border border-amber-400/30 bg-amber-500/10 px-2.5 py-0.5 text-xs font-semibold text-amber-300">
+                            Overridden
+                          </span>
+                        )}
+                        {result.needsConfirmation && !result.blocked && (
+                          <span className="rounded-full border border-amber-400/30 bg-amber-500/10 px-2.5 py-0.5 text-xs font-semibold text-amber-300">
+                            Review required
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-1 text-sm text-vault-muted">{result.projection}</p>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm">
+                      <span className="rounded-lg border border-vault-border bg-vault-bg/40 px-2.5 py-1 font-mono text-vault-text">
+                        {formatSimulatedValue(result.fromValue, result.unit)}
+                      </span>
+                      <ArrowRight className="h-4 w-4 text-red-400" aria-hidden="true" />
+                      <span className="rounded-lg border border-red-400/30 bg-red-500/10 px-2.5 py-1 font-mono font-semibold text-red-200">
+                        {formatSimulatedValue(result.toValue, result.unit)}
+                      </span>
+                    </div>
+                  </div>
+                  {result.blocked && result.blockedReason && (
+                    <p className="mt-2 flex items-center gap-2 text-sm text-red-300">
+                      <ShieldAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
+                      {result.blockedReason}
+                    </p>
+                  )}
+                  <p className="mt-2 text-xs text-vault-muted">{result.riskMessage}</p>
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-vault-muted">
+                    {result.affectedServices.map((service) => (
+                      <span key={service} className="rounded-full border border-vault-border bg-vault-bg/40 px-2 py-0.5">
+                        {service}
+                      </span>
+                    ))}
+                  </div>
+                </li>
+              ))}
+            </ul>
+
+            <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-vault-border pt-4">
+              <label className="flex items-center gap-2 text-sm text-vault-muted">
+                <input
+                  type="checkbox"
+                  checked={overrideBlocked}
+                  onChange={(e) => setOverrideBlocked(e.target.checked)}
+                  className="h-4 w-4 accent-red-500"
+                />
+                Allow override of blocked stringencies (requires explicit sign-off in the proposal)
+              </label>
+              <button type="button" onClick={downloadPreview} className="vq-btn-ghost ml-auto">
+                <Download className="h-4 w-4" aria-hidden="true" />
+                Download diff JSON
+              </button>
+            </div>
+          </>
+        )}
       </section>
 
       <div className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">

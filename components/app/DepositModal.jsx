@@ -10,6 +10,7 @@ const MAX_DEPOSIT = 100_000;
 const QUICK_AMOUNTS = [25, 50, 75] as const;
 
 import { formatAssetAmount } from "@/lib/formatting";
+import { calculateDepositPreview } from "../../stellar-wallet-connect/src/vault/lib/depositPreview";
 
 function formatToken(value, token) {
   return formatAssetAmount(value, token);
@@ -24,6 +25,7 @@ export default function DepositModal({ isOpen, onClose }) {
   const [usdcBalance, setUsdcBalance] = useState(1000.00);
   const [refreshing, setRefreshing] = useState(false);
 
+
   const gasBudget = useMemo(() => feeState?.estimatedNative ?? 0, [feeState]);
   const amountNum = useMemo(() => parseFloat(amount) || 0, [amount]);
   const remainingUsdc = useMemo(() => usdcBalance - amountNum, [usdcBalance, amountNum]);
@@ -33,6 +35,27 @@ export default function DepositModal({ isOpen, onClose }) {
   const isAboveMax = amountNum > MAX_DEPOSIT;
   const isInsufficientUsdc = amountNum > usdcBalance;
   const isInsufficientNative = gasBudget > 0 && walletBalance < gasBudget;
+
+  const mockPoolSummary = useMemo(() => ({
+    id: "usdc_pool",
+    name: "USDC Stable Pool",
+    status: "open",
+    tvl: "500000",
+    asset: "USDC",
+    participantCount: 142,
+    expectedYield: "5.2% APY",
+    opensAt: null,
+    locksAt: null,
+    drawsAt: null,
+    strategyExposureBps: 8000,
+    idleLiquidity: "100000",
+    queuedWithdrawals: "15000",
+    maxStrategyExposureBps: 8500,
+    minIdleRatioBps: 1500,
+  }), []);
+
+  const depositPreview = useMemo(() => calculateDepositPreview(mockPoolSummary, amountNum), [mockPoolSummary, amountNum]);
+
 
   const handleQuickAmount = useCallback((pct) => {
     const raw = usdcBalance * (pct / 100);

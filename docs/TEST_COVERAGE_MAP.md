@@ -16,6 +16,9 @@ This map tracks important product and platform areas that should stay covered as
 | Wallet connection UI | `e2e/helpers/wallet-mock.ts` and route smoke disconnected state | Partial | Header status tests for connected, disconnected, balance loading, extension disconnect, and network mismatch |
 | Dashboard widgets | `components/hooks/useYieldCounter.test.js`; dashboard route smoke | Partial | Tests for onboarding checklist, empty position state, recent winners, and prize countdown |
 | Accessibility/responsive behavior | Playwright guidance in `docs/TESTING.md` | Partial | Add axe checks for vault detail, archive, wallet status, and mobile nav |
+| E2E failure states (wallet rejection, RPC failure, on-chain revert) | `e2e/error-states.spec.ts` mocks denial (code 4001), C-Chain RPC outage (502), and a reverted `/api/actions` record via `e2e/helpers/wallet-mock.ts` | Covered | Add per-action retry/recover coverage for the connected deposit flow once a real wallet-proxy surface exists |
+| Draw round-close with independent winner verification | `e2e/round-close.spec.ts` recomputes seed→R→weighted winner, full hash chain, and `verifyProofIntegrity`, then asserts the served proof renders Verified on `/app/prizes` | Covered | Add negative round-close cases (tampered participants/seed hash) |
+| Dashboard cache consistency (#748/#749) | `stellar-wallet-connect/src/vault/data/queryClient.test.ts` (out-of-order drop, monotonic `setQueryDataAt`) and `consistency.test.ts` (cross-tab fan-out, no echo, snapshot rehydrate) | Partial | Add a browser-level cross-tab test for the wired `ensureVaultCacheSync` in `Providers.jsx` |
 
 ## Backend
 

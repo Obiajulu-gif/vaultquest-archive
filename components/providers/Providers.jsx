@@ -11,6 +11,7 @@ import { readStoredRpc, RPC_UPDATED_EVENT } from "@/lib/customRpc";
 import { getStoredLocale, setStoredLocale, normalizeLocale } from "@/lib/locale";
 import { createWagmiConfig } from "@/lib/wagmi";
 import { TransactionToastProvider } from "@/hooks/useTransactionToast";
+import { ensureVaultCacheSync } from "@vaultquest/stellar-wallet-connect/src/vault/data/consistency";
 
 import { ToastProvider } from "@/components/providers/ToastProvider";
 
@@ -40,6 +41,13 @@ function ProvidersInner({ children }) {
     };
     window.addEventListener(RPC_UPDATED_EVENT, onRpcUpdated);
     return () => window.removeEventListener(RPC_UPDATED_EVENT, onRpcUpdated);
+  }, []);
+
+  useEffect(() => {
+    // #749 — wire cross-tab / cross-device dashboard consistency for the vault
+    // query cache (BroadcastChannel + snapshot rehydration). Idempotent;
+    // returns immediately during SSR or when already wired.
+    ensureVaultCacheSync();
   }, []);
 
   useEffect(() => {

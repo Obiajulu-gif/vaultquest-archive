@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { TimelineStage } from "../../components/TransactionTimeline";
 import type { PoolActionInput, PoolActionType, VaultContractClient } from "../contract/types";
+import { assertNotMultisigBeforeSigning } from "../../core/walletService.js";
 
 export type ActiveTxStage = Exclude<TimelineStage, "success" | "failed">;
 
@@ -125,6 +126,10 @@ export function mapTxError(
   const message = err instanceof Error ? err.message : String(err);
   const kind = (err as { kind?: string }).kind ?? "";
 
+  if (kind === "multisig_unsupported") {
+    // Caught before the wallet's signing prompt is ever shown (#736).
+    return { failedAt: "preparing", message };
+  }
   if (kind === "wallet_disconnected" || kind === "signature_rejected") {
     return { failedAt: "awaiting-signature", message };
   }
@@ -362,6 +367,11 @@ export function useTxFlow(): TxFlowResult {
       } = options;
 
       try {
+        // #736: block signing for a detected multisig/thresholded account
+        // with a clear message, rather than letting it hit an ambiguous
+        // low-level signing/threshold error later.
+        assertNotMultisigBeforeSigning();
+
         transition({ type: "AWAIT_SIGNATURE" });
         const result = await client.submitAction(type, input);
 

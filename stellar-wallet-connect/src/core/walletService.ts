@@ -1,4 +1,5 @@
-import { connectedPublicKey, connectedNetwork, isNetworkMismatch } from "./store.js";
+import { connectedPublicKey, connectedNetwork, isNetworkMismatch, multisigStatus } from "./store.js";
+import { checkMultisigStatus, MULTISIG_UNSUPPORTED_MESSAGE } from "./multisig.js";
 import { kit } from "./kit.js";
 import { getFrontendEnv } from "./env.js";
 import { resolveHorizonUrl } from "./horizonConfig.js";
@@ -117,6 +118,13 @@ function setConnection(publicKey: string, provider: string): void {
     connectedNetwork.set(EXPECTED_NETWORK);
     isNetworkMismatch.set(false);
   });
+
+  // #736: detect multisig/thresholded accounts up front, in the background,
+  // so a "not yet supported" state can be shown before the user attempts
+  // an action rather than surfacing as a confusing low-level signing error.
+  checkMultisigStatus(getHorizonPool(), publicKey)
+    .then((status) => multisigStatus.set(status))
+    .catch(() => multisigStatus.set(null));
 }
 
 function disconnect(): void {
@@ -132,6 +140,7 @@ function disconnect(): void {
 
   connectedPublicKey.set("");
   connectedNetwork.set(null);
+  multisigStatus.set(null);
   isNetworkMismatch.set(false);
 }
 
@@ -241,6 +250,10 @@ function initializeConnection(): StoredWalletConnection | null {
       isNetworkMismatch.set(false);
     });
 
+    checkMultisigStatus(getHorizonPool(), storedPublicKey)
+      .then((status) => multisigStatus.set(status))
+      .catch(() => multisigStatus.set(null));
+
     return {
       publicKey: storedPublicKey,
       provider: appProvider,
@@ -306,6 +319,30 @@ async function getWalletHealth(): Promise<{
   } catch (error) {
     console.error("Error checking wallet health:", error);
     return { exists: false, balances: { XLM: 0, USDC: 0 } };
+  }
+}
+
+// ─── Multisig block (#736) ──────────────────────────────────────────────────
+
+export class MultisigUnsupportedError extends Error {
+  readonly kind = "multisig_unsupported";
+  constructor() {
+    super(MULTISIG_UNSUPPORTED_MESSAGE);
+    this.name = "MultisigUnsupportedError";
+  }
+}
+
+/**
+ * Blocks signing when the connected account was detected as multisig —
+ * detection itself runs once in the background on connect (`setConnection`/
+ * `initializeConnection` above), and this reads that cached result rather
+ * than re-querying Horizon on every signing attempt (an account's signer
+ * configuration changing mid-session is rare enough not to warrant a live
+ * re-check on the hot path).
+ */
+export function assertNotMultisigBeforeSigning(): void {
+  if (multisigStatus.get()?.isMultisig) {
+    throw new MultisigUnsupportedError();
   }
 }
 

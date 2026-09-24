@@ -60,6 +60,13 @@ const schema = z.object({
   BACKUP_RETAIN_DAYS: z.coerce.number().int().positive().default(7),
   BACKUP_SCHEDULE: z.string().default("0 2 * * *"),
   /**
+   * Replay-equivalence job (#751). REPLAY_DATABASE_URL: a dedicated scratch
+   * database with migrations applied; it is truncated on every run. When
+   * unset, the job is not started. REPLAY_SCHEDULE: cron expression.
+   */
+  REPLAY_DATABASE_URL: z.string().url().or(z.string().startsWith("postgres")).optional(),
+  REPLAY_SCHEDULE: z.string().default("30 3 * * *"),
+  /**
    * Redis connection string for the caching layer (issue #485), e.g.
    * `redis://localhost:6379` or a managed provider URL with credentials.
    * When unset, caching gracefully degrades to direct database reads.
@@ -123,6 +130,8 @@ export function getEnv(): Env {
       BACKUP_DIR: process.env.BACKUP_DIR || undefined,
       BACKUP_RETAIN_DAYS: Number(process.env.BACKUP_RETAIN_DAYS ?? 7),
       BACKUP_SCHEDULE: process.env.BACKUP_SCHEDULE ?? "0 2 * * *",
+      REPLAY_DATABASE_URL: process.env.REPLAY_DATABASE_URL || undefined,
+      REPLAY_SCHEDULE: process.env.REPLAY_SCHEDULE ?? "30 3 * * *",
       REDIS_URL: process.env.REDIS_URL || undefined,
       CATEGORIES_CACHE_TTL_SECONDS: Number(process.env.CATEGORIES_CACHE_TTL_SECONDS ?? 3600),
       REMINDER_LEAD_HOURS: Number(process.env.REMINDER_LEAD_HOURS ?? 24),

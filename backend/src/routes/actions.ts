@@ -74,6 +74,8 @@ export const actionsRoutes = (
       const body = attachTxBody.parse(req.body);
       const workerId = (req.headers["x-worker-id"] as string | undefined) ?? "anonymous";
       const result = await svc.attachTxHash(req.params.id, body.tx_hash, { workerId });
+      // #753: the signing layer's hand-off, logged under the correlation key.
+      req.log.info({ txHash: body.tx_hash, actionId: result.id, status: result.status }, "action tx_hash attached");
       return ok(serialize(result));
     });
 

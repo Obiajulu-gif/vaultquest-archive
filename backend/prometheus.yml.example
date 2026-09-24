@@ -17,7 +17,8 @@ alerting:
 
 # Load rules for alerts
 rule_files:
-  # - "alerts.yml"
+  # Ingestion stall (#752) and replay-equivalence (#751) alerts.
+  - "alerts.yml"
 
 scrape_configs:
   # Prometheus itself

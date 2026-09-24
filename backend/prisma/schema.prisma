@@ -75,11 +75,37 @@ model PendingEvent {
   sorobanEventId  String    @map("soroban_event_id")
   eventPayload    Json      @map("event_payload")
   statusHint      String    @map("status_hint")
+  /// Close time of the ledger that emitted the event (#751). Carried so an
+  /// action confirmed later via attachTxHash gets the same event-derived
+  /// confirmedAt as one confirmed directly by reconcileEvent.
+  ledgerClosedAt  DateTime? @map("ledger_closed_at")
   receivedAt      DateTime  @default(now()) @map("received_at")
   consumedAt      DateTime? @map("consumed_at")
 
   @@index([statusHint, receivedAt])
   @@map("pending_events")
+}
+
+// #751/#753/#754 — append-only log of every raw contract event the indexer
+// fetched, written before decoding. `id` is the Soroban RPC event id
+// (19-char TOID + "-" + 10-char event index), so ordering by id is chain
+// order. Replaying this log through StellarIndexer must reproduce the
+// chain-derived state (see services/replayEquivalence.ts), and tx_hash is
+// the cross-layer correlation key (services/transactionTrace.ts).
+model ChainEvent {
+  id             String    @id
+  ledger         Int
+  ledgerClosedAt DateTime? @map("ledger_closed_at")
+  txHash         String    @map("tx_hash")
+  contractId     String    @map("contract_id")
+  topicXdr       String[]  @map("topic_xdr")
+  valueXdr       String    @map("value_xdr")
+  successful     Boolean
+  ingestedAt     DateTime  @default(now()) @map("ingested_at")
+
+  @@index([txHash])
+  @@index([ledger])
+  @@map("chain_events")
 }
 
 model ActionLease {
@@ -135,6 +161,7 @@ model PoisonEvent {
   resolvedAt     DateTime? @map("resolved_at")
 
   @@index([resolvedAt, detectedAt])
+  @@index([txHash])
   @@map("poison_events")
 }
 

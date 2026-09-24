@@ -6,10 +6,12 @@ import { sweepOrphans } from "./services/reconciler.js";
 import { QuestService } from "./services/questService.js";
 import { BackupService } from "./services/backupService.js";
 import { NotificationService } from "./services/notificationService.js";
-import type { StellarIndexer } from "./services/stellarIndexer.js";
+import type { StellarIndexer, XdrDecoder } from "./services/stellarIndexer.js";
 import { pingDatabase } from "./db.js";
 import type { LedgerService } from "./services/ledger.js";
 import { LeaseService } from "./services/leaseService.js";
+import { getPrometheusMetrics } from "./services/prometheusMetrics.js";
+import { runReplayEquivalence } from "./services/replayEquivalence.js";
 
 // #506 — one worker id per process, reused across every job lease this
 // process acquires, so ownership/takeover metrics can be attributed to a
@@ -185,6 +187,7 @@ export function startIndexerCron(opts: {
   const schedule = opts.schedule ?? "*/1 * * * *";
   const leases = new LeaseService(opts.prisma);
   const leaseTtlMs = 5 * 60 * 1000;
+  const metrics = getPrometheusMetrics();
   const task = cron.schedule(schedule, async () => {
     try {
       await withJobLease(leases, "stellar-indexer", leaseTtlMs, opts.logger, async () => {
@@ -194,6 +197,15 @@ export function startIndexerCron(opts: {
         }
         const result = await opts.indexer.tick();
         opts.logger.info({ result }, "indexer tick complete");
+
+        // #752 leading indicators: lag, queue depth, and the success
+        // heartbeat whose age is the stall signal (see prometheus/alerts.yml).
+        metrics.recordIngestionProgress({
+          chainLatestLedger: result.chainLatestLedger,
+          ingestedLedger: result.ingestedLedger,
+          ...(await opts.ledger.getIngestionBacklog())
+        });
+        metrics.recordIndexerLastSyncTime(Date.now() / 1000);
 
         // Persist cursor/ledger progress so a restart resumes exactly where the
         // last successful tick left off instead of replaying or skipping events.
@@ -208,6 +220,7 @@ export function startIndexerCron(opts: {
       });
     } catch (err) {
       opts.logger.error({ err }, "indexer tick failed");
+      metrics.recordIndexerSyncError();
       try {
         const existing = await opts.ledger.getIndexerCheckpoint();
         await opts.ledger.updateIndexerCheckpoint({
@@ -339,3 +352,42 @@ export function startRestoreDrillCron(opts: {
   return task;
 }
 
+/**
+ * Replays the chain event log into a scratch database and diffs it against
+ * live state (#751). Any divergence is logged as an error and exported as
+ * `replay_equivalence_divergences`, which pages via the ReplayDivergence
+ * alert; a run that stops completing trips ReplayEquivalenceStale.
+ */
+export function startReplayEquivalenceCron(opts: {
+  prisma: PrismaClient;
+  replayPrisma: PrismaClient;
+  decoder: XdrDecoder;
+  factoryAddress?: string;
+  logger: Logger;
+  schedule?: string;
+}): cron.ScheduledTask {
+  const schedule = opts.schedule ?? "30 3 * * *"; // default: daily at 03:30
+  const leases = new LeaseService(opts.prisma);
+  const metrics = getPrometheusMetrics();
+  const leaseTtlMs = 60 * 60 * 1000;
+
+  const task = cron.schedule(schedule, async () => {
+    try {
+      await withJobLease(leases, "replay-equivalence", leaseTtlMs, opts.logger, async () => {
+        const report = await runReplayEquivalence(opts.prisma, opts.replayPrisma, {
+          decoder: opts.decoder,
+          factoryAddress: opts.factoryAddress
+        });
+        metrics.recordReplayEquivalence(report.divergences, Date.now());
+        if (report.divergences > 0) {
+          opts.logger.error({ event: "replay_equivalence.divergence", report }, "replay-equivalence: live state diverges from replay");
+        } else {
+          opts.logger.info({ event: "replay_equivalence.ok", report }, "replay-equivalence: live state matches replay");
+        }
+      });
+    } catch (err) {
+      opts.logger.error({ err }, "replay-equivalence: failed");
+    }
+  });
+  return task;
+}

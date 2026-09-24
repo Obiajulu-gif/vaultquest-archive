@@ -41,6 +41,12 @@ export class PrometheusMetrics {
   readonly indexerLatestLedger: Gauge;
   readonly indexerLastSyncTime: Gauge;
   readonly indexerSyncErrors: Counter;
+  readonly indexerChainLatestLedger: Gauge;
+  readonly indexerQuarantinedEvents: Gauge;
+
+  // Replay-equivalence metrics (#751)
+  readonly replayEquivalenceDivergences: Gauge;
+  readonly replayEquivalenceLastRunTimestamp: Gauge;
 
   // Reconciliation metrics
   readonly staleOrphansCurrent: Gauge;
@@ -182,6 +188,33 @@ export class PrometheusMetrics {
       registers: [this.registry],
     });
 
+    // Ingestion leading indicators (#752). indexer_latest_ledger holds the
+    // ledger the indexer has provably scanned through, so
+    // indexer_chain_latest_ledger - indexer_latest_ledger is the lag.
+    this.indexerChainLatestLedger = new Gauge({
+      name: "indexer_chain_latest_ledger",
+      help: "Latest ledger sequence reported by the Soroban RPC on the last indexer fetch",
+      registers: [this.registry],
+    });
+
+    this.indexerQuarantinedEvents = new Gauge({
+      name: "indexer_quarantined_events",
+      help: "Unresolved quarantined (poison) events; any non-zero value holds the indexer cursor",
+      registers: [this.registry],
+    });
+
+    this.replayEquivalenceDivergences = new Gauge({
+      name: "replay_equivalence_divergences",
+      help: "Rows that differed between live state and a fresh replay of the chain event log on the last run",
+      registers: [this.registry],
+    });
+
+    this.replayEquivalenceLastRunTimestamp = new Gauge({
+      name: "replay_equivalence_last_run_timestamp_seconds",
+      help: "Unix time (seconds) the last replay-equivalence run completed",
+      registers: [this.registry],
+    });
+
     // Initialize Reconciliation metrics
     // `bucket` distinguishes 7d (7–30 days old) from 30d (escalated, >30 days old).
     this.staleOrphansCurrent = new Gauge({
@@ -276,6 +309,30 @@ export class PrometheusMetrics {
 
   recordIndexerSyncError() {
     this.indexerSyncErrors.inc();
+  }
+
+  /**
+   * Record one indexer tick's leading indicators (#752). Null ledgers are
+   * left untouched so a source that can't report the tip never zeroes it.
+   */
+  recordIngestionProgress(progress: {
+    chainLatestLedger: number | null;
+    ingestedLedger: number | null;
+    pendingEvents: number;
+    quarantinedEvents: number;
+  }) {
+    if (progress.chainLatestLedger !== null) this.indexerChainLatestLedger.set(progress.chainLatestLedger);
+    if (progress.ingestedLedger !== null) this.indexerLatestLedger.set(progress.ingestedLedger);
+    this.pendingEventsSize.set(progress.pendingEvents);
+    this.indexerQuarantinedEvents.set(progress.quarantinedEvents);
+  }
+
+  /**
+   * Record a completed replay-equivalence run (#751).
+   */
+  recordReplayEquivalence(divergences: number, completedAtMs: number) {
+    this.replayEquivalenceDivergences.set(divergences);
+    this.replayEquivalenceLastRunTimestamp.set(completedAtMs / 1000);
   }
 
   /**

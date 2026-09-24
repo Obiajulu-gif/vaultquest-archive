@@ -7,7 +7,8 @@ import {
   startQuestCron,
   startIndexerCron,
   startBackupCron,
-  startNotificationReminderCron
+  startNotificationReminderCron,
+  startReplayEquivalenceCron
 } from "./cron.js";
 import { CacheService } from "./services/cacheService.js";
 import { LedgerService } from "./services/ledger.js";
@@ -19,6 +20,8 @@ import {
 import { setAttestationInfo } from "./routes/health.js";
 import type { ScheduledTask } from "node-cron";
 import { SCHEMA_VERSIONS } from "./constants.js";
+import { PrismaClient } from "@prisma/client";
+import { isSameDatabase } from "./services/backupService.js";
 
 let loadManifest: typeof import("../../../lib/deployment-manifest.js").loadManifest | undefined;
 let validateManifestAgainstEnv: typeof import("../../../lib/deployment-manifest.js").validateManifestAgainstEnv | undefined;
@@ -170,6 +173,24 @@ if (env.BACKUP_DIR) {
   );
 }
 
+// Replay-equivalence job (#751). Only started when a scratch database is set.
+let replayCronTask: ScheduledTask | undefined;
+if (env.REPLAY_DATABASE_URL) {
+  if (isSameDatabase(env.DATABASE_URL, env.REPLAY_DATABASE_URL)) {
+    logger.fatal("REPLAY_DATABASE_URL points at the live database; it is truncated on every run — refusing to start");
+    process.exit(1);
+  }
+  replayCronTask = startReplayEquivalenceCron({
+    prisma,
+    replayPrisma: new PrismaClient({ datasources: { db: { url: env.REPLAY_DATABASE_URL } } }),
+    decoder: sorobanNativeXdrDecoder,
+    factoryAddress: env.VAULT_FACTORY_ADDRESS,
+    logger,
+    schedule: env.REPLAY_SCHEDULE
+  });
+  logger.info({ schedule: env.REPLAY_SCHEDULE }, "replay-equivalence cron started");
+}
+
 async function shutdown(signal: string) {
   logger.info({ signal }, "shutting down");
   clearInterval(cacheSyncInterval);
@@ -178,6 +199,7 @@ async function shutdown(signal: string) {
   notificationCronTask.stop();
   indexerCronTask?.stop();
   backupCronTask?.stop();
+  replayCronTask?.stop();
   await app.close();
   await cacheService.disconnect();
   await prisma.$disconnect();

@@ -5,6 +5,7 @@ import { AppError } from "../errors.js";
 import type { IntentInput, ActionRecord } from "../types.js";
 import type { CacheService } from "./cacheService.js";
 import { Amount, InvalidAmountError } from "../amount.js";
+import type { RawHorizonEvent } from "./stellarIndexer.js";
 
 // #504 — getPortfolioSummary previously read payload.token/asset with a
 // hardcoded "USDC" fallback whenever it was missing. Today there is
@@ -59,6 +60,12 @@ export interface ReconcileEventInput {
   sorobanEventId: string;
   eventPayload: unknown;
   statusHint: "confirmed" | "reverted";
+  /**
+   * Close time of the emitting ledger (#751). Used as confirmedAt so replaying
+   * the same event always yields the same row; the wall-clock fallback only
+   * applies to legacy callers of POST /internal/reconcile that omit it.
+   */
+  ledgerClosedAt?: Date;
 }
 
 export interface ReconcileEventOutcome {
@@ -66,7 +73,7 @@ export interface ReconcileEventOutcome {
   matched: boolean;
 }
 
-function stableStringify(value: unknown): string {
+export function stableStringify(value: unknown): string {
   if (value === null || typeof value !== "object") {
     return JSON.stringify(value);
   }
@@ -281,7 +288,9 @@ export class LedgerService {
               status: pending.statusHint === "reverted" ? "reverted" : "confirmed",
               txHash,
               submittedAt: new Date(),
-              confirmedAt: new Date(),
+              // #751: event-derived, identical to the reconcileEvent path.
+              // The cache returns JSON, so the date may arrive as a string.
+              confirmedAt: pending.ledgerClosedAt ? new Date(pending.ledgerClosedAt) : new Date(),
               sorobanEventId: pending.sorobanEventId,
               // #509: same rationale as reconcileEvent — this is the
               // finalized event's decoded payload, not the caller's claim.
@@ -443,7 +452,8 @@ export class LedgerService {
             txHash: input.txHash,
             sorobanEventId: input.sorobanEventId,
             eventPayload: input.eventPayload as object,
-            statusHint: input.statusHint
+            statusHint: input.statusHint,
+            ledgerClosedAt: input.ledgerClosedAt ?? null
           },
           update: {}
         });
@@ -453,6 +463,7 @@ export class LedgerService {
             sorobanEventId: input.sorobanEventId,
             eventPayload: input.eventPayload,
             statusHint: input.statusHint,
+            ledgerClosedAt: input.ledgerClosedAt ?? null,
             receivedAt: new Date(),
             consumedAt: null
           });
@@ -474,7 +485,7 @@ export class LedgerService {
           // Nothing should treat this action's payout facts as trustworthy
           // from actionPayload alone — see verifyPayoutIntegrity below.
           verifiedPayload: input.eventPayload as object,
-          confirmedAt: new Date(),
+          confirmedAt: input.ledgerClosedAt ?? new Date(),
           errorCode: input.statusHint === "reverted" ? ERROR_CODES.REVERTED_ON_CHAIN : null
         }
       });
@@ -561,7 +572,8 @@ export class LedgerService {
             txHash: e.txHash,
             sorobanEventId: e.sorobanEventId,
             eventPayload: e.eventPayload as object,
-            statusHint: e.statusHint
+            statusHint: e.statusHint,
+            ledgerClosedAt: e.ledgerClosedAt ?? null
           })),
           skipDuplicates: true
         });
@@ -575,7 +587,7 @@ export class LedgerService {
             status: confirmed ? "confirmed" : "reverted",
             sorobanEventId: input.sorobanEventId,
             verifiedPayload: input.eventPayload as object,
-            confirmedAt: new Date(),
+            confirmedAt: input.ledgerClosedAt ?? new Date(),
             errorCode: confirmed ? null : ERROR_CODES.REVERTED_ON_CHAIN
           }
         });
@@ -605,6 +617,7 @@ export class LedgerService {
               sorobanEventId: input.sorobanEventId,
               eventPayload: input.eventPayload,
               statusHint: input.statusHint,
+              ledgerClosedAt: input.ledgerClosedAt ?? null,
               receivedAt: new Date(),
               consumedAt: null
             });
@@ -613,6 +626,41 @@ export class LedgerService {
       }
       return outcomes;
     });
+  }
+
+  /**
+   * Appends raw fetched events to the chain event log (#751). One round-trip
+   * per batch; re-fetched events are no-ops via skipDuplicates on the event id.
+   */
+  async appendChainEvents(events: RawHorizonEvent[]): Promise<void> {
+    if (events.length === 0) return;
+    await this.prisma.chainEvent.createMany({
+      data: events.map((e) => ({
+        id: e.id,
+        ledger: e.ledger,
+        ledgerClosedAt: e.ledgerClosedAt ? new Date(e.ledgerClosedAt) : null,
+        txHash: e.txHash,
+        contractId: e.contractId,
+        topicXdr: e.topicXdr,
+        valueXdr: e.valueXdr,
+        successful: e.successful
+      })),
+      skipDuplicates: true
+    });
+  }
+
+  /**
+   * Ingestion queue depth for the leading-indicator metrics (#752): events
+   * parked waiting for an intent, and quarantined events holding the
+   * cursor. The poison count rides (resolved_at, detected_at); the pending
+   * count scans pending_events, which only ever holds parked events.
+   */
+  async getIngestionBacklog(): Promise<{ pendingEvents: number; quarantinedEvents: number }> {
+    const [pendingEvents, quarantinedEvents] = await Promise.all([
+      this.prisma.pendingEvent.count({ where: { consumedAt: null } }),
+      this.prisma.poisonEvent.count({ where: { resolvedAt: null } })
+    ]);
+    return { pendingEvents, quarantinedEvents };
   }
 
   /**

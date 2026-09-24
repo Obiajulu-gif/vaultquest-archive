@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { TimelineStage } from "../../components/TransactionTimeline";
 import type { PoolActionInput, PoolActionType, VaultContractClient } from "../contract/types";
+import { assertNetworkMatchesBeforeSigning, assertNotMultisigBeforeSigning } from "../../core/walletService.js";
 
 export type ActiveTxStage = Exclude<TimelineStage, "success" | "failed">;
 
@@ -125,6 +126,12 @@ export function mapTxError(
   const message = err instanceof Error ? err.message : String(err);
   const kind = (err as { kind?: string }).kind ?? "";
 
+  if (kind === "network_mismatch" || kind === "multisig_unsupported") {
+    // Fails at "preparing" — both are caught before the wallet's signing
+    // prompt is ever shown (#735, #736), not a rejection of an in-flight
+    // signature.
+    return { failedAt: "preparing", message };
+  }
   if (kind === "wallet_disconnected" || kind === "signature_rejected") {
     return { failedAt: "awaiting-signature", message };
   }
@@ -362,6 +369,15 @@ export function useTxFlow(): TxFlowResult {
       } = options;
 
       try {
+        // #735: fresh network check immediately before every signing
+        // request — never cached from connect time. Throws before the
+        // wallet's signing prompt is shown on a mismatch.
+        await assertNetworkMatchesBeforeSigning();
+        // #736: block signing for a detected multisig/thresholded account
+        // with a clear message, rather than letting it hit an ambiguous
+        // low-level signing/threshold error later.
+        assertNotMultisigBeforeSigning();
+
         transition({ type: "AWAIT_SIGNATURE" });
         const result = await client.submitAction(type, input);
 

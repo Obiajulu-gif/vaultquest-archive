@@ -30,7 +30,14 @@ export const reconcileBody = z.object({
   tx_hash: z.string().min(4).max(200),
   soroban_event_id: z.string().min(1).max(200),
   event_payload: z.record(z.unknown()),
-  status_hint: z.enum(["confirmed", "reverted"])
+  status_hint: z.enum(["confirmed", "reverted"]),
+  /** Emitting ledger's close time (#751); becomes the action's confirmedAt. */
+  ledger_closed_at: z.string().datetime().optional()
+});
+
+/** Same bounds as reconcileBody.tx_hash (#753). */
+export const traceParams = z.object({
+  txHash: z.string().min(4).max(200)
 });
 
 export const dashboardQuery = z.object({

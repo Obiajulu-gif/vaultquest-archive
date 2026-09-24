@@ -26,6 +26,8 @@ export interface PendingEvent {
   sorobanEventId: string;
   eventPayload: unknown;
   statusHint: "confirmed" | "reverted";
+  /** Emitting ledger's close time (#751); a string when read back from Redis JSON. */
+  ledgerClosedAt?: Date | string | null;
   receivedAt: Date;
   consumedAt?: Date | null;
 }
@@ -296,6 +298,7 @@ export class CacheService {
       sorobanEventId: row.sorobanEventId,
       eventPayload: row.eventPayload,
       statusHint: row.statusHint as PendingEvent["statusHint"],
+      ledgerClosedAt: row.ledgerClosedAt,
       receivedAt: row.receivedAt,
       consumedAt: row.consumedAt
     };
@@ -317,6 +320,7 @@ export class CacheService {
         sorobanEventId: event.sorobanEventId,
         eventPayload: event.eventPayload as any,
         statusHint: event.statusHint,
+        ledgerClosedAt: event.ledgerClosedAt ? new Date(event.ledgerClosedAt) : null,
         receivedAt: event.receivedAt,
         consumedAt: event.consumedAt ?? null
       },

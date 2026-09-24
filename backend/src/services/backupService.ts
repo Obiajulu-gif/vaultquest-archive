@@ -96,6 +96,28 @@ export const defaultFsAdapter: FsAdapter = {
   }
 };
 
+/**
+ * True when two PostgreSQL connection URLs address the same database
+ * (host, port, and database name). Shared by the restore safety guard and
+ * the replay/DR scratch-database guards (#751/#754).
+ */
+export function isSameDatabase(a: string, b: string): boolean {
+  if (a === b) return true;
+
+  try {
+    const left = new URL(a);
+    const right = new URL(b);
+
+    const sameHost = left.hostname === right.hostname;
+    const samePort = (left.port || "5432") === (right.port || "5432");
+    const sameDb = left.pathname.replace(/^\//, "") === right.pathname.replace(/^\//, "");
+
+    return sameHost && samePort && sameDb;
+  } catch {
+    return false;
+  }
+}
+
 // ─── BackupResult ─────────────────────────────────────────────────────────────
 
 export interface BackupResult {
@@ -426,20 +448,7 @@ export class BackupService {
    * Evaluates whether `targetDbUrl` refers to the main production database.
    */
   private isProductionDatabase(targetDbUrl: string): boolean {
-    if (targetDbUrl === this.databaseUrl) return true;
-
-    try {
-      const mainUrl = new URL(this.databaseUrl);
-      const targetUrl = new URL(targetDbUrl);
-
-      const sameHost = mainUrl.hostname === targetUrl.hostname;
-      const samePort = (mainUrl.port || "5432") === (targetUrl.port || "5432");
-      const sameDb = mainUrl.pathname.replace(/^\//, "") === targetUrl.pathname.replace(/^\//, "");
-
-      return sameHost && samePort && sameDb;
-    } catch {
-      return targetDbUrl === this.databaseUrl;
-    }
+    return isSameDatabase(this.databaseUrl, targetDbUrl);
   }
 
   /**

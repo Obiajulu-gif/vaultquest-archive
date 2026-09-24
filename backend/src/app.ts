@@ -12,6 +12,7 @@ import { savedPoolsRoutes } from "./routes/savedPools.js";
 import { schemaVersionRoutes } from "./routes/schemaVersion.js";
 import { auditRoutes } from "./routes/audit.js";
 import { internalRoutes } from "./routes/internal.js";
+import { TransactionTraceService } from "./services/transactionTrace.js";
 import { reconciliationRoutes } from "./routes/reconciliation.js";
 import { metricsRoutes } from "./routes/metrics.js";
 import { usersRoutes } from "./routes/users.js";
@@ -153,7 +154,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.register(healthRoutes(svc));
   app.register(savedPoolsRoutes(savedPoolsSvc));
   app.register(schemaVersionRoutes(schemaVersionSvc));
-  app.register(internalRoutes(svc, deps.internalSecret));
+  app.register(internalRoutes(svc, deps.internalSecret, new TransactionTraceService(deps.prisma)));
   app.register(reconciliationRoutes(deps.prisma, deps.internalSecret));
   app.register(metricsRoutes(metricsSvc));
   app.register(usersRoutes, { prefix: "/api/users", prisma: deps.prisma });

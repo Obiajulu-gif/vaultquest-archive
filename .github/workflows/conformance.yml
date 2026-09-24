@@ -8,6 +8,11 @@ on:
       - "contracts/drip-pool/canonical-spec.json"
       - "contracts/drip-pool/golden-fixtures/**"
       - "contracts/drip-pool/tests/**"
+      # Shared frontend service helpers and their canonical behavioral spec: a
+      # change here can break a downstream consumer's contract test even when it
+      # still type-checks, so run the cross-stack conformance suite (#742).
+      - "services/**"
+      - "lib/conformance-spec.ts"
       - "backend/src/constants.ts"
       - "backend/src/types.ts"
       - "backend/src/services/stellarIndexer.ts"
@@ -30,6 +35,11 @@ on:
       - "contracts/drip-pool/canonical-spec.json"
       - "contracts/drip-pool/golden-fixtures/**"
       - "contracts/drip-pool/tests/**"
+      # Shared frontend service helpers and their canonical behavioral spec: a
+      # change here can break a downstream consumer's contract test even when it
+      # still type-checks, so run the cross-stack conformance suite (#742).
+      - "services/**"
+      - "lib/conformance-spec.ts"
       - "backend/src/constants.ts"
       - "backend/src/types.ts"
       - "backend/src/services/stellarIndexer.ts"

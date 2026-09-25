@@ -1,4 +1,5 @@
 import { buildApp } from "./app.js";
+import { PrismaJobStore } from "./worker/prismaJobStore.js";
 import { getEnv } from "./env.js";
 import { getPrisma, pingDatabase } from "./db.js";
 import { createLogger } from "./logger.js";
@@ -83,6 +84,8 @@ const app = buildApp({
   cacheService,
   categoriesCacheTtlSeconds: env.CATEGORIES_CACHE_TTL_SECONDS,
   reminderLeadHours: env.REMINDER_LEAD_HOURS,
+  jobStore: env.WORKER_ENABLED ? new PrismaJobStore(prisma) : undefined,
+  jobWorkerPollIntervalMs: env.WORKER_POLL_INTERVAL_MS,
   adminWalletAddresses: (env.ADMIN_WALLET_ADDRESSES ?? "")
     .split(",")
     .map((wallet) => wallet.trim())
@@ -217,6 +220,10 @@ pingDatabase(prisma).then((isConnected) => {
   return app.listen({ port: env.PORT, host: "0.0.0.0" });
 }).then((addr) => {
   if (addr) logger.info({ addr }, "listening");
+  if (app.jobWorker) {
+    app.jobWorker.start();
+    logger.info({ workerId: app.jobWorker.workerId }, "background job worker started");
+  }
 }).catch((err) => {
   logger.error({ err }, "failed to start");
   process.exit(1);

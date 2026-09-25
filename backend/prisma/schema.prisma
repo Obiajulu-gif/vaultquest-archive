@@ -141,6 +141,32 @@ model JobLease {
   @@map("job_leases")
 }
 
+// #771 — durable background jobs (delayed / retryable work). `idempotencyKey`
+// makes enqueue safe to repeat; `failures` keeps every attempt's error so a
+// dead-lettered job can be diagnosed without log archaeology.
+model BackgroundJob {
+  id             String    @id @default(uuid()) @db.Uuid
+  type           String
+  payload        Json
+  idempotencyKey String    @unique @map("idempotency_key")
+  status         String    @default("queued")
+  attempts       Int       @default(0)
+  maxAttempts    Int       @map("max_attempts")
+  runAt          DateTime  @default(now()) @map("run_at") @db.Timestamptz
+  lockedBy       String?   @map("locked_by")
+  lockedAt       DateTime? @map("locked_at") @db.Timestamptz
+  correlationId  String?   @map("correlation_id")
+  lastError      Json?     @map("last_error")
+  failures       Json      @default("[]")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  completedAt    DateTime? @map("completed_at") @db.Timestamptz
+
+  @@index([status, runAt])
+  @@index([type, status])
+  @@map("background_jobs")
+}
+
 model IndexerCheckpoint {
   id                  String   @id @default("singleton")
   latestLedger        Int      @map("latest_ledger")

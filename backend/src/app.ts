@@ -40,6 +40,8 @@ import { notificationsRoutes } from "./routes/notifications.js";
 import { DashboardAggregateService } from "./services/dashboardAggregateService.js";
 import { dashboardAggregatesRoutes } from "./routes/dashboardAggregates.js";
 import { EmailService } from "./services/emailService.js";
+import { DataExportService } from "./services/dataExport.js";
+import { exportsRoutes } from "./routes/exports.js";
 
 export type AppDeps = {
   prisma: PrismaClient;
@@ -176,6 +178,13 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   );
   app.register(dashboardAggregatesRoutes(dashboardAggregateSvc, apiKeyGuard));
 
+  // Wallet-scoped data portability (#772, #773). Authorization is enforced by
+  // the permission guards and by the services' own wallet-scope checks.
+  const exportSvc = new DataExportService({
+    listActions: ({ walletAddress, cursor, limit }) => svc.listActions({ walletAddress, cursor, limit }),
+    listSavedPools: (wallet, cursor, limit) => savedPoolsSvc.listSavedPools(wallet, cursor, limit),
+  });
+  app.register(exportsRoutes(exportSvc, requirePermission("own.data.export", [walletPrincipal])));
   // Central Error Handler Middleware
   app.setErrorHandler(errorHandler);
 

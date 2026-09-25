@@ -40,6 +40,7 @@ import { notificationsRoutes } from "./routes/notifications.js";
 import { DashboardAggregateService } from "./services/dashboardAggregateService.js";
 import { dashboardAggregatesRoutes } from "./routes/dashboardAggregates.js";
 import { EmailService } from "./services/emailService.js";
+import { configureTelemetry } from "./services/telemetry.js";
 
 export type AppDeps = {
   prisma: PrismaClient;
@@ -62,6 +63,9 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     logger: loggerInstance as any,
     disableRequestLogging: true,
   });
+
+  // #770: operation telemetry events share the app logger.
+  configureTelemetry({ logger: loggerInstance });
 
   // Register global rate limiting with Redis store if available
   // Note: @fastify/rate-limit 11.x requires Fastify 5.x; skipped for Fastify 4.x (#567)

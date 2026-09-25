@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import fp from "fastify-plugin";
 import { randomUUID } from "node:crypto";
+import { bindCorrelation } from "../services/telemetry.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -13,6 +14,7 @@ const plugin: FastifyPluginAsync = async (app) => {
     const incoming = req.headers["correlation-id"];
     const id = typeof incoming === "string" && incoming.length > 0 ? incoming : randomUUID();
     req.correlationId = id;
+    bindCorrelation(id);
     reply.header("Correlation-Id", id);
     req.log = req.log.child({ correlation_id: id });
   });

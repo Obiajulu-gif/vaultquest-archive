@@ -48,6 +48,11 @@ export class PrometheusMetrics {
   readonly replayEquivalenceDivergences: Gauge;
   readonly replayEquivalenceLastRunTimestamp: Gauge;
 
+  // Domain operation telemetry (#770)
+  readonly operationsTotal: Counter;
+  readonly operationDuration: Histogram;
+  readonly operationFailuresTotal: Counter;
+
   // Reconciliation metrics
   readonly staleOrphansCurrent: Gauge;
   readonly staleOrphansTotal: Counter;
@@ -237,6 +242,28 @@ export class PrometheusMetrics {
       registers: [this.registry],
     });
 
+    this.operationsTotal = new Counter({
+      name: "vaultquest_operations_total",
+      help: "Domain operations by name, actor type and result",
+      labelNames: ["operation", "actor_type", "result"],
+      registers: [this.registry],
+    });
+
+    this.operationDuration = new Histogram({
+      name: "vaultquest_operation_duration_seconds",
+      help: "Domain operation latency in seconds",
+      labelNames: ["operation", "actor_type", "result"],
+      buckets: [0.005, 0.025, 0.1, 0.5, 1, 2.5, 10, 30],
+      registers: [this.registry],
+    });
+
+    this.operationFailuresTotal = new Counter({
+      name: "vaultquest_operation_failures_total",
+      help: "Failed domain operations by name and stable error code",
+      labelNames: ["operation", "error_code"],
+      registers: [this.registry],
+    });
+
     logger?.info("Prometheus metrics initialized");
   }
 
@@ -271,6 +298,24 @@ export class PrometheusMetrics {
         { method, route, status_code: statusCode },
         responseSize,
       );
+    }
+  }
+
+  /**
+   * Record a domain operation outcome (#770)
+   */
+  recordOperation(
+    operation: string,
+    actorType: string,
+    result: "success" | "failure",
+    durationSeconds: number,
+    errorCode?: string,
+  ) {
+    const labels = { operation, actor_type: actorType, result };
+    this.operationsTotal.inc(labels);
+    this.operationDuration.observe(labels, durationSeconds);
+    if (result === "failure") {
+      this.operationFailuresTotal.inc({ operation, error_code: errorCode ?? "INTERNAL" });
     }
   }
 

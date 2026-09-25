@@ -27,6 +27,7 @@
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { AppError } from "../errors.js";
+import { withTelemetry } from "./telemetry.js";
 import { ERROR_CODES } from "../constants.js";
 
 import { Keypair } from "@stellar/stellar-sdk";
@@ -104,7 +105,13 @@ export class WalletAuthService {
   /**
    * Verifies a signed challenge and issues a session token.
    */
-  async verifyChallenge(input: VerifyInput): Promise<SessionOutput> {
+  verifyChallenge(input: VerifyInput): Promise<SessionOutput> {
+    return withTelemetry({ operation: "wallet.verify_challenge", actorType: "user" }, () =>
+      this.verifyChallengeImpl(input)
+    );
+  }
+
+  private async verifyChallengeImpl(input: VerifyInput): Promise<SessionOutput> {
     const challenge = await this.prisma.walletChallenge.findUnique({
       where: { challengeId: input.challengeId }
     });

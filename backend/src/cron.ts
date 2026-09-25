@@ -13,6 +13,7 @@ import { LeaseService } from "./services/leaseService.js";
 import { getPrometheusMetrics } from "./services/prometheusMetrics.js";
 import { runReplayEquivalence } from "./services/replayEquivalence.js";
 import { OnChainDriftDetector, type OnChainReader } from "./services/onChainDriftDetector.js";
+import { withTelemetry } from "./services/telemetry.js";
 
 // #506 — one worker id per process, reused across every job lease this
 // process acquires, so ownership/takeover metrics can be attributed to a
@@ -47,7 +48,20 @@ const HEARTBEAT_FRACTION = 3;
  * stop renewing and surface it loudly in logs rather than silently
  * continuing as if nothing happened.
  */
-async function withJobLease(
+function withJobLease(
+  leases: LeaseService,
+  jobName: string,
+  ttlMs: number,
+  logger: Logger,
+  fn: () => Promise<void>
+): Promise<void> {
+  // #770 — every scheduled job reports latency and outcome through one path.
+  return withTelemetry({ operation: "worker.job", actorType: "worker", detail: jobName }, () =>
+    withJobLeaseImpl(leases, jobName, ttlMs, logger, fn)
+  );
+}
+
+async function withJobLeaseImpl(
   leases: LeaseService,
   jobName: string,
   ttlMs: number,

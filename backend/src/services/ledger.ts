@@ -34,6 +34,22 @@ export type ListActionsResult = {
   nextCursor: string | null;
 };
 
+/**
+ * The ingestion point a read was served at (#731): `latestLedger` is the
+ * Stellar ledger sequence the indexer had fully processed as of this read
+ * (`IndexerCheckpoint.latestLedger`, already bumped once per completed
+ * indexer batch — see `recordCheckpoint`). It's a genuinely monotonic
+ * counter (Stellar ledger sequence numbers only ever increase), not a
+ * wall-clock timestamp, so it's immune to clock skew and gives callers an
+ * unambiguous way to tell whether two reads came from the same ingestion
+ * generation or straddled a burst of new writes. See
+ * `backend/docs/READ_CONSISTENCY.md`.
+ */
+export type IngestionWatermark = {
+  latestLedger: number | null;
+  asOf: Date | null;
+};
+
 export type DashboardSummary = {
   walletAddress: string;
   totalActions: number;
@@ -42,6 +58,7 @@ export type DashboardSummary = {
   isStale: boolean;
   latestActivityAt: Date | null;
   latestConfirmedAt: Date | null;
+  watermark: IngestionWatermark;
 };
 
 export type LeaseInput = {
@@ -760,6 +777,21 @@ export class LedgerService {
     return (row as unknown as ActionRecord) ?? null;
   }
 
+  /**
+   * #731: the three reads below (status counts, pending tx hashes, latest
+   * activity) previously ran as separate round-trips against the live
+   * table. Under burst ingestion — e.g. right after a round closes and
+   * `reconcileEvents` commits a batch of confirmations — a write landing
+   * between two of those round-trips could make `byStatus`/`totalActions`
+   * (read first) reflect a different moment than `latestActivityAt`/
+   * `latestConfirmedAt` (read last): a torn, internally-inconsistent
+   * summary. Running all three inside one `Serializable` transaction
+   * pins them to a single snapshot, the same pattern already used by
+   * `DashboardAggregateService.refreshAggregates`. The returned
+   * `watermark.latestLedger` is read from the same transaction, so it
+   * always describes the exact ingestion point this summary was computed
+   * at — see `backend/docs/READ_CONSISTENCY.md`.
+   */
   async getDashboardSummary(
     walletAddress: string,
     options: { staleAfterMs?: number; now?: Date } = {}
@@ -767,59 +799,71 @@ export class LedgerService {
     const staleAfterMs = options.staleAfterMs ?? 5 * 60 * 1000;
     const now = options.now ?? new Date();
 
-    const grouped = await this.prisma.actionLedger.groupBy({
-      by: ["status"],
-      where: { walletAddress },
-      _count: { _all: true }
-    });
+    return this.prisma.$transaction(
+      async (tx: Prisma.TransactionClient) => {
+        const grouped = await tx.actionLedger.groupBy({
+          by: ["status"],
+          where: { walletAddress },
+          _count: { _all: true }
+        });
 
-    const byStatus: Record<ActionStatus, number> = {
-      pending: 0,
-      submitted: 0,
-      confirmed: 0,
-      failed: 0,
-      reverted: 0,
-      orphaned: 0
-    };
-    let totalActions = 0;
-    for (const row of grouped) {
-      const key = row.status as ActionStatus;
-      const count = row._count._all;
-      byStatus[key] = count;
-      totalActions += count;
-    }
+        const byStatus: Record<ActionStatus, number> = {
+          pending: 0,
+          submitted: 0,
+          confirmed: 0,
+          failed: 0,
+          reverted: 0,
+          orphaned: 0
+        };
+        let totalActions = 0;
+        for (const row of grouped) {
+          const key = row.status as ActionStatus;
+          const count = row._count._all;
+          byStatus[key] = count;
+          totalActions += count;
+        }
 
-    const pendingRows = await this.prisma.actionLedger.findMany({
-      where: { walletAddress, status: "submitted", txHash: { not: null } },
-      select: { txHash: true },
-      orderBy: { submittedAt: "desc" },
-      take: 25
-    });
-    const pendingTxHashes = pendingRows
-      .map((r: { txHash: string | null }) => r.txHash)
-      .filter((h: string | null): h is string => typeof h === "string" && h.length > 0);
+        const pendingRows = await tx.actionLedger.findMany({
+          where: { walletAddress, status: "submitted", txHash: { not: null } },
+          select: { txHash: true },
+          orderBy: { submittedAt: "desc" },
+          take: 25
+        });
+        const pendingTxHashes = pendingRows
+          .map((r: { txHash: string | null }) => r.txHash)
+          .filter((h: string | null): h is string => typeof h === "string" && h.length > 0);
 
-    const latestRows = await this.prisma.actionLedger.findMany({
-      where: { walletAddress },
-      orderBy: { updatedAt: "desc" },
-      select: { createdAt: true, confirmedAt: true, updatedAt: true },
-      take: 1
-    });
-    const latestRow = latestRows[0] ?? null;
-    const latestActivityAt = latestRow?.createdAt ?? null;
-    const latestConfirmedAt = latestRow?.confirmedAt ?? null;
-    const isStale =
-      latestRow != null && now.getTime() - latestRow.updatedAt.getTime() > staleAfterMs;
+        const latestRows = await tx.actionLedger.findMany({
+          where: { walletAddress },
+          orderBy: { updatedAt: "desc" },
+          select: { createdAt: true, confirmedAt: true, updatedAt: true },
+          take: 1
+        });
+        const latestRow = latestRows[0] ?? null;
+        const latestActivityAt = latestRow?.createdAt ?? null;
+        const latestConfirmedAt = latestRow?.confirmedAt ?? null;
+        const isStale =
+          latestRow != null && now.getTime() - latestRow.updatedAt.getTime() > staleAfterMs;
 
-    return {
-      walletAddress,
-      totalActions,
-      byStatus,
-      pendingTxHashes,
-      isStale,
-      latestActivityAt,
-      latestConfirmedAt
-    };
+        const checkpoint = await tx.indexerCheckpoint.findUnique({ where: { id: "singleton" } });
+        const watermark: IngestionWatermark = {
+          latestLedger: checkpoint?.latestLedger ?? null,
+          asOf: checkpoint?.lastSuccessSyncTime ?? null
+        };
+
+        return {
+          walletAddress,
+          totalActions,
+          byStatus,
+          pendingTxHashes,
+          isStale,
+          latestActivityAt,
+          latestConfirmedAt,
+          watermark
+        };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+    );
   }
 
   async exportActivity(params: {
@@ -1068,6 +1112,26 @@ export class LedgerService {
         indexerVersion
       }
     });
+  }
+
+  /**
+   * Lightweight ingestion watermark (#731) for read endpoints that don't
+   * need a full snapshot transaction of their own — a single query/cache
+   * read whose only job is to say "as of what ingestion point was this
+   * response computed". Callers doing multiple related reads (like
+   * `getDashboardSummary` above) should read the checkpoint inside their
+   * own transaction instead, so the watermark is guaranteed to match the
+   * data it's reported alongside rather than being read moments apart.
+   */
+  async getIngestionWatermark(): Promise<IngestionWatermark> {
+    const checkpoint = this.cacheService
+      ? await this.cacheService.getCheckpoint()
+      : await this.prisma.indexerCheckpoint.findUnique({ where: { id: "singleton" } });
+
+    return {
+      latestLedger: checkpoint?.latestLedger ?? null,
+      asOf: checkpoint?.lastSuccessSyncTime ?? null
+    };
   }
 
   async getIndexerHealth(options: { staleAfterMs?: number; now?: Date } = {}): Promise<any> {

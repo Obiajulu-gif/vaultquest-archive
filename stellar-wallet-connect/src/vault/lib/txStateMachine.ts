@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { TimelineStage } from "../../components/TransactionTimeline";
 import type { PoolActionInput, PoolActionType, VaultContractClient } from "../contract/types";
 import { assertNetworkMatchesBeforeSigning, assertNotMultisigBeforeSigning } from "../../core/walletService.js";
+import { assertSessionAliveBeforeSigning } from "../../core/sessionLiveness.js";
 
 export type ActiveTxStage = Exclude<TimelineStage, "success" | "failed">;
 
@@ -377,6 +378,11 @@ export function useTxFlow(): TxFlowResult {
         // with a clear message, rather than letting it hit an ambiguous
         // low-level signing/threshold error later.
         assertNotMultisigBeforeSigning();
+        // #733: fresh wallet session-liveness check — catches a dead,
+        // locked, or silently-switched session before the signing prompt,
+        // instead of surfacing a confusing failure after the user has
+        // already committed to this action.
+        await assertSessionAliveBeforeSigning();
 
         transition({ type: "AWAIT_SIGNATURE" });
         const result = await client.submitAction(type, input);

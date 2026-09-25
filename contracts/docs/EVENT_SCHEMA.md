@@ -32,7 +32,13 @@ ledger when available.
 | `drip_deposited` | backend indexing, frontend balance/TVL refresh | `pool_id`, `wallet`, `amount`, `shares_delta`, `total_deposited`, `tvl`, `idempotency_key?` |
 | `reward_claimed` | backend indexing, frontend reward history refresh | `pool_id`, `wallet`, `amount`, `asset`, `cycle`, `idempotency_key?` |
 | `withdrawn` | backend indexing, frontend position refresh | `pool_id`, `wallet`, `amount`, `shares_burned`, `remaining_shares`, `idempotency_key?` |
-| `payout_selected` | backend indexing, frontend winner/reward refresh | `pool_id`, `winner`, `amount`, `asset`, `cycle`, `randomness_ref?` |
+| `payout_selected` | backend indexing, frontend winner/reward refresh | `pool_id`, `winner`, `round_id`, `amount`, `asset`, `cycle`, `randomness_ref?` |
+| `round_randomness_committed` | draw-proof generation, audit trail (#715) | `pool_id`, `round_id`, `signer`, `commitment` |
+| `round_randomness_revealed` | draw-proof generation, audit trail (#715) | `pool_id`, `round_id`, `signer` |
+| `round_randomness_resolved` | draw-proof generation (backend `drawProofService`) (#715) | `pool_id`, `round_id`, `winning_ticket`, `source` (`commit_reveal` \| `prng_fallback`) |
+| `round_randomness_fallback` | audit trail — reveal window missed (#715) | `pool_id`, `round_id`, `caller` |
+| `round_winner_selected` | backend indexing, frontend winner refresh (#715) | `pool_id`, `round_id`, `winner` |
+| `round_ticket_weighted` | audit trail — time-weighted ticket allocation (#719) | `pool_id`, `round_id`, `wallet`, `raw_amount`, `weighted_amount`, `weight_bps` |
 | `paused` | backend operations, frontend disabled states | `scope`, `admin`, `reason`, `paused_at` |
 | `recovered` | backend operations, frontend disabled states | `scope`, `admin`, `recovered_at` |
 | `config_changed` | backend indexing, frontend config refresh | `scope`, `admin`, `key`, `old_value?`, `new_value`, `effective_at` |

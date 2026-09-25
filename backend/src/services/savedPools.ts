@@ -140,6 +140,18 @@ export class SavedPoolsService {
   }
 
   /**
+   * Looks up existing saved pools for a wallet by external pool id.
+   * Read-only; used by the import pipeline's dry run.
+   */
+  async findByPoolIds(walletAddress: string, poolIds: string[]): Promise<SavedPoolRecord[]> {
+    if (poolIds.length === 0) return [];
+    const rows = await this.prisma.savedPool.findMany({
+      where: { walletAddress, poolId: { in: poolIds } },
+    });
+    return rows as unknown as SavedPoolRecord[];
+  }
+
+  /**
    * Removes a saved pool reference for a wallet.
    *
    * @param walletAddress - Wallet identifier

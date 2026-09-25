@@ -41,7 +41,9 @@ import { DashboardAggregateService } from "./services/dashboardAggregateService.
 import { dashboardAggregatesRoutes } from "./routes/dashboardAggregates.js";
 import { EmailService } from "./services/emailService.js";
 import { DataExportService } from "./services/dataExport.js";
+import { DataImportService } from "./services/dataImport.js";
 import { exportsRoutes } from "./routes/exports.js";
+import { importsRoutes } from "./routes/imports.js";
 
 export type AppDeps = {
   prisma: PrismaClient;
@@ -185,6 +187,10 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     listSavedPools: (wallet, cursor, limit) => savedPoolsSvc.listSavedPools(wallet, cursor, limit),
   });
   app.register(exportsRoutes(exportSvc, requirePermission("own.data.export", [walletPrincipal])));
+  app.register(
+    importsRoutes(new DataImportService(savedPoolsSvc), requirePermission("own.data.import", [walletPrincipal])),
+  );
+
   // Central Error Handler Middleware
   app.setErrorHandler(errorHandler);
 

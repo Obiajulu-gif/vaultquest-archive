@@ -400,6 +400,46 @@ model DrawProof {
   @@map("draw_proofs")
 }
 
+// #750 — Transactionally consistent dashboard aggregate snapshot.
+//
+// Aggregates (TVL, prize pool, win distribution) are computed and stored
+// in the same database transaction as the detail rows they summarise, so
+// the numbers shown on the dashboard always correspond to a single
+// consistent snapshot of the underlying data.
+//
+// `watermark` is the `action_ledger.updated_at` ceiling of the most
+// recent row included in this snapshot. The dashboard endpoint returns
+// both the aggregate and the watermark; the UI compares the watermark
+// against the freshness of independently-fetched detail rows and shows
+// a staleness warning if they diverge.
+//
+// `scope` identifies which logical dataset this aggregate covers
+// (e.g. "global", "vault:<id>", "wallet:<address>").
+model DashboardAggregate {
+  id                  String   @id @default(uuid()) @db.Uuid
+  /// Identifies the logical dataset: "global", "vault:<id>", etc.
+  scope               String
+  /// The updated_at of the most recent action_ledger row included.
+  /// All detail rows with updated_at <= watermark are included in this snapshot.
+  watermark           DateTime
+  /// Total value locked across all active deposits (string to preserve precision).
+  totalValueLocked    String   @map("total_value_locked")
+  /// Current prize pool balance (string to preserve precision).
+  totalPrizePool      String   @map("total_prize_pool")
+  /// Historical win distribution serialised as JSON array.
+  winDistribution     Json     @map("win_distribution")
+  /// Number of confirmed deposit rows included in this snapshot.
+  depositCount        Int      @map("deposit_count")
+  /// Sum of all confirmed deposit amounts included in this snapshot.
+  depositTotal        String   @map("deposit_total")
+  /// ISO timestamp when this snapshot was computed.
+  computedAt          DateTime @default(now()) @map("computed_at")
+
+  @@unique([scope])
+  @@index([scope, watermark])
+  @@map("dashboard_aggregates")
+}
+
 model Category {
   id          String   @id @default(uuid()) @db.Uuid
   slug        String   @unique

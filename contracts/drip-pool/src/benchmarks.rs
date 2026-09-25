@@ -24,7 +24,7 @@
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger as _},
-    Address, Env, IntoVal, Vec,
+    Address, BytesN, Env, IntoVal, Vec,
 };
 
 // ── Helper functions ────────────────────────────────────────────────────────
@@ -64,6 +64,28 @@ fn deposit_all(env: &Env, client: &DripPoolClient, participants: &Vec<Address>, 
         let user = participants.get(i).unwrap();
         client.deposit(&user, &amount);
     }
+}
+
+/// Benchmark helper (#715): resolves a single depositor as a round's winner
+/// via the full commit-reveal flow, so `draw_winner` benchmarks exercise the
+/// real post-#715 signature/lookup path.
+fn resolve_round_winner(
+    env: &Env,
+    client: &DripPoolClient,
+    admin: &Address,
+    depositor: &Address,
+    amount: i128,
+) -> u32 {
+    let round_id = client.open_round(admin);
+    client.round_deposit(depositor, &round_id, &amount);
+    let seed = BytesN::from_array(env, &[7u8; 32]);
+    let commitment: BytesN<32> = env.crypto().sha256(&seed.to_bytes()).to_bytes();
+    client.commit_round_randomness(admin, &round_id, &commitment);
+    client.lock_round(admin, &round_id);
+    client.reveal_round_randomness(admin, &round_id, &seed);
+    let candidates = soroban_sdk::vec![env, depositor.clone()];
+    client.select_round_winner(admin, &round_id, &candidates);
+    round_id
 }
 
 // ── Benchmark: Join Operations ──────────────────────────────────────────────
@@ -732,9 +754,11 @@ fn bench_draw_winner_1_participant() {
 
     let participants = create_participants(&env, &client, 1);
     deposit_all(&env, &client, &participants, 1_000);
+    let winning_depositor = participants.get(0).unwrap();
+    let round_id = resolve_round_winner(&env, &client, &admin, &winning_depositor, 1_000);
 
-    let winner = client.draw_winner(&admin, &100);
-    assert_eq!(winner, admin);
+    let winner = client.draw_winner(&admin, &round_id, &100);
+    assert_eq!(winner, winning_depositor);
 }
 
 #[test]
@@ -744,9 +768,11 @@ fn bench_draw_winner_10_participants() {
 
     let participants = create_participants(&env, &client, 10);
     deposit_all(&env, &client, &participants, 1_000);
+    let winning_depositor = participants.get(0).unwrap();
+    let round_id = resolve_round_winner(&env, &client, &admin, &winning_depositor, 1_000);
 
-    let winner = client.draw_winner(&admin, &100);
-    assert_eq!(winner, admin);
+    let winner = client.draw_winner(&admin, &round_id, &100);
+    assert_eq!(winner, winning_depositor);
 }
 
 #[test]
@@ -756,9 +782,11 @@ fn bench_draw_winner_100_participants() {
 
     let participants = create_participants(&env, &client, 100);
     deposit_all(&env, &client, &participants, 1_000);
+    let winning_depositor = participants.get(0).unwrap();
+    let round_id = resolve_round_winner(&env, &client, &admin, &winning_depositor, 1_000);
 
-    let winner = client.draw_winner(&admin, &100);
-    assert_eq!(winner, admin);
+    let winner = client.draw_winner(&admin, &round_id, &100);
+    assert_eq!(winner, winning_depositor);
 }
 
 #[test]
@@ -768,9 +796,11 @@ fn bench_draw_winner_1000_participants() {
 
     let participants = create_participants(&env, &client, 1000);
     deposit_all(&env, &client, &participants, 1_000);
+    let winning_depositor = participants.get(0).unwrap();
+    let round_id = resolve_round_winner(&env, &client, &admin, &winning_depositor, 1_000);
 
-    let winner = client.draw_winner(&admin, &100);
-    assert_eq!(winner, admin);
+    let winner = client.draw_winner(&admin, &round_id, &100);
+    assert_eq!(winner, winning_depositor);
 }
 
 // ── Benchmark: Multiple Deposits per Participant ────────────────────────────

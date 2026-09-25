@@ -99,7 +99,22 @@ export const actionsRoutes = (
         cursor: q.cursor,
         limit: q.limit
       });
-      return page(result.items.map(serialize), { nextCursor: result.nextCursor, limit: q.limit });
+      // #731: reports the ingestion point this list was read at, so a
+      // caller comparing it against another read (e.g. /dashboard/summary's
+      // own watermark) can tell whether the two came from the same
+      // ingestion generation or straddled a burst of new writes — see
+      // backend/docs/READ_CONSISTENCY.md.
+      const watermark = await svc.getIngestionWatermark();
+      return page(
+        result.items.map(serialize),
+        { nextCursor: result.nextCursor, limit: q.limit },
+        {
+          watermark: {
+            latest_ledger: watermark.latestLedger,
+            as_of: watermark.asOf
+          }
+        }
+      );
     });
 
     app.delete("/actions", async (req) => {
@@ -130,7 +145,14 @@ export const actionsRoutes = (
         pending_tx_hashes: summary.pendingTxHashes,
         is_stale: summary.isStale,
         latest_activity_at: summary.latestActivityAt,
-        latest_confirmed_at: summary.latestConfirmedAt
+        latest_confirmed_at: summary.latestConfirmedAt,
+        // #731: read from the same snapshot transaction as the fields
+        // above, so it exactly describes the ingestion point this summary
+        // was computed at (see getDashboardSummary / READ_CONSISTENCY.md).
+        watermark: {
+          latest_ledger: summary.watermark.latestLedger,
+          as_of: summary.watermark.asOf
+        }
       });
     });
 
@@ -142,7 +164,18 @@ export const actionsRoutes = (
     app.get("/portfolio/summary", async (req) => {
       const q = portfolioQuery.parse(req.query);
       const summary = await svc.getPortfolioSummary(q.wallet);
-      return ok(summary);
+      // #731: getPortfolioSummary's own read is a single query (one MVCC
+      // snapshot already), but the watermark is still fetched separately
+      // here, so a caller can compare it against a concurrently-fetched
+      // /dashboard/summary or /actions read to detect a straddled burst.
+      const watermark = await svc.getIngestionWatermark();
+      return ok({
+        ...summary,
+        watermark: {
+          latest_ledger: watermark.latestLedger,
+          as_of: watermark.asOf
+        }
+      });
     });
 
     /**

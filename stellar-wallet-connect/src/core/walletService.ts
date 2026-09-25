@@ -1,5 +1,10 @@
 import { connectedPublicKey, connectedNetwork, isNetworkMismatch, multisigStatus } from "./store.js";
 import { checkMultisigStatus, MULTISIG_UNSUPPORTED_MESSAGE } from "./multisig.js";
+import {
+  startSessionLivenessWatcher,
+  stopSessionLivenessWatcher,
+  WalletSessionLostError,
+} from "./sessionLiveness.js";
 import { kit } from "./kit.js";
 import { getFrontendEnv } from "./env.js";
 import { resolveHorizonUrl } from "./horizonConfig.js";
@@ -121,6 +126,11 @@ function setConnection(publicKey: string, provider: string): void {
 
   startNetworkWatcher();
 
+  // #733: start watching this session's liveness (heartbeat + focus/
+  // visibility re-checks) so a dead/switched wallet is caught proactively
+  // rather than surfacing as a confusing error mid-signing.
+  startSessionLivenessWatcher(appProvider, publicKey);
+
   // #736: detect multisig/thresholded accounts up front, in the background,
   // so a "not yet supported" state can be shown before the user attempts
   // an action rather than surfacing as a confusing low-level signing error.
@@ -146,6 +156,7 @@ function disconnect(): void {
   isNetworkMismatch.set(false);
 
   stopNetworkWatcher();
+  stopSessionLivenessWatcher();
 }
 
 export async function checkAndNotifyFunding(): Promise<void> {
@@ -218,6 +229,29 @@ async function disconnectWallet(provider?: WalletType): Promise<void> {
   } finally {
     disconnect();
   }
+}
+
+/**
+ * Recovery path for a session the liveness watcher/preflight marked
+ * `"lost"` (#733). Re-runs the normal `connectWallet` flow for the same
+ * provider the session was on — deliberately not `disconnect()` first,
+ * since `setConnection` only clears persisted/query-cache state
+ * (`resetUserScopedState`, which includes `usePersistedTxState`'s
+ * `vaultquest_pending_tx_state` record) when the reconnected public key
+ * actually differs from the previous one. Reconnecting to the *same*
+ * account therefore resumes any in-progress action for free; reconnecting
+ * to a *different* one correctly drops it, same as switching accounts
+ * normally does.
+ *
+ * Throws if there is no known prior provider to reconnect (e.g. called
+ * after a hard `disconnect()`).
+ */
+async function reconnectSession(): Promise<WalletConnectionResult> {
+  const provider = loadedProvider();
+  if (!provider) {
+    throw new WalletSessionLostError("No wallet session to reconnect — connect a wallet first.");
+  }
+  return connectWallet(provider);
 }
 
 async function getConnectedNetwork(): Promise<NetworkType> {
@@ -370,6 +404,7 @@ function initializeConnection(): StoredWalletConnection | null {
     });
 
     startNetworkWatcher();
+    startSessionLivenessWatcher(appProvider, storedPublicKey);
 
     checkMultisigStatus(getHorizonPool(), storedPublicKey)
       .then((status) => multisigStatus.set(status))
@@ -451,6 +486,7 @@ export {
   getWalletAvailability,
   connectWallet,
   disconnectWallet,
+  reconnectSession,
   getConnectedNetwork,
   setConnection,
   disconnect,

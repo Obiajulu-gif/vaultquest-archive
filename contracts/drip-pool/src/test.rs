@@ -43,6 +43,36 @@ fn setup() -> (Env, DripPoolClient<'static>, Address) {
     (env, client, admin)
 }
 
+/// Test helper (#715): runs a full round lifecycle — open, `depositor`
+/// deposits `amount`, single-committer commit-reveal, then
+/// `select_round_winner` — so `draw_winner` tests don't need to hand-roll
+/// the randomness flow. With a single depositor, the winning ticket always
+/// falls in their sole segment, so the winner is deterministically
+/// `depositor`.
+fn setup_round_with_winner(
+    env: &Env,
+    client: &DripPoolClient,
+    admin: &Address,
+    depositor: &Address,
+    amount: i128,
+) -> u32 {
+    let round_id = client.open_round(admin);
+    client.round_deposit(depositor, &round_id, &amount);
+
+    let seed = BytesN::from_array(env, &[7u8; 32]);
+    let commitment: BytesN<32> = env.crypto().sha256(&seed.to_bytes()).to_bytes();
+    client.commit_round_randomness(admin, &round_id, &commitment);
+
+    client.lock_round(admin, &round_id);
+    client.reveal_round_randomness(admin, &round_id, &seed);
+
+    let candidates = vec![env, depositor.clone()];
+    let winner = client.select_round_winner(admin, &round_id, &candidates);
+    assert_eq!(winner, Some(depositor.clone()));
+
+    round_id
+}
+
 /// Advance ledger sequence past the lockup window.
 fn skip_lockup(env: &Env) {
     let current = env.ledger().sequence();
@@ -331,8 +361,9 @@ fn draw_winner_emits_payout_event() {
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &1_000);
-    let winner = client.draw_winner(&admin, &100);
-    assert_eq!(winner, admin);
+    let round_id = setup_round_with_winner(&env, &client, &admin, &alice, 1_000);
+    let winner = client.draw_winner(&admin, &round_id, &100);
+    assert_eq!(winner, alice);
     let events = env.events().all();
     assert!(!events.events().is_empty(), "no events emitted");
 }
@@ -342,7 +373,7 @@ fn draw_winner_zero_prize_fails() {
     let (env, client, admin) = setup();
     client.create(&admin);
     assert_eq!(
-        client.try_draw_winner(&admin, &0),
+        client.try_draw_winner(&admin, &0, &0),
         Err(Ok(Error::InvalidAmount))
     );
 }
@@ -353,8 +384,19 @@ fn draw_winner_unauthorized_fails() {
     client.create(&admin);
     let rando = Address::generate(&env);
     assert_eq!(
-        client.try_draw_winner(&rando, &100),
+        client.try_draw_winner(&rando, &0, &100),
         Err(Ok(Error::Unauthorized))
+    );
+}
+
+#[test]
+fn draw_winner_without_selected_round_winner_fails() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+    let round_id = client.open_round(&admin);
+    assert_eq!(
+        client.try_draw_winner(&admin, &round_id, &100),
+        Err(Ok(Error::RoundWinnerNotSelected))
     );
 }
 
@@ -927,14 +969,15 @@ fn prize_is_separate_from_principal() {
     client.join(&alice);
     client.deposit(&alice, &1_000);
 
-    // Admin draws a prize that goes to admin (current stub winner)
-    let winner = client.draw_winner(&admin, &500);
-    assert_eq!(winner, admin);
+    // Admin draws a prize for the round's resolved winner (#715 — never a
+    // hardcoded address).
+    let round_id = setup_round_with_winner(&env, &client, &admin, &alice, 1_000);
+    let winner = client.draw_winner(&admin, &round_id, &500);
+    assert_eq!(winner, alice);
 
-    let admin_savings = client.savings(&admin);
-    assert_eq!(admin_savings.prize, 500);
-    assert_eq!(admin_savings.deposited, 0);
-    assert_eq!(admin_savings.deposited, 0); // admin never deposited
+    let alice_savings = client.savings(&alice);
+    assert_eq!(alice_savings.prize, 500);
+    assert_eq!(alice_savings.deposited, 1_000);
 }
 
 /// Claim prize then withdraw principal — total paid never exceeds deposit + rewards.
@@ -946,18 +989,16 @@ fn claim_and_withdraw_total_limited() {
     client.join(&alice);
     client.deposit(&alice, &1_000);
 
-    // Credit yield and prize
+    // Credit yield and prize — both to alice, the round's resolved winner
+    // (#715, prize can no longer go to a hardcoded address).
     client.add_yield(&admin, &200);
     client.credit_yield(&admin, &alice, &200);
-    client.draw_winner(&admin, &300); // prize goes to admin (stub winner)
+    let round_id = setup_round_with_winner(&env, &client, &admin, &alice, 1_000);
+    client.draw_winner(&admin, &round_id, &300);
 
-    // Admin claims prize
-    let prize_claimed = client.claim_reward(&admin);
-    assert_eq!(prize_claimed, 300);
-
-    // Alice claims yield
-    let yield_claimed = client.claim_reward(&alice);
-    assert_eq!(yield_claimed, 200);
+    // Alice claims yield + prize together
+    let claimed = client.claim_reward(&alice);
+    assert_eq!(claimed, 500);
 
     // Alice withdraws principal
     skip_lockup(&env);
@@ -968,7 +1009,7 @@ fn claim_and_withdraw_total_limited() {
     assert_eq!(client.claim_reward(&alice), 0);
     assert_eq!(client.withdraw(&alice), 0);
 
-    // Total paid out: prizes + yield + principal = 300 + 200 + 1000 = 1500
+    // Total paid out: prize + yield + principal = 300 + 200 + 1000 = 1500
     // Total deposited: 1000 (alice)
     // Total rewards: 200 (yield) + 300 (prize) = 500
     // Total = deposited + rewards = 1500, which is >= total paid = 1500 ✓
@@ -1037,11 +1078,13 @@ fn invariant_total_claimed_never_exceeds_rewards() {
     client.join(&admin);
 
     // Sequence: Alice deposits, admin adds yield, admin credits alice,
-    // admin draws prize, alice claims, bob deposits, alice withdraws.
+    // admin draws prize (for a round admin itself is the resolved winner
+    // of, #715), alice claims, bob deposits, alice withdraws.
     client.deposit(&alice, &1_000);
     client.add_yield(&admin, &300);
     client.credit_yield(&admin, &alice, &300);
-    client.draw_winner(&admin, &200);
+    let round_id = setup_round_with_winner(&env, &client, &admin, &admin, 1_000);
+    client.draw_winner(&admin, &round_id, &200);
 
     // Alice claims yield
     let alice_claimed = client.claim_reward(&alice);
@@ -1399,7 +1442,7 @@ fn draw_winner_blocked_in_emergency() {
 
     // draw_winner fails with InEmergency
     assert_eq!(
-        client.try_draw_winner(&admin, &100),
+        client.try_draw_winner(&admin, &0, &100),
         Err(Ok(Error::InEmergency))
     );
 

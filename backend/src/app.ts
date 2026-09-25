@@ -31,7 +31,7 @@ import type { Logger } from "pino";
 import type { CacheService } from "./services/cacheService.js";
 import { walletAuthRoutes } from "./routes/walletAuth.js";
 import { WalletAuthService } from "./services/walletAuth.js";
-import { createRequireAdminSession } from "./middleware/auth.js";
+import { requirePermission, walletSessionResolver } from "./middleware/rbac.js";
 import { transactionMetricsRoutes } from "./routes/transactionMetrics.js";
 import { CategoryService } from "./services/categoryService.js";
 import { categoriesRoutes } from "./routes/categories.js";
@@ -146,7 +146,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   const apiKeyGuard = requireApiKey(deps.apiKey);
 
   const walletAuthSvc = new WalletAuthService(deps.prisma);
-  const requireAdminSession = createRequireAdminSession(walletAuthSvc, deps.adminWalletAddresses ?? []);
+  const walletPrincipal = walletSessionResolver(walletAuthSvc, deps.adminWalletAddresses ?? []);
   const categorySvc = new CategoryService(deps.prisma, deps.cacheService, deps.categoriesCacheTtlSeconds);
   const notificationSvc = new NotificationService(deps.prisma, deps.reminderLeadHours);
   const dashboardAggregateSvc = new DashboardAggregateService(deps.prisma);
@@ -167,7 +167,13 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.register(transactionMetricsRoutes(deps.prisma, apiKeyGuard));
   app.register(categoriesRoutes(categorySvc, apiKeyGuard));
   app.register(notificationsRoutes(notificationSvc));
-  app.register(auditRoutes(auditSvc, requireAdminSession));
+  app.register(
+    auditRoutes(auditSvc, {
+      read: requirePermission("admin.audit.read", [walletPrincipal]),
+      write: requirePermission("admin.audit.write", [walletPrincipal]),
+      export: requirePermission("admin.audit.export", [walletPrincipal]),
+    }),
+  );
   app.register(dashboardAggregatesRoutes(dashboardAggregateSvc, apiKeyGuard));
 
   // Central Error Handler Middleware

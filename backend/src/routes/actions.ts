@@ -49,13 +49,11 @@ export const actionsRoutes = (
       const keyRaw = Array.isArray(keyHeader) ? keyHeader[0] : keyHeader;
       const keyParsed = idempotencyKeySchema.safeParse(keyRaw);
       if (!keyParsed.success) {
-        return reply.status(400).send({
-          error: {
-            code: "INVALID_PAYLOAD",
-            message: "Idempotency-Key header must be a UUID",
-            issues: keyParsed.error.issues
-          }
-        });
+        throw AppError.validation(
+          "Idempotency-Key header must be a UUID",
+          undefined,
+          keyParsed.error.issues
+        );
       }
       const body = createActionBody.parse(req.body);
 

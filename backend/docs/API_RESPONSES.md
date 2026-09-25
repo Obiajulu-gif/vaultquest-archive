@@ -36,28 +36,30 @@ Clients should pass the returned cursor back as `?cursor=` unchanged.
 
 ## Errors
 
-All errors use:
+All errors use one envelope. The full field reference, the complete code
+table (category, retryability, HTTP status) and worked examples live in
+[`docs/API.md`](../../docs/API.md#standard-errors); they are enforced by
+`tests/apiContract.spec.ts`.
 
 ```json
 {
   "error": {
     "code": "INVALID_PAYLOAD",
+    "category": "validation",
     "message": "validation failed",
-    "details": "optional route-specific context",
+    "retryable": false,
+    "recovery": "Correct the highlighted fields and submit again.",
+    "error_id": "9c1d0e0e-5b8c-4b4f-8a53-2f1a6d3f7b10",
+    "status_code": 400,
     "issues": []
   }
 }
 ```
 
-Representative status codes:
-
-| Status | Code | Meaning |
-|---|---|---|
-| 400 | `INVALID_PAYLOAD` | Request body, query string, or required header failed validation |
-| 401 | `UNAUTHORIZED` | Missing or invalid internal service secret |
-| 404 | `NOT_FOUND` | Requested action does not exist |
-| 409 | `IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD`, `TX_HASH_ALREADY_ATTACHED`, `ILLEGAL_TRANSITION` | Retry or state conflict |
-| 500 | `INTERNAL` | Unexpected backend failure |
+Codes, categories, retryability and user-facing text come from the catalog in
+`src/errorTaxonomy.ts`. Internal messages never reach clients on server errors;
+`error_id` is the request's correlation id (also the `Correlation-Id` header)
+and is what users should quote to support.
 
 Validation responses include Zod `issues`; frontend code should prefer
 `error.message` for general copy and field-specific `issues` when rendering
@@ -67,5 +69,6 @@ forms.
 
 Backend routes that cannot reach Stellar RPC, Horizon, Prisma, or another
 upstream should return `NETWORK_ERROR` when the failure is expected/recoverable.
-Unknown exceptions fall back to `INTERNAL`. Frontends may retry `NETWORK_ERROR`
-with backoff; do not auto-retry validation, auth, or conflict errors.
+Unknown exceptions fall back to `INTERNAL`. Frontends should retry only when
+`error.retryable` is `true` (with backoff, honouring `Retry-After`); never
+auto-retry validation, auth, or conflict errors.

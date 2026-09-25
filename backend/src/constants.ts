@@ -45,7 +45,12 @@ export const ERROR_CODES = {
   SETTLEMENT_IN_PROGRESS: "SETTLEMENT_IN_PROGRESS",
   // #509 — submission succeeded on-chain but independent verification
   // against the finalized event could not confirm the payout facts.
-  SETTLEMENT_PAYOUT_UNVERIFIED: "SETTLEMENT_PAYOUT_UNVERIFIED"
+  SETTLEMENT_PAYOUT_UNVERIFIED: "SETTLEMENT_PAYOUT_UNVERIFIED",
+  // #768 — codes previously emitted as bare strings by the error handler.
+  INTERNAL: "INTERNAL",
+  DATABASE_ERROR: "DATABASE_ERROR",
+  CONFLICT: "CONFLICT",
+  HTTP_ERROR: "HTTP_ERROR"
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];

@@ -159,7 +159,6 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.register(schemaVersionRoutes(schemaVersionSvc));
   app.register(internalRoutes(svc, deps.internalSecret, new TransactionTraceService(deps.prisma)));
   app.register(reconciliationRoutes(deps.prisma, deps.internalSecret));
-  app.register(metricsRoutes(metricsSvc));
   app.register(usersRoutes, { prefix: "/api/users", prisma: deps.prisma });
   app.register(metricsRoutes(metricsSvc, apiKeyGuard));
   app.register(prometheusRoutes);

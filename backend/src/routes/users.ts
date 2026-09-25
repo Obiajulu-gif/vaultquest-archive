@@ -2,6 +2,7 @@ import { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
 import { PrismaClient } from "@prisma/client";
+import { safeText } from "../schemas/safeContent.js";
 
 export const usersRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async (
   fastify,
@@ -41,8 +42,8 @@ export const usersRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async (
   );
 
   const updateProfileSchema = z.object({
-    name: z.string().optional(),
-    bio: z.string().optional(),
+    name: safeText(120).optional(),
+    bio: safeText(1000, { multiline: true }).optional(),
     email: z.string().email().optional(),
   });
 

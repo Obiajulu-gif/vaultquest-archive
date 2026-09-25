@@ -252,3 +252,22 @@ Alert on:
 - Unusual session creation patterns
 - Chain verification failures
 - Cardinality budget exceeded
+
+---
+
+## Untrusted content
+
+Implemented in [`lib/safe-content.ts`](../lib/safe-content.ts) (shared by backend and UI).
+
+| Surface                                   | Rule                                                                                    |
+| ----------------------------------------- | --------------------------------------------------------------------------------------- |
+| Profile `name`/`bio`, saved-pool names    | **Stripped** on write (`safeText`): script/style/tags/comments, control, zero-width and bidi characters removed; empty-after-strip is rejected where a value is required |
+| Outbound links (`SafeExternalLink`)       | http(s) only, no embedded credentials, no control/invisible characters, no protocol-relative URLs; renders inert text if unsafe |
+| Link attributes                           | Always `target="_blank" rel="noopener noreferrer nofollow"`; destination host exposed in `title` and to screen readers |
+| Markdown (`renderSafeMarkdown`)           | Input escaped first; only `code`, bold, italic and safe links are produced; raw HTML shown as text; images degrade to alt text |
+| Explorer transaction links                | Hash is URL-encoded before being appended to the explorer base                          |
+
+Policy: text is **stripped**, URLs are **rejected** (never silently rewritten).
+React escapes text at render time; sanitization on write is defence in depth.
+Not covered: a Content-Security-Policy header (the root layout uses an inline
+theme script and would need a nonce first).

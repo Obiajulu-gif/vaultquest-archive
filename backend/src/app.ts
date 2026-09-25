@@ -37,6 +37,8 @@ import { CategoryService } from "./services/categoryService.js";
 import { categoriesRoutes } from "./routes/categories.js";
 import { NotificationService } from "./services/notificationService.js";
 import { notificationsRoutes } from "./routes/notifications.js";
+import { DashboardAggregateService } from "./services/dashboardAggregateService.js";
+import { dashboardAggregatesRoutes } from "./routes/dashboardAggregates.js";
 import { EmailService } from "./services/emailService.js";
 
 export type AppDeps = {
@@ -147,6 +149,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   const requireAdminSession = createRequireAdminSession(walletAuthSvc, deps.adminWalletAddresses ?? []);
   const categorySvc = new CategoryService(deps.prisma, deps.cacheService, deps.categoriesCacheTtlSeconds);
   const notificationSvc = new NotificationService(deps.prisma, deps.reminderLeadHours);
+  const dashboardAggregateSvc = new DashboardAggregateService(deps.prisma);
 
   // Register routes (healthRoutes already includes /health endpoint)
   app.register(actionsRoutes(svc, apiKeyGuard));
@@ -165,6 +168,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.register(categoriesRoutes(categorySvc, apiKeyGuard));
   app.register(notificationsRoutes(notificationSvc));
   app.register(auditRoutes(auditSvc, requireAdminSession));
+  app.register(dashboardAggregatesRoutes(dashboardAggregateSvc, apiKeyGuard));
 
   // Central Error Handler Middleware
   app.setErrorHandler(errorHandler);

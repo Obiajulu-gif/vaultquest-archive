@@ -4,6 +4,8 @@ A Stellar/Soroban no-loss prize-savings dApp. Users deposit into pooled
 vaults; yield is awarded to a random winner each round while every deposit
 remains withdrawable in full.
 
+i just need to create a draft pr plaese
+
 ## Packages
 
 | Path | What it does |

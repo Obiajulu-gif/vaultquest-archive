@@ -82,6 +82,12 @@ const schema = z.object({
    * `drawsAt` timestamp falls within this many hours of "now".
    */
   REMINDER_LEAD_HOURS: z.coerce.number().int().positive().default(24),
+  /** Background job worker (#771). Set WORKER_ENABLED=false to run enqueue-only replicas. */
+  WORKER_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
+  WORKER_POLL_INTERVAL_MS: z.coerce.number().int().min(100).default(2000),
   SENDGRID_API_KEY: z.string().min(1).optional(),
   EMAIL_FROM: z.string().email().optional(),
   /**
@@ -135,6 +141,8 @@ export function getEnv(): Env {
       REDIS_URL: process.env.REDIS_URL || undefined,
       CATEGORIES_CACHE_TTL_SECONDS: Number(process.env.CATEGORIES_CACHE_TTL_SECONDS ?? 3600),
       REMINDER_LEAD_HOURS: Number(process.env.REMINDER_LEAD_HOURS ?? 24),
+      WORKER_ENABLED: (process.env.WORKER_ENABLED ?? "true") === "true",
+      WORKER_POLL_INTERVAL_MS: Number(process.env.WORKER_POLL_INTERVAL_MS ?? 2000),
       SENDGRID_API_KEY: process.env.SENDGRID_API_KEY || undefined,
       EMAIL_FROM: process.env.EMAIL_FROM || undefined,
       CRITICAL_READ_MIN_QUORUM: Number(process.env.CRITICAL_READ_MIN_QUORUM ?? 2),

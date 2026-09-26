@@ -44,7 +44,14 @@ See `docs/superpowers/specs/2026-04-23-action-ledger-design.md` for the full con
 
 ## Environment
 
-See `.env.example`. All values are validated at boot via Zod.
+See `.env.example`. All values are validated at boot via Zod. Background worker settings: `WORKER_ENABLED` (default `true`) and `WORKER_POLL_INTERVAL_MS` (default `2000`); see [`docs/BACKGROUND_JOBS.md`](docs/BACKGROUND_JOBS.md).
+
+## Errors, telemetry, jobs and the API contract
+
+* Error codes, categories and user-safe messages: [`../docs/API.md#standard-errors`](../docs/API.md#standard-errors) (`src/errorTaxonomy.ts`).
+* Metrics, structured log fields and dashboard queries: [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md).
+* Background worker, retry policy, dead-letter handling and local instructions: [`docs/BACKGROUND_JOBS.md`](docs/BACKGROUND_JOBS.md).
+* The public API contract is checked by `tests/apiContract.spec.ts`; update `../docs/API.md` and `src/contracts/apiContract.ts` together with any response change.
 
 ## Tests
 

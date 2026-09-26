@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import type { Logger } from "pino";
+import { withTelemetry } from "./telemetry.js";
 import {
   assembleDrawProof,
   verifyProofIntegrity,
@@ -45,7 +46,13 @@ export class DrawProofService {
     private readonly logger?: Logger
   ) {}
 
-  async generateProof(options: GenerateProofOptions): Promise<DrawProofRecord | null> {
+  generateProof(options: GenerateProofOptions): Promise<DrawProofRecord | null> {
+    return withTelemetry({ operation: "draw_proof.generate", actorType: "worker" }, () =>
+      this.generateProofImpl(options)
+    );
+  }
+
+  private async generateProofImpl(options: GenerateProofOptions): Promise<DrawProofRecord | null> {
     const action = await this.prisma.actionLedger.findUnique({
       where: { id: options.actionId },
     });

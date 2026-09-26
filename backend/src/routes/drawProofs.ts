@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import type { DrawProofService } from "../services/drawProofService.js";
+import { AppError } from "../errors.js";
 import { ok, page } from "../responses.js";
 
 const listQuery = z.object({
@@ -44,24 +45,20 @@ export const drawProofRoutes = (svc: DrawProofService): FastifyPluginAsync =>
       );
     });
 
-    app.get("/api/draw-proofs/:drawId", async (req, reply) => {
+    app.get("/api/draw-proofs/:drawId", async (req) => {
       const { drawId } = req.params as { drawId: string };
       const record = await svc.getProof(drawId);
       if (!record) {
-        return reply.status(404).send({
-          error: { code: "NOT_FOUND", message: `Draw proof ${drawId} not found` },
-        });
+        throw AppError.notFound(`Draw proof ${drawId} not found`);
       }
       return ok(serializeProof(record));
     });
 
-    app.get("/api/draw-proofs/:drawId/verify", async (req, reply) => {
+    app.get("/api/draw-proofs/:drawId/verify", async (req) => {
       const { drawId } = req.params as { drawId: string };
       const record = await svc.getProof(drawId);
       if (!record) {
-        return reply.status(404).send({
-          error: { code: "NOT_FOUND", message: `Draw proof ${drawId} not found` },
-        });
+        throw AppError.notFound(`Draw proof ${drawId} not found`);
       }
       return ok({
         draw_id: record.drawId,
@@ -71,13 +68,11 @@ export const drawProofRoutes = (svc: DrawProofService): FastifyPluginAsync =>
       });
     });
 
-    app.post("/api/draw-proofs/:drawId/verify", async (req, reply) => {
+    app.post("/api/draw-proofs/:drawId/verify", async (req) => {
       const { drawId } = req.params as { drawId: string };
       const result = await svc.verifyProof(drawId);
       if (!result) {
-        return reply.status(404).send({
-          error: { code: "NOT_FOUND", message: `Draw proof ${drawId} not found` },
-        });
+        throw AppError.notFound(`Draw proof ${drawId} not found`);
       }
       return ok({
         draw_id: result.record.drawId,

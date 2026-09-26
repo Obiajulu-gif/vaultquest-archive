@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import type { PrismaClient } from "@prisma/client";
 import { ERROR_CODES, FINALITY_POLICY } from "../constants.js";
 import { AppError } from "../errors.js";
+import { withTelemetry } from "./telemetry.js";
 import type { IntentInput, ActionRecord } from "../types.js";
 import type { CacheService } from "./cacheService.js";
 import { Amount, InvalidAmountError } from "../amount.js";
@@ -143,7 +144,17 @@ export class LedgerService {
     private readonly cacheService?: CacheService
   ) {}
 
-  async createAction(input: IntentInput & { observedLedger?: number; confirmationDepth?: number }): Promise<ActionRecord> {
+  onActionConfirmed(callback: ActionConfirmedCallback): void {
+    this.onActionConfirmedCallback = callback;
+  }
+
+  createAction(input: IntentInput & { observedLedger?: number; confirmationDepth?: number }): Promise<ActionRecord> {
+    return withTelemetry({ operation: "action.create", actorType: "user" }, () =>
+      this.createActionImpl(input)
+    );
+  }
+
+  private async createActionImpl(input: IntentInput & { observedLedger?: number; confirmationDepth?: number }): Promise<ActionRecord> {
     const existing = await this.prisma.actionLedger.findUnique({
       where: { idempotencyKey: input.idempotencyKey }
     });
@@ -238,7 +249,17 @@ export class LedgerService {
    * Convert pending -> submitted atomically, requiring an active lease.
    * Also persists envelope evidence before any external submission.
    */
-  async attachTxHash(
+  attachTxHash(
+    actionId: string,
+    txHash: string,
+    lease: { workerId: string; ttlMs?: number }
+  ): Promise<ActionRecord> {
+    return withTelemetry({ operation: "action.attach_tx", actorType: "service" }, () =>
+      this.attachTxHashImpl(actionId, txHash, lease)
+    );
+  }
+
+  private async attachTxHashImpl(
     actionId: string,
     txHash: string,
     lease: { workerId: string; ttlMs?: number }
@@ -329,7 +350,13 @@ export class LedgerService {
     }
   }
 
-  async cancelAction(id: string, errorCode: string, errorDetail?: string): Promise<ActionRecord> {
+  cancelAction(id: string, errorCode: string, errorDetail?: string): Promise<ActionRecord> {
+    return withTelemetry({ operation: "action.cancel", actorType: "user" }, () =>
+      this.cancelActionImpl(id, errorCode, errorDetail)
+    );
+  }
+
+  private async cancelActionImpl(id: string, errorCode: string, errorDetail?: string): Promise<ActionRecord> {
     const row = await this.prisma.actionLedger.findUnique({ where: { id } });
     if (!row) throw AppError.notFound(`action ${id} not found`);
 
@@ -477,13 +504,13 @@ export class LedgerService {
   }
 
 
-  async reconcileEvent(input: {
-    txHash: string;
-    sorobanEventId: string;
-    eventPayload: unknown;
-    statusHint: "confirmed" | "reverted";
-    ledger?: number;
-  }): Promise<{ matched: boolean }> {
+  reconcileEvent(input: ReconcileEventInput): Promise<{ matched: boolean }> {
+    return withTelemetry({ operation: "action.reconcile_event", actorType: "system" }, () =>
+      this.reconcileEventImpl(input)
+    );
+  }
+
+  private async reconcileEventImpl(input: ReconcileEventInput): Promise<{ matched: boolean }> {
     return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const row = await tx.actionLedger.findFirst({ where: { txHash: input.txHash } });
 

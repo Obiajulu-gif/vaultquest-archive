@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/client";
-import type { PrismaClient, IndexerCheckpoint } from "@prisma/client";
-import { ERROR_CODES, canTransition, ActionStatus } from "../constants.js";
+import type { PrismaClient } from "@prisma/client";
+import { ERROR_CODES, FINALITY_POLICY } from "../constants.js";
 import { AppError } from "../errors.js";
 import type { IntentInput, ActionRecord } from "../types.js";
 import type { CacheService } from "./cacheService.js";
@@ -143,11 +143,7 @@ export class LedgerService {
     private readonly cacheService?: CacheService
   ) {}
 
-  onActionConfirmed(callback: ActionConfirmedCallback): void {
-    this.onActionConfirmedCallback = callback;
-  }
-
-  async createAction(input: IntentInput): Promise<ActionRecord> {
+  async createAction(input: IntentInput & { observedLedger?: number; confirmationDepth?: number }): Promise<ActionRecord> {
     const existing = await this.prisma.actionLedger.findUnique({
       where: { idempotencyKey: input.idempotencyKey }
     });
@@ -166,25 +162,26 @@ export class LedgerService {
       return existing as unknown as ActionRecord;
     }
 
+    const confirmationDepth = input.confirmationDepth ?? FINALITY_POLICY.defaultConfirmationDepth;
+    const observedLedger = input.observedLedger ?? 0;
+    const finalizedLedger = observedLedger > 0 ? observedLedger + confirmationDepth : null;
+
     const created = await this.prisma.actionLedger.create({
       data: {
         idempotencyKey: input.idempotencyKey,
         walletAddress: input.walletAddress,
         actionType: input.actionType,
-        actionPayload: input.actionPayload as object
+        actionPayload: input.actionPayload as object,
+        observedLedger,
+        finalizedLedger,
+        confirmationDepth,
+        finalityStatus: observedLedger > 0 ? "provisional" : "finalized"
       }
     });
     return created as unknown as ActionRecord;
   }
 
-  /**
-   * Acquire a work lease for an action. CAS-insert into action_leases only if
-   * no row exists for this action or any existing lease is expired.
-   */
-  async acquireLease({ actionId, workerId, ttlMs }: LeaseInput): Promise<boolean> {
-    const ttl = ttlMs ?? this.defaultLeaseTtlMs;
-    const expiresAt = new Date(Date.now() + ttl);
-
+  async attachTxHash(id: string, txHash: string, observedLedger?: number): Promise<ActionRecord> {
     try {
       await this.prisma.actionLease.create({
         data: { actionId, workerId, expiresAt }
@@ -276,58 +273,47 @@ export class LedgerService {
         if (leaseUpsert.workerId !== lease.workerId) {
           throw AppError.conflict(ERROR_CODES.ILLEGAL_TRANSITION, "action is leased by another worker");
         }
+        const ledger = pending.eventPayload && typeof pending.eventPayload === "object" && "ledger" in pending.eventPayload
+          ? Number((pending.eventPayload as Record<string, unknown>).ledger)
+          : observedLedger;
 
-        const owner = await tx.actionLedger.findFirst({
-          where: { txHash, NOT: { id: actionId } }
-        });
-        if (owner) {
-          throw AppError.conflict(
-            ERROR_CODES.TX_HASH_ALREADY_ATTACHED,
-            `tx_hash already attached to action ${owner.id}`
-          );
-        }
+        const confirmationDepth = row.confirmationDepth ?? FINALITY_POLICY.defaultConfirmationDepth;
+        const finalizedLedger = ledger && ledger > 0 ? ledger + confirmationDepth : null;
+        const finalityStatus = ledger && ledger > 0 ? "provisional" : "finalized";
 
-        const pending = this.cacheService
-          ? await this.cacheService.getPendingEvent(txHash)
-          : await tx.pendingEvent.findUnique({ where: { txHash } });
-
-        if (pending) {
-          await tx.pendingEvent.update({
-            where: { txHash },
-            data: { consumedAt: new Date() }
-          });
-          if (this.cacheService) {
-            await this.cacheService.deletePendingEvent(txHash);
-          }
-          const confirmed = await tx.actionLedger.update({
-            where: { id: actionId },
-            data: {
-              status: pending.statusHint === "reverted" ? "reverted" : "confirmed",
-              txHash,
-              submittedAt: new Date(),
-              // #751: event-derived, identical to the reconcileEvent path.
-              // The cache returns JSON, so the date may arrive as a string.
-              confirmedAt: pending.ledgerClosedAt ? new Date(pending.ledgerClosedAt) : new Date(),
-              sorobanEventId: pending.sorobanEventId,
-              // #509: same rationale as reconcileEvent — this is the
-              // finalized event's decoded payload, not the caller's claim.
-              verifiedPayload: pending.eventPayload as object,
-              errorCode: pending.statusHint === "reverted" ? ERROR_CODES.REVERTED_ON_CHAIN : null
-            }
-          });
-          await tx.actionLease.delete({ where: { actionId } });
-          return confirmed as unknown as ActionRecord;
-        }
-
-        const updated = await tx.actionLedger.update({
-          where: { id: actionId },
+        const confirmed = await tx.actionLedger.update({
+          where: { id },
           data: {
             status: "submitted",
             txHash,
-            submittedAt: new Date()
+            submittedAt: new Date(),
+            confirmedAt: new Date(),
+            sorobanEventId: pending.sorobanEventId,
+            errorCode: pending.statusHint === "reverted" ? ERROR_CODES.REVERTED_ON_CHAIN : null,
+            observedLedger: ledger ?? row.observedLedger,
+            finalizedLedger,
+            finalityStatus
           }
         });
-        return updated as unknown as ActionRecord;
+        return confirmed as unknown as ActionRecord;
+      }
+
+      const confirmationDepth = row.confirmationDepth ?? FINALITY_POLICY.defaultConfirmationDepth;
+      const finalizedLedger = observedLedger && observedLedger > 0 ? observedLedger + confirmationDepth : null;
+      const finalityStatus = observedLedger && observedLedger > 0 ? "provisional" : "finalized";
+
+      const updated = await tx.actionLedger.update({
+        where: { id },
+        data: {
+          status: "submitted",
+          txHash,
+          submittedAt: new Date(),
+          observedLedger: observedLedger ?? row.observedLedger,
+          finalizedLedger,
+          finalityStatus
+        }
+      });
+      return updated as unknown as ActionRecord;
       });
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
@@ -458,19 +444,54 @@ export class LedgerService {
     return { items: items as unknown as ActionRecord[], nextCursor };
   }
 
-  async reconcileEvent(input: ReconcileEventInput): Promise<{ matched: boolean }> {
+  async getHistoryPaginated(params: {
+    walletAddress: string;
+    status?: ActionStatus;
+    type?: string;
+    skip: number;
+    limit: number;
+  }): Promise<{ items: ActionRecord[]; total: number }> {
+    const { walletAddress, status, type, skip, limit } = params;
+    
+    const whereClause: any = { walletAddress };
+    if (status) whereClause.status = status;
+    if (type) whereClause.actionType = type;
+
+    const [total, rows] = await this.prisma.$transaction([
+      this.prisma.actionLedger.count({ where: whereClause }),
+      this.prisma.actionLedger.findMany({
+        where: whereClause,
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        skip,
+        take: limit,
+      }),
+    ]);
+
+    return { items: rows as unknown as ActionRecord[], total };
+  }
+
+
+  async reconcileEvent(input: {
+    txHash: string;
+    sorobanEventId: string;
+    eventPayload: unknown;
+    statusHint: "confirmed" | "reverted";
+    ledger?: number;
+  }): Promise<{ matched: boolean }> {
     return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const row = await tx.actionLedger.findFirst({ where: { txHash: input.txHash } });
 
       if (!row) {
+        const eventPayloadWithLedger = input.ledger
+          ? { ...(input.eventPayload as object), ledger: input.ledger }
+          : input.eventPayload;
         await tx.pendingEvent.upsert({
           where: { txHash: input.txHash },
           create: {
             txHash: input.txHash,
             sorobanEventId: input.sorobanEventId,
-            eventPayload: input.eventPayload as object,
-            statusHint: input.statusHint,
-            ledgerClosedAt: input.ledgerClosedAt ?? null
+            eventPayload: eventPayloadWithLedger as object,
+            statusHint: input.statusHint
           },
           update: {}
         });
@@ -478,7 +499,7 @@ export class LedgerService {
           await this.cacheService.setPendingEvent({
             txHash: input.txHash,
             sorobanEventId: input.sorobanEventId,
-            eventPayload: input.eventPayload,
+            eventPayload: eventPayloadWithLedger,
             statusHint: input.statusHint,
             ledgerClosedAt: input.ledgerClosedAt ?? null,
             receivedAt: new Date(),
@@ -492,18 +513,21 @@ export class LedgerService {
         return { matched: true };
       }
 
+      const ledger = input.ledger ?? row.observedLedger;
+      const confirmationDepth = row.confirmationDepth ?? FINALITY_POLICY.defaultConfirmationDepth;
+      const finalizedLedger = ledger && ledger > 0 ? ledger + confirmationDepth : null;
+      const finalityStatus = ledger && ledger > 0 ? "provisional" : "finalized";
+
       await tx.actionLedger.update({
         where: { id: row.id },
         data: {
           status: input.statusHint === "reverted" ? "reverted" : "confirmed",
           sorobanEventId: input.sorobanEventId,
-          // #509: persist what the finalized on-chain event actually decoded
-          // to, distinct from actionPayload (client-supplied, mutable).
-          // Nothing should treat this action's payout facts as trustworthy
-          // from actionPayload alone — see verifyPayoutIntegrity below.
-          verifiedPayload: input.eventPayload as object,
-          confirmedAt: input.ledgerClosedAt ?? new Date(),
-          errorCode: input.statusHint === "reverted" ? ERROR_CODES.REVERTED_ON_CHAIN : null
+          confirmedAt: new Date(),
+          errorCode: input.statusHint === "reverted" ? ERROR_CODES.REVERTED_ON_CHAIN : null,
+          observedLedger: ledger ?? row.observedLedger,
+          finalizedLedger,
+          finalityStatus
         }
       });
 
@@ -521,255 +545,126 @@ export class LedgerService {
   }
 
   /**
-   * Batch variant of `reconcileEvent` (#588): reconciles many independent
-   * events in a single transaction instead of N sequential round-trips.
-   *
-   * Outcome semantics are identical to calling `reconcileEvent` per event:
-   *
-   *   - unmatched tx hashes are parked in `pending_events` (createMany with
-   *     skipDuplicates, so re-delivered events from a previous tick are
-   *     silently ignored — same idempotency as the per-event upsert);
-   *   - matched rows transition to confirmed/reverted exactly as before,
-   *     with leases released and the onActionConfirmed callback fired for
-   *     confirmed `select_winner` events;
-   *   - rows already in a terminal state (confirmed/reverted) are skipped
-   *     without rewriting them.
-   *
-   * Only independent events should be batched together (distinct tx hashes).
-   * Risk note: a batch shares one transaction, so it holds row locks for the
-   * whole batch and a single bad row rolls the entire batch back — the
-   * caller (StellarIndexer.tick) batches only events that already decoded
-   * successfully, keeps batches bounded by the indexer's batchSize (default
-   * 50), and never includes quarantined events. Keep batches modest to avoid
-   * long-held transactions on heavily contended tables.
+   * Creates a compensating entry for an invalidated provisional event.
+   * This preserves auditability by appending a new record rather than deleting history.
+   * The compensating entry references the original action via compensatesId.
    */
-  async reconcileEvents(
-    events: ReconcileEventInput[]
-  ): Promise<ReconcileEventOutcome[]> {
-    if (events.length === 0) return [];
-
-    const confirmedSelectWinners: string[] = [];
-
-    return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      const txHashes = [...new Set(events.map((e) => e.txHash))];
-
-      // Single duplicate-detection read for the whole batch instead of one
-      // findFirst per event.
-      const rows = await tx.actionLedger.findMany({
-        where: { txHash: { in: txHashes } },
-        select: { id: true, txHash: true, status: true, actionType: true }
-      });
-      const rowByHash = new Map(rows.map((r) => [r.txHash, r]));
-
-      const outcomes: ReconcileEventOutcome[] = [];
-      const unmatched: ReconcileEventInput[] = [];
-      const pendingUpdates: Array<{
-        id: string;
-        input: ReconcileEventInput;
-        actionType: string;
-      }> = [];
-
-      for (const input of events) {
-        const row = rowByHash.get(input.txHash);
-        if (!row) {
-          unmatched.push(input);
-          outcomes.push({ txHash: input.txHash, matched: false });
-        } else if (row.status === "confirmed" || row.status === "reverted") {
-          // Already terminal — same no-op as reconcileEvent.
-          outcomes.push({ txHash: input.txHash, matched: true });
-        } else {
-          pendingUpdates.push({ id: row.id, input, actionType: row.actionType });
-          outcomes.push({ txHash: input.txHash, matched: true });
-        }
-      }
-
-      if (unmatched.length > 0) {
-        await tx.pendingEvent.createMany({
-          data: unmatched.map((e) => ({
-            txHash: e.txHash,
-            sorobanEventId: e.sorobanEventId,
-            eventPayload: e.eventPayload as object,
-            statusHint: e.statusHint,
-            ledgerClosedAt: e.ledgerClosedAt ?? null
-          })),
-          skipDuplicates: true
-        });
-      }
-
-      for (const { id, input, actionType } of pendingUpdates) {
-        const confirmed = input.statusHint === "confirmed";
-        await tx.actionLedger.update({
-          where: { id },
-          data: {
-            status: confirmed ? "confirmed" : "reverted",
-            sorobanEventId: input.sorobanEventId,
-            verifiedPayload: input.eventPayload as object,
-            confirmedAt: input.ledgerClosedAt ?? new Date(),
-            errorCode: confirmed ? null : ERROR_CODES.REVERTED_ON_CHAIN
-          }
-        });
-        await tx.actionLease.deleteMany({ where: { actionId: id } });
-        if (confirmed && actionType === "select_winner") {
-          confirmedSelectWinners.push(id);
-        }
-      }
-
-      return outcomes;
-    }).then(async (outcomes) => {
-      // Non-transactional side effects, applied after the batch commits so a
-      // cache or callback failure can never roll back the DB writes.
-      for (const actionId of confirmedSelectWinners) {
-        try {
-          this.onActionConfirmedCallback?.(actionId, "select_winner");
-        } catch {
-          // callback errors should not break reconciliation
-        }
-      }
-
-      if (this.cacheService) {
-        for (const input of events) {
-          if (!outcomes.some((o) => o.txHash === input.txHash && o.matched)) {
-            await this.cacheService.setPendingEvent({
-              txHash: input.txHash,
-              sorobanEventId: input.sorobanEventId,
-              eventPayload: input.eventPayload,
-              statusHint: input.statusHint,
-              ledgerClosedAt: input.ledgerClosedAt ?? null,
-              receivedAt: new Date(),
-              consumedAt: null
-            });
-          }
-        }
-      }
-      return outcomes;
-    });
-  }
-
-  /**
-   * Appends raw fetched events to the chain event log (#751). One round-trip
-   * per batch; re-fetched events are no-ops via skipDuplicates on the event id.
-   */
-  async appendChainEvents(events: RawHorizonEvent[]): Promise<void> {
-    if (events.length === 0) return;
-    await this.prisma.chainEvent.createMany({
-      data: events.map((e) => ({
-        id: e.id,
-        ledger: e.ledger,
-        ledgerClosedAt: e.ledgerClosedAt ? new Date(e.ledgerClosedAt) : null,
-        txHash: e.txHash,
-        contractId: e.contractId,
-        topicXdr: e.topicXdr,
-        valueXdr: e.valueXdr,
-        successful: e.successful
-      })),
-      skipDuplicates: true
-    });
-  }
-
-  /**
-   * Ingestion queue depth for the leading-indicator metrics (#752): events
-   * parked waiting for an intent, and quarantined events holding the
-   * cursor. The poison count rides (resolved_at, detected_at); the pending
-   * count scans pending_events, which only ever holds parked events.
-   */
-  async getIngestionBacklog(): Promise<{ pendingEvents: number; quarantinedEvents: number }> {
-    const [pendingEvents, quarantinedEvents] = await Promise.all([
-      this.prisma.pendingEvent.count({ where: { consumedAt: null } }),
-      this.prisma.poisonEvent.count({ where: { resolvedAt: null } })
-    ]);
-    return { pendingEvents, quarantinedEvents };
-  }
-
-  /**
-   * Records a malformed or unrecognized event for operator triage instead of
-   * silently dropping it or letting it corrupt a projection. Idempotent on
-   * sorobanEventId so retried ticks against the same poison event don't pile up.
-   */
-  async quarantineEvent(input: {
-    sorobanEventId: string;
-    ledger: number;
-    contractId: string;
-    txHash: string;
-    rawEvent: unknown;
+  async createCompensatingEntry(input: {
+    originalActionId: string;
+    walletAddress: string;
+    actionType: "compensating";
+    actionPayload: Record<string, unknown>;
+    idempotencyKey: string;
     reason: string;
-  }): Promise<void> {
-    await this.prisma.poisonEvent.upsert({
-      where: { sorobanEventId: input.sorobanEventId },
-      create: {
-        sorobanEventId: input.sorobanEventId,
-        ledger: input.ledger,
-        contractId: input.contractId,
-        txHash: input.txHash,
-        rawEvent: input.rawEvent as object,
-        reason: input.reason
-      },
-      update: {
-        reason: input.reason
+  }): Promise<ActionRecord> {
+    const original = await this.prisma.actionLedger.findUnique({ where: { id: input.originalActionId } });
+    if (!original) throw AppError.notFound(`original action ${input.originalActionId} not found`);
+
+    if (original.finalityStatus === "finalized") {
+      throw AppError.conflict(
+        ERROR_CODES.ILLEGAL_TRANSITION,
+        "cannot create compensating entry for finalized action; use manual reconciliation"
+      );
+    }
+
+    // Mark the original as invalidated
+    await this.prisma.actionLedger.update({
+      where: { id: input.originalActionId },
+      data: { finalityStatus: "invalidated" }
+    });
+
+    // Create the compensating entry
+    const compensating = await this.prisma.actionLedger.create({
+      data: {
+        idempotencyKey: input.idempotencyKey,
+        walletAddress: input.walletAddress,
+        actionType: input.actionType,
+        actionPayload: {
+          ...input.actionPayload,
+          originalActionId: input.originalActionId,
+          reason: input.reason,
+          originalTxHash: original.txHash,
+          originalStatus: original.status
+        } as object,
+        finalityStatus: "finalized",
+        observedLedger: null,
+        finalizedLedger: null,
+        confirmationDepth: null,
+        compensatesId: input.originalActionId
       }
     });
+
+    return compensating as unknown as ActionRecord;
   }
 
   /**
-   * Upserts a `PoolRegistry` row from a decoded vault-factory `pool`/
-   * `deployed` event (#507). Keyed on `poolAddress` (unique, and derived
-   * deterministically from (factoryAddress, salt) on-chain, so a replayed
-   * or re-fetched event for the same pool is a no-op update rather than a
-   * duplicate row) — the same idempotency guarantee `reconcileEvent` gives
-   * action-ledger rows, applied here for registry entries instead.
+   * Finalizes provisional entries whose confirmation depth has been reached.
+   * Called periodically by a background job (e.g., indexer checkpoint advancement).
+   * Returns the number of entries finalized.
    */
-  async upsertPoolRegistryEntry(input: {
-    salt: string;
-    poolAddress: string;
-    factoryAddress: string;
-    admin: string;
-    asset: string;
-    wasmHash: string;
-    deployedLedger: number;
-  }): Promise<void> {
-    await this.prisma.poolRegistry.upsert({
-      where: { poolAddress: input.poolAddress },
-      create: {
-        salt: input.salt,
-        poolAddress: input.poolAddress,
-        factoryAddress: input.factoryAddress,
-        admin: input.admin,
-        asset: input.asset,
-        wasmHash: input.wasmHash,
-        deployedLedger: input.deployedLedger
+  async finalizeProvisionalEntries(currentLedger: number): Promise<number> {
+    const provisional = await this.prisma.actionLedger.findMany({
+      where: {
+        finalityStatus: "provisional",
+        finalizedLedger: { not: null, lte: currentLedger }
       },
-      update: {
-        admin: input.admin,
-        asset: input.asset,
-        wasmHash: input.wasmHash
+      select: { id: true }
+    });
+
+    if (provisional.length === 0) return 0;
+
+    await this.prisma.actionLedger.updateMany({
+      where: { id: { in: provisional.map((r) => r.id) } },
+      data: { finalityStatus: "finalized" }
+    });
+
+    return provisional.length;
+  }
+
+  /**
+   * Checks if a provisional entry has been invalidated by a reorg.
+   * This would be called when the indexer detects a gap or receives a conflicting event.
+   * Returns the invalidated action IDs.
+   */
+  async detectInvalidatedProvisional(currentLedger: number, knownValidTxHashes: Set<string>): Promise<string[]> {
+    const provisional = await this.prisma.actionLedger.findMany({
+      where: {
+        finalityStatus: "provisional",
+        txHash: { not: null }
+      },
+      select: { id: true, txHash: true, observedLedger: true }
+    });
+
+    const invalidated: string[] = [];
+    for (const row of provisional) {
+      if (row.txHash && !knownValidTxHashes.has(row.txHash)) {
+        // The tx hash is no longer in the canonical chain
+        // Check if we've passed the max tracking depth
+        if (row.observedLedger && currentLedger - row.observedLedger > FINALITY_POLICY.maxTrackedDepth) {
+          invalidated.push(row.id);
+        }
       }
-    });
+    }
+
+    return invalidated;
   }
 
   /**
-   * Marks a registry entry inactive (mirrors the factory's own
-   * `deactivate_pool` — never touches the deployed pool contract itself,
-   * see vault-factory/src/lib.rs's doc comment on that method).
+   * Gets all provisional entries for a wallet (for UI pending indicators).
    */
-  async deactivatePoolRegistryEntry(salt: string): Promise<void> {
-    await this.prisma.poolRegistry.updateMany({
-      where: { salt },
-      data: { active: false }
+  async getProvisionalEntries(walletAddress: string): Promise<ActionRecord[]> {
+    const rows = await this.prisma.actionLedger.findMany({
+      where: { walletAddress, finalityStatus: "provisional" },
+      orderBy: { createdAt: "desc" }
     });
+    return rows as unknown as ActionRecord[];
   }
 
   /**
-   * Active pool contract addresses known to the registry — an additional
-   * indexer contract-id source layered on top of the static
-   * `INDEXER_CONTRACT_IDS` env var (kept as a fallback so existing
-   * single-pool deployments keep working unchanged; see the #507 design
-   * proposal).
+   * Gets the finality policy for documentation/UI display.
    */
-  async getActivePoolAddresses(): Promise<string[]> {
-    const rows = await this.prisma.poolRegistry.findMany({
-      where: { active: true },
-      select: { poolAddress: true }
-    });
-    return rows.map((r: { poolAddress: string }) => r.poolAddress);
+  getFinalityPolicy(): typeof FINALITY_POLICY {
+    return FINALITY_POLICY;
   }
 
   async findByIdempotencyKey(key: string): Promise<ActionRecord | null> {

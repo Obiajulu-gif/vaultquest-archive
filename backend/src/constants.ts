@@ -1,8 +1,11 @@
-export const ACTION_TYPES = ["deposit", "withdraw", "create_vault", "claim", "select_winner"] as const;
+export const ACTION_TYPES = ["deposit", "withdraw", "create_vault", "claim", "select_winner", "compensating"] as const;
 export type ActionType = (typeof ACTION_TYPES)[number];
 
 export const ACTION_STATUSES = ["pending", "submitted", "confirmed", "failed", "reverted", "orphaned"] as const;
 export type ActionStatus = (typeof ACTION_STATUSES)[number];
+
+export const FINALITY_STATUSES = ["provisional", "finalized", "invalidated"] as const;
+export type FinalityStatus = (typeof FINALITY_STATUSES)[number];
 
 export const TERMINAL_STATUSES: readonly ActionStatus[] = ["confirmed", "failed", "reverted", "orphaned"];
 
@@ -101,61 +104,18 @@ export const SETTLEMENT_RETRY = {
 } as const;
 
 /**
- * Schema version tracking for deployment validation
+ * Finality policy configuration.
+ * Stellar/Soroban uses probabilistic finality; the default of 32 ledgers (~5 min)
+ * matches the recommended safety margin for high-value transactions.
+ * Override via env FINALITY_CONFIRMATION_DEPTH for different risk profiles.
  */
-export const SCHEMA_VERSIONS = {
-  // Current database schema version (from latest migration)
-  DATABASE: "20260725000002",
+export const FINALITY_POLICY = {
+  /** Default confirmation depth in ledgers (32 = ~5 minutes on Stellar). */
+  defaultConfirmationDepth: 32,
+  /** Maximum depth we track for finality validation. */
+  maxTrackedDepth: 500,
+  /** How often to check and finalize provisional entries (ms). */
+  checkIntervalMs: 30_000,
+} as const;
 
-  // Current indexer checkpoint schema version
-  INDEXER: "1.2.0",
-
-  // Supported version ranges for this release
-  SUPPORTED_DATABASE_VERSIONS: [
-    "20260725000002",
-    "20260725000001",
-    "20260725000000"
-  ],
-
-  SUPPORTED_INDEXER_VERSIONS: ["1.2.0", "1.1.0"]
-};
-
-/**
- * Version compatibility check
- */
-export function isVersionSupported(
-  current: string,
-  supported: string[]
-): boolean {
-  return supported.includes(current);
-}
-
-/**
- * Get version mismatch details
- */
-export function getVersionMismatch(
-  currentDb: string,
-  currentIndexer: string
-): {
-  compatible: boolean;
-  issues: string[];
-} {
-  const issues: string[] = [];
-
-  if (!isVersionSupported(currentDb, SCHEMA_VERSIONS.SUPPORTED_DATABASE_VERSIONS)) {
-    issues.push(
-      `Database schema version ${currentDb} is not supported. Expected one of: ${SCHEMA_VERSIONS.SUPPORTED_DATABASE_VERSIONS.join(", ")}`
-    );
-  }
-
-  if (!isVersionSupported(currentIndexer, SCHEMA_VERSIONS.SUPPORTED_INDEXER_VERSIONS)) {
-    issues.push(
-      `Indexer schema version ${currentIndexer} is not supported. Expected one of: ${SCHEMA_VERSIONS.SUPPORTED_INDEXER_VERSIONS.join(", ")}`
-    );
-  }
-
-  return {
-    compatible: issues.length === 0,
-    issues
-  };
-}
+export type FinalityPolicy = typeof FINALITY_POLICY;

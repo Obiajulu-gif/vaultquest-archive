@@ -17,7 +17,16 @@ import {
   normalizeStellarNetwork,
 } from "../lib/wallets.js";
 import { HorizonPool } from "./horizonPool.js";
-import { vaultQueryClient } from "../vault/data/queryClient.js";
+import {
+  providerRegistry,
+  connectWithProvider,
+  disconnectProvider,
+  registerDefaultProviders,
+  type WalletProvider,
+  type ProviderConnectionResult,
+  type WalletError,
+  type WalletErrorCode,
+} from "./provider.js";
 
 export interface WalletConnectionResult {
   address: string;
@@ -494,4 +503,12 @@ export {
   getWalletHealth,
   getHorizonPool,
   setHorizonPool,
+  providerRegistry,
+  connectWithProvider,
+  disconnectProvider,
+  registerDefaultProviders,
+  type WalletProvider,
+  type ProviderConnectionResult,
+  type WalletError,
+  type WalletErrorCode,
 };

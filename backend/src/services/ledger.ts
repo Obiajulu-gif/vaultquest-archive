@@ -459,7 +459,11 @@ export class LedgerService {
   }
 
   async reconcileEvent(input: ReconcileEventInput): Promise<{ matched: boolean }> {
-    return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    let shouldFireCallback = false;
+    let actionIdToCallback: string | null = null;
+    let actionTypeToCallback: string | null = null;
+
+    const outcome = await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const row = await tx.actionLedger.findFirst({ where: { txHash: input.txHash } });
 
       if (!row) {
@@ -507,17 +511,26 @@ export class LedgerService {
         }
       });
 
-      if (input.statusHint === "confirmed" && row.actionType === "select_winner") {
-        try {
-          this.onActionConfirmedCallback?.(row.id, row.actionType);
-        } catch {
-          // callback errors should not break reconciliation
-        }
+      const confirmed = input.statusHint === "confirmed";
+      if (confirmed && row.actionType === "select_winner") {
+        shouldFireCallback = true;
+        actionIdToCallback = row.id;
+        actionTypeToCallback = row.actionType;
       }
 
       await tx.actionLease.deleteMany({ where: { actionId: row.id } });
       return { matched: true };
     });
+
+    if (shouldFireCallback && actionIdToCallback && actionTypeToCallback) {
+      try {
+        this.onActionConfirmedCallback?.(actionIdToCallback, actionTypeToCallback);
+      } catch {
+        // callback errors should not break reconciliation
+      }
+    }
+
+    return outcome;
   }
 
   /**

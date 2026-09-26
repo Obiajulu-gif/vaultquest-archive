@@ -399,9 +399,9 @@ export class StellarIndexer {
     // affect state without being replayable. Idempotent on event id.
     await ledger.appendChainEvents(rawEvents);
 
-    // Track txHashes seen within this batch to detect intra-batch duplicates
+    // Track event IDs seen within this batch to detect intra-batch duplicates
     // before they reach the DB (reconcileEvent uses upsert with update:{} so
-    // it would silently accept a second write of the same hash).
+    // it would silently accept a second write of the same event id).
     const seenInBatch = new Set<string>();
 
     // ── Decode phase ─────────────────────────────────────────────────────
@@ -419,14 +419,14 @@ export class StellarIndexer {
     }> = [];
 
     for (const raw of rawEvents) {
-      // Intra-batch duplicate: same txHash appeared earlier in this tick.
-      if (seenInBatch.has(raw.txHash)) {
+      // Intra-batch duplicate: same Soroban event ID appeared earlier in this tick.
+      if (seenInBatch.has(raw.id)) {
         duplicates += 1;
         this.cursor = raw.id;
         latestLedger = raw.ledger;
         continue;
       }
-      seenInBatch.add(raw.txHash);
+      seenInBatch.add(raw.id);
 
       let payload: Record<string, unknown>;
       try {

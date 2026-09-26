@@ -1,4 +1,4 @@
-import { connectedPublicKey, connectedNetwork, isNetworkMismatch, multisigStatus } from "./store.js";
+import { connectedPublicKey, connectedNetwork, isNetworkMismatch, multisigStatus, isWalletInitialized } from "./store.js";
 import { checkMultisigStatus, MULTISIG_UNSUPPORTED_MESSAGE } from "./multisig.js";
 import {
   startSessionLivenessWatcher,
@@ -16,7 +16,7 @@ import {
   type WalletType,
   normalizeStellarNetwork,
 } from "../lib/wallets.js";
-import { HorizonPool } from "./horizonPool.js";
+import { HorizonPool, resolveHorizonNodes } from "./horizonPool.js";
 import { vaultQueryClient } from "../vault/data/queryClient.js";
 
 export interface WalletConnectionResult {
@@ -114,6 +114,7 @@ function setConnection(publicKey: string, provider: string): void {
   }
 
   connectedPublicKey.set(publicKey);
+  isWalletInitialized.set(true);
 
   // Set the network in the background and check for mismatch
   getConnectedNetwork().then((net) => {
@@ -416,6 +417,7 @@ function initializeConnection(): StoredWalletConnection | null {
     };
   }
 
+  isWalletInitialized.set(true);
   return null;
 }
 

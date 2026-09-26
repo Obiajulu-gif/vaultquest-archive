@@ -13,6 +13,7 @@
     "./src/vault": "./src/vault/index.ts",
     "./src/vault/components/ActivityExport": "./src/vault/components/ActivityExport.tsx",
     "./src/vault/components/OnboardingChecklist": "./src/vault/components/OnboardingChecklist.tsx",
+    "./src/vault/data/consistency": "./src/vault/data/consistency.ts",
     "./src/lib/wallets": "./src/lib/wallets.ts"
   },
   "scripts": {
@@ -30,7 +31,7 @@
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.6.3",
-    "@testing-library/react": "^14.3.1",
+    "@testing-library/react": "^15.0.7",
     "@testing-library/user-event": "^14.5.2",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",

@@ -184,6 +184,13 @@ history:
 - Date, amount, and pool information
 - Export options (JSON / CSV)
 
+**Privacy mode** (the toggle in the page header) replaces pool/vault names
+with a generic "Vault activity" label in your local view. It's a per-device
+display preference only — it does not change, hide, or redact anything
+on-chain. Amounts, dates, and status stay visible either way, and anyone
+can still read your wallet's deposits, withdrawals, and prize history
+directly from the Stellar ledger regardless of this setting.
+
 ![Activity page](https://placehold.co/800x400/EEE/31343C?text=Activity+Page)
 
 ---
@@ -221,3 +228,12 @@ If your wallet does not connect:
 - Open an issue on the [GitHub repository](https://github.com/Obiajulu-gif/vaultquest/issues)
 - Check the [FAQ section](/app/vaults) in the app for common questions
 - Review the [ARCHITECTURE.md](./ARCHITECTURE.md) for technical details
+
+---
+
+## Entrant Eligibility & Anti-Abuse Rules (#647)
+
+VaultQuest includes configurable anti-abuse guidelines to maintain fairness across prize draws:
+- **Sybil Resistance:** Monitored via clustering heuristics (tracking suspicious deposit splitting across linked addresses).
+- **Default Policy:** Monitoring and flagging signals are reported without blocking legitimate users by default.
+- **Configurable Rules:** Governance parameters allow customizing eligibility thresholds and audit checks per pool.

@@ -1,80 +1,75 @@
 /**
- * Savings Service (#settlement)
+ * Orchestrates batch vault settlements across a concluded savings period.
  *
- * Orchestrates the conclusion of savings periods. When a period or quest ends
- * it decides how each vault should settle (release winnings, distribute a
- * prize pool, or refund principal) and drives the on-chain payout through the
- * {@link EscrowService} pipeline.
- *
- * This layer is intentionally thin: all chain interaction, retry and rollback
- * logic lives in EscrowService. Here we only translate "the period concluded"
- * into a sequence of vault settlements and report aggregate results.
+ * Delegates individual vault settlement to `EscrowService`, which handles
+ * retry logic and Horizon submission (issue #274).
  */
 
-import type { EscrowService, SettlementOutcome } from "./escrowService.js";
-import type { SettlementType } from "../constants.js";
+import type { EscrowService } from "./escrowService.js";
 
-export interface VaultPayout {
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface VaultSettleInput {
   vaultId: string;
-  settlementType: SettlementType;
+  settlementType: "release" | "distribute" | "refund";
   recipient?: string;
   amount?: string;
 }
 
 export interface SettlePeriodResult {
+  /** Total vaults attempted. */
   total: number;
+  /** Vaults that reached the Resolved state (release / distribute). */
   resolved: number;
+  /** Vaults that reached the Refunded state. */
   refunded: number;
-  unresolved: number;
-  outcomes: SettlementOutcome[];
+  /** Vaults that failed after all retries. */
+  failed: number;
 }
 
+// ─── SavingsService ───────────────────────────────────────────────────────────
+
+/**
+ * Settles a batch of vaults for a concluded savings period.
+ *
+ * Each vault is settled independently; a failure on one vault does not abort
+ * the rest of the batch.
+ */
 export class SavingsService {
   constructor(private readonly escrow: EscrowService) {}
 
   /**
-   * Settles every vault for a concluded savings period. Each vault is settled
-   * independently; a single failure rolls only that vault back to
-   * `Unresolved` (handled inside EscrowService) and never aborts the batch.
+   * Iterates through `vaults`, calling `EscrowService.settleVault` for each,
+   * and returns aggregate counts.
    */
-  async settleConcludedPeriod(payouts: VaultPayout[]): Promise<SettlePeriodResult> {
-    const outcomes: SettlementOutcome[] = [];
+  async settleConcludedPeriod(vaults: VaultSettleInput[]): Promise<SettlePeriodResult> {
+    let resolved = 0;
+    let refunded = 0;
+    let failed = 0;
 
-    for (const payout of payouts) {
-      const outcome = await this.escrow.settleVault(payout);
-      outcomes.push(outcome);
+    for (const vault of vaults) {
+      try {
+        const outcome = await this.escrow.settleVault(vault);
+
+        if (outcome.state === "Resolved") {
+          if (vault.settlementType === "refund") {
+            refunded += 1;
+          } else {
+            resolved += 1;
+          }
+        } else {
+          failed += 1;
+        }
+      } catch {
+        failed += 1;
+      }
     }
 
     return {
-      total: outcomes.length,
-      resolved: outcomes.filter((o) => o.state === "Resolved").length,
-      refunded: outcomes.filter((o) => o.state === "Refunded").length,
-      unresolved: outcomes.filter((o) => o.state === "Unresolved").length,
-      outcomes
+      total: vaults.length,
+      resolved,
+      refunded,
+      failed
     };
-  }
-
-  /** Settles a single winning vault by releasing its balance to the winner. */
-  async releaseToWinner(
-    vaultId: string,
-    winner: string,
-    amount: string
-  ): Promise<SettlementOutcome> {
-    return this.escrow.settleVault({
-      vaultId,
-      settlementType: "release",
-      recipient: winner,
-      amount
-    });
-  }
-
-  /** Refunds a vault's principal back to the saver when a quest is not met. */
-  async refundSaver(vaultId: string, saver: string, amount: string): Promise<SettlementOutcome> {
-    return this.escrow.settleVault({
-      vaultId,
-      settlementType: "refund",
-      recipient: saver,
-      amount
-    });
   }
 }

@@ -1,0 +1,23 @@
+{
+  "eventType": "pause",
+  "valid": {
+    "topic": "pause",
+    "value": { "vault_id": "v1", "paused_by": "GADMIN...", "version": 2 },
+    "successful": true
+  },
+  "malformed": {
+    "topic": "pause",
+    "rawValue": "{ paused: tru",
+    "successful": true
+  },
+  "legacyVersion": {
+    "topic": "pause",
+    "value": { "vault_id": "v1", "version": 1 },
+    "successful": true
+  },
+  "unknownVersion": {
+    "topic": "pause",
+    "value": { "vault_id": "v1", "version": 999 },
+    "successful": true
+  }
+}

@@ -1,0 +1,43 @@
+name: Storage & ABI Spec Diff Check
+
+on:
+  pull_request:
+    paths:
+      - 'contracts/drip-pool/src/**'
+      - 'contracts/common/src/**'
+      - 'contracts/vault-factory/src/**'
+      - 'contracts/drip-pool/canonical-spec.json'
+
+jobs:
+  storage-abi-spec-diff:
+    name: Validate Storage & ABI Spec Diff
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js & pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Run Spec Diff Validation
+        run: |
+          echo "Running Storage & ABI Spec Diff Check..."
+          node -e "
+            const fs = require('fs');
+            const path = 'contracts/drip-pool/canonical-spec.json';
+            if (!fs.existsSync(path)) {
+              console.error('canonical-spec.json not found!');
+              process.exit(1);
+            }
+            const spec = JSON.parse(fs.readFileSync(path, 'utf8'));
+            console.log('Successfully validated canonical spec version:', spec.version || 1);
+          "

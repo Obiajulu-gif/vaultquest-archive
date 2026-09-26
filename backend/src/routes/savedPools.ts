@@ -5,9 +5,9 @@ import {
   savedPoolListQuery,
   savedPoolUpsertBody
 } from "../schemas/savedPools.js";
-import { ok } from "../responses.js";
+import { ok, page } from "../responses.js";
 
-function serialize(row: Awaited<ReturnType<SavedPoolsService["listSavedPools"]>>[number]) {
+function serialize(row: Awaited<ReturnType<SavedPoolsService["listSavedPools"]>>["items"][number]) {
   return {
     id: row.id,
     wallet_address: row.walletAddress,
@@ -31,8 +31,8 @@ export const savedPoolsRoutes = (svc: SavedPoolsService): FastifyPluginAsync =>
   async (app) => {
     app.get("/saved-pools", async (req) => {
       const q = savedPoolListQuery.parse(req.query);
-      const rows = await svc.listSavedPools(q.wallet);
-      return ok(rows.map(serialize));
+      const result = await svc.listSavedPools(q.wallet, q.cursor ?? null, q.limit);
+      return page(result.items.map(serialize), { nextCursor: result.nextCursor, limit: q.limit });
     });
 
     app.post("/saved-pools", async (req, reply) => {

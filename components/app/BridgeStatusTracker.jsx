@@ -3,6 +3,8 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { CheckCircle2, Circle, Clock, ExternalLink, AlertCircle, RefreshCw } from "lucide-react";
+import { buildStellarExplorerUrl } from "@/lib/stellar-explorer";
+import { defaultVaultDataConfig } from "@vaultquest/stellar-wallet-connect/src/vault/data/config";
 
 const BRIDGE_STEPS = [
   { id: "deposit", label: "Deposit Verification", chain: "origin" },
@@ -50,10 +52,14 @@ export default function BridgeStatusTracker({
   };
 
   const getExplorerUrl = (txHash, chain) => {
-    if (chain === "Stellar") {
-      return `https://stellar.expert/explorer/public/tx/${txHash}`;
+    if (chain !== "Stellar") {
+      return null;
     }
-    return `https://snowtrace.io/tx/${txHash}`;
+
+    return buildStellarExplorerUrl(
+      { type: "transaction", reference: txHash },
+      defaultVaultDataConfig.network.name,
+    );
   };
 
   const getStepStatus = (index) => {
@@ -186,15 +192,21 @@ export default function BridgeStatusTracker({
             <span className="text-xs font-medium text-vault-muted">
               Source Transaction:
             </span>
-            <a
-              href={getExplorerUrl(sourceTxHash, sourceChain)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 rounded-lg bg-vault-surface px-3 py-1.5 text-xs font-mono text-vault-text transition-all duration-300 hover:bg-red-500/10 hover:text-red-500"
-            >
-              <span className="truncate max-w-[200px]">{sourceTxHash}</span>
-              <ExternalLink className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
-            </a>
+            {getExplorerUrl(sourceTxHash, sourceChain) ? (
+              <a
+                href={getExplorerUrl(sourceTxHash, sourceChain)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-vault-surface px-3 py-1.5 text-xs font-mono text-vault-text transition-all duration-300 hover:bg-red-500/10 hover:text-red-500"
+              >
+                <span className="truncate max-w-[200px]">{sourceTxHash}</span>
+                <ExternalLink className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
+              </a>
+            ) : (
+              <span className="rounded-lg bg-vault-surface px-3 py-1.5 font-mono text-xs text-vault-text">
+                {sourceTxHash}
+              </span>
+            )}
           </div>
         )}
         {destinationTxHash && (
@@ -202,15 +214,21 @@ export default function BridgeStatusTracker({
             <span className="text-xs font-medium text-vault-muted">
               Destination Transaction:
             </span>
-            <a
-              href={getExplorerUrl(destinationTxHash, destinationChain)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 rounded-lg bg-vault-surface px-3 py-1.5 text-xs font-mono text-vault-text transition-all duration-300 hover:bg-red-500/10 hover:text-red-500"
-            >
-              <span className="truncate max-w-[200px]">{destinationTxHash}</span>
-              <ExternalLink className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
-            </a>
+            {getExplorerUrl(destinationTxHash, destinationChain) ? (
+              <a
+                href={getExplorerUrl(destinationTxHash, destinationChain)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-vault-surface px-3 py-1.5 text-xs font-mono text-vault-text transition-all duration-300 hover:bg-red-500/10 hover:text-red-500"
+              >
+                <span className="truncate max-w-[200px]">{destinationTxHash}</span>
+                <ExternalLink className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
+              </a>
+            ) : (
+              <span className="rounded-lg bg-vault-surface px-3 py-1.5 font-mono text-xs text-vault-text">
+                {destinationTxHash}
+              </span>
+            )}
           </div>
         )}
       </div>

@@ -1,21 +1,37 @@
 import type { FC } from "react";
-import { useState, useCallback } from "react";
-import { AlertTriangle, Check, Loader2 } from "lucide-react";
+import { useState, useCallback, useMemo } from "react";
+import { AlertTriangle, Check, Loader2, RefreshCw } from "lucide-react";
 import Modal from "../../components/Modal";
 import type { PoolSummary } from "../contract/types";
 import { formatAmount } from "../lib/format";
+import { calculateDepositPreview } from "../lib/depositPreview";
+
 
 type Step = "input" | "review" | "broadcasting" | "success";
 
 export interface DepositModalProps {
   pool: PoolSummary;
   walletBalance: string;
+  /**
+   * This wallet's cumulative principal already deposited into `pool`
+   * (#643) — needed to compute remaining per-wallet headroom under
+   * `pool.maxWalletDeposit`. Omitted (or "0") when the caller hasn't joined
+   * the pool yet, or when the pool has no per-wallet cap to check against.
+   */
+  walletDeposited?: string;
   onDeposit: (amount: string) => Promise<void>;
+  onRefreshBalance?: () => Promise<void>;
   onClose: () => void;
 }
 
 const QUICK_AMOUNTS = [25, 50, 75] as const;
 const GAS_BUFFER = 0.5;
+
+/** "0"/undefined means uncapped, matching the contract's own convention. */
+function parseCap(value: string | undefined): number | null {
+  const parsed = parseFloat(value ?? "0");
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
 
 function estimateWinChanceChange(currentTvl: bigint, depositAmount: bigint, participantCount: number): string {
   if (currentTvl === 0n) return "50%";
@@ -25,36 +41,124 @@ function estimateWinChanceChange(currentTvl: bigint, depositAmount: bigint, part
   return `${(Number(change) / 100).toFixed(2)}%`;
 }
 
-export const DepositModal: FC<DepositModalProps> = ({ pool, walletBalance, onDeposit, onClose }) => {
+export const DepositModal: FC<DepositModalProps> = ({
+  pool,
+  walletBalance,
+  walletDeposited,
+  onDeposit,
+  onRefreshBalance,
+  onClose,
+}) => {
   const [step, setStep] = useState<Step>("input");
   const [amount, setAmount] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const balanceNum = parseFloat(walletBalance);
   const amountNum = parseFloat(amount) || 0;
   const exceedsBalance = amountNum > balanceNum - GAS_BUFFER;
-  const isValid = amountNum > 0 && !exceedsBalance;
+
+  // Deposit concentration limits (#643) — a client-side preview of the same
+  // caps the contract enforces authoritatively. This can never be fully
+  // race-proof (another deposit can land on-chain between this render and
+  // the user's signature), so `onDeposit`'s rejection path is still the
+  // backstop of record; this exists so a user sees "this won't fit" before
+  // signing, rather than only after paying a fee for a reverted tx.
+  const walletCap = parseCap(pool.maxWalletDeposit);
+  const walletDepositedNum = parseFloat(walletDeposited ?? "0") || 0;
+  const remainingWalletCapacity = walletCap === null ? null : Math.max(0, walletCap - walletDepositedNum);
+
+  const poolCap = parseCap(pool.maxPoolDeposit);
+  const remainingPoolCapacity =
+    pool.remainingPoolCapacity !== undefined
+      ? Math.max(0, parseFloat(pool.remainingPoolCapacity) || 0)
+      : poolCap === null
+        ? null
+        : Math.max(0, poolCap - (parseFloat(pool.tvl) || 0));
+
+  const exceedsWalletCap = remainingWalletCapacity !== null && amountNum > remainingWalletCapacity;
+  const exceedsPoolCap = remainingPoolCapacity !== null && amountNum > remainingPoolCapacity;
+
+  const remainingBalance = useMemo(() => Math.max(0, balanceNum - amountNum - GAS_BUFFER), [balanceNum, amountNum]);
+  const isValid = amountNum > 0 && !exceedsBalance && !exceedsWalletCap && !exceedsPoolCap;
+
+  // Deposit preview simulation (#685)
+  const depositPreview = useMemo(() => calculateDepositPreview(pool, amount), [pool, amount]);
+
+
+  // The tightest of wallet balance, per-wallet cap, and pool-wide cap —
+  // what "Max" should actually fill in, and what quick-amount percentages
+  // are computed against, so those shortcuts never propose an amount the
+  // deposit is going to reject anyway.
+  const maxDepositable = useMemo(() => {
+    const candidates = [Math.max(0, balanceNum - GAS_BUFFER)];
+    if (remainingWalletCapacity !== null) candidates.push(remainingWalletCapacity);
+    if (remainingPoolCapacity !== null) candidates.push(remainingPoolCapacity);
+    return Math.min(...candidates);
+  }, [balanceNum, remainingWalletCapacity, remainingPoolCapacity]);
+
+  const handleRefresh = useCallback(async () => {
+    if (!onRefreshBalance) return;
+    setRefreshing(true);
+    try {
+      await onRefreshBalance();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [onRefreshBalance]);
 
   const handleQuickAmount = useCallback((pct: number) => {
-    const raw = (balanceNum - GAS_BUFFER) * (pct / 100);
+    const raw = maxDepositable * (pct / 100);
     setAmount(raw.toFixed(2));
     setError(null);
-  }, [balanceNum]);
+  }, [maxDepositable]);
 
   const handleMax = useCallback(() => {
-    const max = Math.max(0, balanceNum - GAS_BUFFER);
-    setAmount(max.toFixed(2));
+    setAmount(maxDepositable.toFixed(2));
     setError(null);
-  }, [balanceNum]);
+  }, [maxDepositable]);
 
-  const handleContinue = useCallback(() => {
+  const handleContinue = useCallback(async () => {
     if (!isValid) {
-      setError(amountNum === 0 ? "Enter an amount" : "Insufficient balance (leave buffer for gas)");
+      if (amountNum === 0) {
+        setError("Enter an amount");
+      } else if (exceedsWalletCap) {
+        setError(
+          `Exceeds your per-wallet limit for this pool (${formatAmount(String(remainingWalletCapacity), pool.asset)} remaining)`,
+        );
+      } else if (exceedsPoolCap) {
+        setError(
+          `Exceeds this pool's remaining capacity (${formatAmount(String(remainingPoolCapacity), pool.asset)} remaining)`,
+        );
+      } else {
+        setError("Insufficient balance (leave buffer for gas)");
+      }
       return;
+    }
+    // Refresh pool/balance state before locking in the numbers shown on the
+    // review step. Without this, a user who opens the modal and waits could
+    // confirm a deposit against a stale pool.tvl/participantCount snapshot
+    // from whenever the modal first mounted (#619).
+    if (onRefreshBalance) {
+      setRefreshing(true);
+      try {
+        await onRefreshBalance();
+      } finally {
+        setRefreshing(false);
+      }
     }
     setStep("review");
     setError(null);
-  }, [isValid, amountNum]);
+  }, [
+    isValid,
+    amountNum,
+    exceedsWalletCap,
+    exceedsPoolCap,
+    remainingWalletCapacity,
+    remainingPoolCapacity,
+    pool.asset,
+    onRefreshBalance,
+  ]);
 
   const handleConfirm = useCallback(async () => {
     setStep("broadcasting");
@@ -83,9 +187,23 @@ export const DepositModal: FC<DepositModalProps> = ({ pool, walletBalance, onDep
         {step === "input" && (
           <div className="space-y-4">
             <div>
-              <label htmlFor="deposit-amount" className="block text-sm font-medium text-gray-300">
-                Amount
-              </label>
+              <div className="flex items-center justify-between">
+                <label htmlFor="deposit-amount" className="block text-sm font-medium text-gray-300">
+                  Amount
+                </label>
+                {onRefreshBalance && (
+                  <button
+                    type="button"
+                    onClick={handleRefresh}
+                    disabled={refreshing}
+                    className="flex items-center gap-1 text-xs text-gray-400 hover:text-white transition-colors"
+                    aria-label="Refresh wallet balance"
+                  >
+                    <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
+                    Refresh
+                  </button>
+                )}
+              </div>
               <div className="relative mt-1">
                 <input
                   id="deposit-amount"
@@ -101,15 +219,145 @@ export const DepositModal: FC<DepositModalProps> = ({ pool, walletBalance, onDep
                   {pool.asset}
                 </span>
               </div>
-              <p className="mt-1 text-xs text-gray-500">
-                Balance: {formatAmount(walletBalance, pool.asset)}
-              </p>
             </div>
+
+            {/* Balance impact preview */}
+            <div className="rounded-xl border border-red-900/20 bg-[#1A0505]/40 p-3 space-y-1.5">
+              <p className="text-xs font-medium text-gray-400">Balance impact</p>
+              <div className="flex justify-between text-xs">
+                <span className="text-gray-500">Current balance</span>
+                <span className="text-gray-300">{formatAmount(walletBalance, pool.asset)}</span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-gray-500">Deposit amount</span>
+                <span className="text-red-400">-{amountNum > 0 ? formatAmount(String(amountNum), pool.asset) : `0.00 ${pool.asset}`}</span>
+              </div>
+              <div className="flex justify-between text-xs border-t border-red-900/20 pt-1.5">
+                <span className="font-medium text-gray-300">Remaining after deposit</span>
+                <span className={`font-semibold ${remainingBalance < 0 ? "text-red-400" : "text-emerald-400"}`}>
+                  {formatAmount(String(remainingBalance), pool.asset)}
+                </span>
+              </div>
+            </div>
+
+            <p className="text-xs text-gray-500">
+              Balance: {formatAmount(walletBalance, pool.asset)} · ~{GAS_BUFFER} {pool.asset} reserved for gas
+            </p>
+
+            {/* Deposit capacity preview (#643) — shown whenever this pool
+                enforces a per-wallet or protocol-wide cap, so a user sees
+                their real headroom before signing rather than only
+                discovering it from a reverted transaction. */}
+            {(remainingWalletCapacity !== null || remainingPoolCapacity !== null) && (
+              <div
+                className="rounded-xl border border-red-900/20 bg-[#1A0505]/40 p-3 space-y-1.5"
+                data-testid="deposit-capacity-preview"
+              >
+                <p className="text-xs font-medium text-gray-400">Deposit capacity</p>
+                {remainingWalletCapacity !== null && (
+                  <div className="flex justify-between text-xs">
+                    <span className="text-gray-500">Your remaining limit</span>
+                    <span className={exceedsWalletCap ? "text-red-400" : "text-gray-300"}>
+                      {formatAmount(String(remainingWalletCapacity), pool.asset)}
+                    </span>
+                  </div>
+                )}
+                {remainingPoolCapacity !== null && (
+                  <div className="flex justify-between text-xs">
+                    <span className="text-gray-500">Pool remaining capacity</span>
+                    <span className={exceedsPoolCap ? "text-red-400" : "text-gray-300"}>
+                      {formatAmount(String(remainingPoolCapacity), pool.asset)}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Post-deposit vault state preview (#685) */}
+            {amountNum > 0 && (
+              <div className="rounded-xl border border-red-900/20 bg-[#1A0505]/40 p-3 space-y-2" data-testid="deposit-simulation-preview">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium text-gray-400">Post-deposit pool state preview</p>
+                  <span className="text-[10px] uppercase font-semibold text-gray-500">Simulated</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-gray-500">Post-deposit TVL</span>
+                  <span className="text-gray-300 font-medium">{formatAmount(String(depositPreview.postDepositTvl), pool.asset)}</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-gray-500">Strategy exposure</span>
+                  <span className="text-gray-300">
+                    {(depositPreview.currentStrategyExposureBps / 100).toFixed(1)}% → <strong className="text-white">{(depositPreview.postDepositStrategyExposureBps / 100).toFixed(1)}%</strong>
+                  </span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-gray-500">Idle pool liquidity</span>
+                  <span className="text-emerald-400 font-medium">
+                    {formatAmount(String(depositPreview.postDepositIdleLiquidity), pool.asset)} ({(depositPreview.postDepositIdleRatioBps / 100).toFixed(1)}%)
+                  </span>
+                </div>
+                {depositPreview.queuedWithdrawals > 0 && (
+                  <div className="flex justify-between text-xs border-t border-red-900/20 pt-1.5">
+                    <span className="text-gray-500">Queued withdrawals coverage</span>
+                    <span className={depositPreview.queueDeficit > 0 ? "text-amber-400 font-medium" : "text-emerald-400 font-medium"}>
+                      {depositPreview.queueCoverageRatio === Number.POSITIVE_INFINITY
+                        ? "100%"
+                        : `${Math.min(100, Math.round(depositPreview.queueCoverageRatio * 100))}%`}
+                      {depositPreview.queueDeficit > 0 && ` (${formatAmount(String(depositPreview.queueDeficit), pool.asset)} deficit)`}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Risk Warning Banners (#685) */}
+            {depositPreview.warnings.map((warning) => (
+              <div
+                key={warning.code}
+                className={`flex items-start gap-2 rounded-lg border p-3 text-sm ${
+                  warning.severity === "danger"
+                    ? "border-red-900/60 bg-red-900/20 text-red-300"
+                    : "border-amber-900/40 bg-amber-900/10 text-amber-300"
+                }`}
+                data-testid={`risk-warning-${warning.code.toLowerCase().replace(/_/g, "-")}`}
+              >
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div>
+                  <p className="font-semibold text-xs uppercase tracking-wider">
+                    {warning.code === "HIGH_STRATEGY_EXPOSURE"
+                      ? "High Strategy Risk"
+                      : warning.code === "LOW_IDLE_LIQUIDITY"
+                        ? "Low Idle Reserves"
+                        : "Queued Withdrawal Pressure"}
+                  </p>
+                  <p className="mt-0.5 text-xs">{warning.message}</p>
+                </div>
+              </div>
+            ))}
+
 
             {exceedsBalance && (
               <div className="flex items-start gap-2 rounded-lg border border-amber-900/40 bg-amber-900/10 p-3 text-sm text-amber-300">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>Amount exceeds available balance (leave ~{GAS_BUFFER} {pool.asset} for gas)</span>
+              </div>
+            )}
+
+            {!exceedsBalance && exceedsWalletCap && (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-900/40 bg-amber-900/10 p-3 text-sm text-amber-300">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>
+                  Amount exceeds your per-wallet limit for this pool ({formatAmount(String(remainingWalletCapacity), pool.asset)} remaining)
+                </span>
+              </div>
+            )}
+
+            {!exceedsBalance && !exceedsWalletCap && exceedsPoolCap && (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-900/40 bg-amber-900/10 p-3 text-sm text-amber-300">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>
+                  Amount exceeds this pool's remaining capacity ({formatAmount(String(remainingPoolCapacity), pool.asset)} remaining)
+                </span>
               </div>
             )}
 
@@ -140,10 +388,11 @@ export const DepositModal: FC<DepositModalProps> = ({ pool, walletBalance, onDep
             <button
               type="button"
               onClick={handleContinue}
-              disabled={!isValid}
-              className="w-full rounded-xl bg-red-600 py-3 text-sm font-semibold text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#1A0505]"
+              disabled={!isValid || refreshing}
+              className="w-full flex items-center justify-center gap-2 rounded-xl bg-red-600 py-3 text-sm font-semibold text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#1A0505]"
             >
-              Continue
+              {refreshing && <Loader2 className="h-4 w-4 animate-spin" />}
+              {refreshing ? "Refreshing pool data..." : "Continue"}
             </button>
           </div>
         )}
@@ -168,11 +417,24 @@ export const DepositModal: FC<DepositModalProps> = ({ pool, walletBalance, onDep
                 <span className="text-white">~0.001 XLM</span>
               </div>
               <div className="flex justify-between text-sm">
+                <span className="text-gray-400">Post-deposit strategy exposure</span>
+                <span className="text-white font-medium">
+                  {(depositPreview.postDepositStrategyExposureBps / 100).toFixed(1)}%
+                </span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-400">Post-deposit idle reserve</span>
+                <span className="text-emerald-400 font-medium">
+                  {formatAmount(String(depositPreview.postDepositIdleLiquidity), pool.asset)}
+                </span>
+              </div>
+              <div className="flex justify-between text-sm">
                 <span className="text-gray-400">Win chance change</span>
                 <span className="text-emerald-400 font-semibold">
                   +{estimateWinChanceChange(BigInt(pool.tvl || "0"), BigInt(Math.round(amountNum * 1e7)), pool.participantCount)}
                 </span>
               </div>
+
             </div>
 
             {error && (

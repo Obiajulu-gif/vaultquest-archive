@@ -103,7 +103,7 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
     }
 
     const txHash = "0xabc123";
-    const pendingEvent = {
+    const pendingEvent: Parameters<CacheService["setPendingEvent"]>[0] = {
       txHash,
       sorobanEventId: "evt_1",
       eventPayload: { amount: 50 },

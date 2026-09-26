@@ -1,0 +1,68 @@
+name: Release Drafter
+
+# Keeps a draft GitHub Release up to date from merged pull requests (issue #424).
+#
+# - On every push to `main`, release-drafter updates (or creates) the single
+#   rolling draft release, grouping merged PRs by label per
+#   .github/release-drafter.yml.
+# - On pull requests, it runs in dry-run mode and posts the resolved draft
+#   body as a step summary so authors/maintainers can preview how the PR
+#   will be categorized before merging (it does not write anything).
+#
+# Maintainer steps: open the "Releases" page, review/edit the draft body
+# (reorder entries, fix a mis-labeled PR, add manual notes), then either
+# publish it directly or push a `v*` tag — release-tagging.yml uses the same
+# changelog source when attaching build artifacts to a tagged release.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  update_draft:
+    name: Update draft release notes
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Draft release notes
+        uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release-drafter.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  preview_draft:
+    name: Preview draft release notes
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Resolve draft (dry run)
+        id: draft
+        uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release-drafter.yml
+          disable-releaser: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Post preview to job summary
+        run: |
+          {
+            echo "### Draft release preview"
+            echo ""
+            echo "This is how the release notes would look if this PR's labels stay unchanged."
+            echo ""
+            echo '${{ steps.draft.outputs.body }}'
+          } >> "$GITHUB_STEP_SUMMARY"

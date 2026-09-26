@@ -13,6 +13,8 @@ export type ActionRecord = {
   walletAddress: string;
   actionType: ActionType;
   actionPayload: unknown;
+  /** Decoded finalized-event payload (see #509); null until `confirmed`. */
+  verifiedPayload: unknown;
   status: ActionStatus;
   txHash: string | null;
   sorobanEventId: string | null;

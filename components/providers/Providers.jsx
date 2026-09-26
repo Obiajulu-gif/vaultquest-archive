@@ -6,11 +6,18 @@ import { WagmiProvider } from "wagmi";
 import { RainbowKitProvider } from "@rainbow-me/rainbowkit";
 import "@rainbow-me/rainbowkit/styles.css";
 import { useEffect, useState } from "react";
+import { appWithTranslation, useTranslation } from "next-i18next";
 import { readStoredRpc, RPC_UPDATED_EVENT } from "@/lib/customRpc";
+import { getStoredLocale, setStoredLocale, normalizeLocale } from "@/lib/locale";
 import { createWagmiConfig } from "@/lib/wagmi";
 import { TransactionToastProvider } from "@/hooks/useTransactionToast";
+import { ensureVaultCacheSync } from "@vaultquest/stellar-wallet-connect/src/vault/data/consistency";
+
+import { ToastProvider } from "@/components/providers/ToastProvider";
 
 export default function Providers({ children }) {
+function ProvidersInner({ children }) {
+  const { i18n } = useTranslation("common");
   const [queryClient] = useState(
     () =>
       new QueryClient({
@@ -36,15 +43,39 @@ export default function Providers({ children }) {
     return () => window.removeEventListener(RPC_UPDATED_EVENT, onRpcUpdated);
   }, []);
 
+  useEffect(() => {
+    // #749 — wire cross-tab / cross-device dashboard consistency for the vault
+    // query cache (BroadcastChannel + snapshot rehydration). Idempotent;
+    // returns immediately during SSR or when already wired.
+    ensureVaultCacheSync();
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const storedLocale = getStoredLocale(window.localStorage);
+    const nextLocale = normalizeLocale(i18n.resolvedLanguage || i18n.language || storedLocale);
+
+    if (i18n.language !== nextLocale) {
+      void i18n.changeLanguage(nextLocale);
+    }
+
+    setStoredLocale(window.localStorage, nextLocale);
+    document.documentElement.lang = nextLocale;
+  }, [i18n]);
+
   return (
-    <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false} storageKey="vaultquest-theme">
+    <ThemeProvider attribute="class" defaultTheme="dark" enableSystem storageKey="vaultquest-theme">
       <WagmiProvider key={configVersion} config={wagmiConfig}>
         <QueryClientProvider client={queryClient}>
           <RainbowKitProvider>
-            <TransactionToastProvider>{children}</TransactionToastProvider>
+            <TransactionToastProvider>
+              <ToastProvider>{children}</ToastProvider>
+            </TransactionToastProvider>
           </RainbowKitProvider>
         </QueryClientProvider>
       </WagmiProvider>
     </ThemeProvider>
   );
 }
+
+export default appWithTranslation(ProvidersInner);

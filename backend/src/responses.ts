@@ -22,7 +22,8 @@ export function ok<T>(data: T, meta?: ApiMeta): ApiSuccess<T> {
 
 export function page<T>(
   items: T[],
-  pagination: { nextCursor: string | null; limit: number }
+  pagination: { nextCursor: string | null; limit: number },
+  extraMeta?: ApiMeta
 ): ApiSuccess<T[]> {
   return {
     data: items,
@@ -31,7 +32,8 @@ export function page<T>(
         next_cursor: pagination.nextCursor,
         limit: pagination.limit,
         has_more: pagination.nextCursor !== null
-      }
+      },
+      ...extraMeta
     }
   };
 }

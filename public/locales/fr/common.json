@@ -1,0 +1,83 @@
+{
+  "meta": {
+    "title": "VaultQuest — Épargne sans risque avec prix",
+    "description": "Déposez, générez des rendements et gagnez des prix sans risquer votre capital."
+  },
+  "nav": {
+    "vaults": "Coffres",
+    "activity": "Activité",
+    "account": "Compte",
+    "prizes": "Prix",
+    "trust": "Confiance",
+    "notifications": "Notifications",
+    "admin": "Admin"
+  },
+  "footer": {
+    "terms": "Conditions du produit",
+    "privacy": "Politique de confidentialité",
+    "language": "Langue",
+    "copyright": "© {{year}} VaultQuest. Tous droits réservés."
+  },
+  "vaults": {
+    "title": "Coffres",
+    "empty": "Aucun coffre disponible pour l’instant.",
+    "active": "Actif",
+    "archived": "Archivé",
+    "startSaving": "Commencer à économiser",
+    "viewDetails": "Voir les détails"
+  },
+  "activity": {
+    "title": "Activité",
+    "noActivity": "Aucune activité pour l’instant.",
+    "status": {
+      "pending": "En attente",
+      "submitted": "Soumise",
+      "confirmed": "Confirmée",
+      "failed": "Échouée",
+      "canceled": "Annulée"
+    }
+  },
+  "account": {
+    "title": "Compte",
+    "positions": "Positions",
+    "rewards": "Récompenses",
+    "export": "Exporter les transactions"
+  },
+  "prizes": {
+    "title": "Prix",
+    "empty": "Aucun prix tiré pour l’instant.",
+    "countdown": "Prochain tirage dans",
+    "winners": "Gagnants récents"
+  },
+  "trust": {
+    "title": "Confiance et Sécurité",
+    "sections": {
+      "intro": "Introduction",
+      "contracts": "Contrats",
+      "audits": "Audits",
+      "risk": "Facteurs de risque"
+    }
+  },
+  "modals": {
+    "history": {
+      "title": "Historique des transactions",
+      "empty": "Aucune transaction trouvée.",
+      "columns": {
+        "date": "Date",
+        "type": "Type",
+        "status": "Statut",
+        "amount": "Montant",
+        "token": "Jeton",
+        "txHash": "Hash tx"
+      }
+    }
+  },
+  "common": {
+    "loading": "Chargement...",
+    "error": "Une erreur est survenue.",
+    "retry": "Réessayer",
+    "copy": "Copier",
+    "copied": "Copié",
+    "close": "Fermer"
+  }
+}

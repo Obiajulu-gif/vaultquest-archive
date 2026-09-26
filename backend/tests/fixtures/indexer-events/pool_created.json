@@ -1,0 +1,23 @@
+{
+  "eventType": "pool_created",
+  "valid": {
+    "topic": "pool_created",
+    "value": { "vault_id": "v1", "asset": "USDC", "creator": "GABCDE...", "version": 2 },
+    "successful": true
+  },
+  "malformed": {
+    "topic": "pool_created",
+    "rawValue": "{not-json:::",
+    "successful": true
+  },
+  "legacyVersion": {
+    "topic": "pool_created",
+    "value": { "vault_id": "v1", "asset": "USDC", "version": 1 },
+    "successful": true
+  },
+  "unknownVersion": {
+    "topic": "pool_created",
+    "value": { "vault_id": "v1", "asset": "USDC", "version": 999 },
+    "successful": true
+  }
+}

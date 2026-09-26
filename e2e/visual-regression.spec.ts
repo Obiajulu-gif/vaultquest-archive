@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { injectConnectedMockWallet } from './helpers/wallet-mock';
 
 test.describe('Visual Regression Tests', () => {
   test.beforeEach(async ({ page }) => {
@@ -124,7 +125,8 @@ test.describe('Visual Regression Tests', () => {
 
   test.describe('Account Page', () => {
     test('should match account page with mock data', async ({ page }) => {
-      await page.goto('/app/account?mockConnected=true');
+      await injectConnectedMockWallet(page);
+      await page.goto('/app/account');
       await page.waitForLoadState('networkidle');
       await page.waitForTimeout(500);
       
@@ -135,7 +137,8 @@ test.describe('Visual Regression Tests', () => {
     });
 
     test('should match deposit allocation chart', async ({ page }) => {
-      await page.goto('/app/account?mockConnected=true');
+      await injectConnectedMockWallet(page);
+      await page.goto('/app/account');
       await page.waitForLoadState('networkidle');
       
       const allocationChart = page.locator('text=Deposit Allocation').locator('..').first();
@@ -145,7 +148,8 @@ test.describe('Visual Regression Tests', () => {
     });
 
     test('should match savings progression chart', async ({ page }) => {
-      await page.goto('/app/account?mockConnected=true');
+      await injectConnectedMockWallet(page);
+      await page.goto('/app/account');
       await page.waitForLoadState('networkidle');
       
       const progressionChart = page.locator('text=Savings Progression').locator('..').first();
@@ -155,7 +159,8 @@ test.describe('Visual Regression Tests', () => {
     });
 
     test('should match transaction table', async ({ page }) => {
-      await page.goto('/app/account?mockConnected=true');
+      await injectConnectedMockWallet(page);
+      await page.goto('/app/account');
       await page.waitForLoadState('networkidle');
       
       const transactionTable = page.locator('text=Past transactions').locator('..').first();
@@ -278,7 +283,8 @@ test.describe('Visual Regression Tests', () => {
     });
 
     test('should match filter interaction on account page', async ({ page }) => {
-      await page.goto('/app/account?mockConnected=true');
+      await injectConnectedMockWallet(page);
+      await page.goto('/app/account');
       await page.waitForLoadState('networkidle');
       
       const usdcButton = page.locator('button:has-text("USDC")');

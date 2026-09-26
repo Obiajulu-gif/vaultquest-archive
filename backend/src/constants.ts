@@ -11,15 +11,15 @@ export const TERMINAL_STATUSES: readonly ActionStatus[] = ["confirmed", "failed"
 
 const TRANSITIONS: Record<ActionStatus, readonly ActionStatus[]> = {
   pending: ["submitted", "failed"],
-  submitted: ["confirmed", "reverted", "orphaned"],
+  submitted: ["confirmed", "reverted", "orphaned", "failed"],
   confirmed: [],
   failed: [],
   reverted: [],
-  orphaned: []
+  orphaned: ["submitted"]
 };
 
-export function canTransition(from: ActionStatus, to: ActionStatus): boolean {
-  return TRANSITIONS[from].includes(to);
+export function canTransition(from: ActionStatus, to: string): boolean {
+  return (TRANSITIONS[from] ?? []).includes(to as ActionStatus);
 }
 
 export const ERROR_CODES = {
@@ -34,11 +34,18 @@ export const ERROR_CODES = {
   ILLEGAL_TRANSITION: "ILLEGAL_TRANSITION",
   NOT_FOUND: "NOT_FOUND",
   UNAUTHORIZED: "UNAUTHORIZED",
+  FORBIDDEN: "FORBIDDEN",
+  RATE_LIMIT_EXCEEDED: "RATE_LIMIT_EXCEEDED",
+  INVALID_CURSOR: "INVALID_CURSOR",
+  EXPIRED_CURSOR: "EXPIRED_CURSOR",
   // Escrow settlement pipeline (#settlement)
   SETTLEMENT_SUBMIT_FAILED: "SETTLEMENT_SUBMIT_FAILED",
   SETTLEMENT_RETRIES_EXHAUSTED: "SETTLEMENT_RETRIES_EXHAUSTED",
   SETTLEMENT_ALREADY_RESOLVED: "SETTLEMENT_ALREADY_RESOLVED",
-  SETTLEMENT_IN_PROGRESS: "SETTLEMENT_IN_PROGRESS"
+  SETTLEMENT_IN_PROGRESS: "SETTLEMENT_IN_PROGRESS",
+  // #509 — submission succeeded on-chain but independent verification
+  // against the finalized event could not confirm the payout facts.
+  SETTLEMENT_PAYOUT_UNVERIFIED: "SETTLEMENT_PAYOUT_UNVERIFIED"
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
@@ -48,8 +55,24 @@ export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
  * pipeline moves it to `Resolving` while a transaction is in flight and to a
  * terminal state on success. On any submission failure the vault is rolled
  * back to `Unresolved` so it can be retried safely.
+ *
+ * `PendingVerification` (#509) is distinct from `Unresolved`: it means the
+ * transaction *did* submit successfully on-chain (Horizon returned
+ * `tx_success`), but an independent PayoutVerifier could not yet confirm the
+ * finalized transfer event matches the intended recipient/amount — either
+ * because the event isn't indexed yet, or because it genuinely disagrees.
+ * Unlike `Unresolved`, this state must never be auto-retried by
+ * `settleVault` (retrying a transaction that already succeeded on-chain
+ * risks a double payout); it requires either the verifier catching up on a
+ * later poll, or manual investigation.
  */
-export const VAULT_STATES = ["Unresolved", "Resolving", "Resolved", "Refunded"] as const;
+export const VAULT_STATES = [
+  "Unresolved",
+  "Resolving",
+  "Resolved",
+  "Refunded",
+  "PendingVerification"
+] as const;
 export type VaultState = (typeof VAULT_STATES)[number];
 
 /** How a resolved vault disburses its balance on-chain. */
@@ -64,6 +87,8 @@ export type SettlementType = (typeof SETTLEMENT_TYPES)[number];
 export const RETRYABLE_RESULT_CODES: readonly string[] = [
   "tx_bad_seq",
   "tx_too_late",
+  "tx_no_source_account",
+  "tx_internal_error",
   "timeout",
   "ETIMEDOUT",
   "ECONNRESET",

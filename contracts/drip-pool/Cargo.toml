@@ -10,6 +10,12 @@ doctest = false
 
 [dependencies]
 soroban-sdk = { workspace = true }
+vaultquest-common = { path = "../common" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+
+[profile.bench]
+opt-level = 3
+lto = true
+codegen-units = 1

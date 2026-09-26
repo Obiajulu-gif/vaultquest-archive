@@ -20,7 +20,15 @@ export function errorHandler(
   let details: unknown = undefined;
   let issues: unknown = undefined;
 
-  if (err instanceof AppError) {
+  if (err.statusCode === 429) {
+    statusCode = 429;
+    code = "RATE_LIMIT_EXCEEDED";
+    message = err.message;
+    const retryAfter = (err as any).retryAfter || (err as any).after || reply.getHeader("retry-after");
+    if (retryAfter) {
+      reply.header("Retry-After", String(retryAfter));
+    }
+  } else if (err instanceof AppError) {
     statusCode = err.statusCode;
     code = err.code;
     message = err.message;

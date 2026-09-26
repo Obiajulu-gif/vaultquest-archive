@@ -140,6 +140,84 @@ describe("public /actions routes", () => {
     expect(list.json().meta.pagination).toMatchObject({ limit: 10, has_more: false, next_cursor: null });
   });
 
+  it("GET /actions/export returns CSV with expected columns", async () => {
+    const key = randomUUID();
+    await app.inject({
+      method: "POST", url: "/actions",
+      headers: { "idempotency-key": key, "content-type": "application/json" },
+      payload: { wallet_address: "GEXPORT", action_type: "deposit", action_payload: { vault_id: "v1", amount: "100", token: "USDC" } }
+    });
+    const res = await app.inject({ method: "GET", url: "/actions/export?wallet=GEXPORT&format=csv" });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/csv");
+    const body = res.body;
+    const lines = body.split("\n").filter((l: string) => l.length > 0);
+    expect(lines.length).toBeGreaterThanOrEqual(2);
+    expect(lines[0]).toBe("id,date,action_type,pool_id,asset,amount,status,tx_hash,error_code,submitted_at,confirmed_at");
+    expect(lines[1]).toContain("GEXPORT");
+  });
+
+  it("GET /actions/export returns empty CSV when no activity", async () => {
+    const res = await app.inject({ method: "GET", url: "/actions/export?wallet=GNODATA&format=csv" });
+    expect(res.statusCode).toBe(200);
+    const lines = res.body.split("\n").filter((l: string) => l.length > 0);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toBe("id,date,action_type,pool_id,asset,amount,status,tx_hash,error_code,submitted_at,confirmed_at");
+  });
+
+  it("GET /actions/export respects action_type filter", async () => {
+    const key1 = randomUUID();
+    await app.inject({
+      method: "POST", url: "/actions",
+      headers: { "idempotency-key": key1, "content-type": "application/json" },
+      payload: { wallet_address: "GFILTER", action_type: "deposit", action_payload: { vault_id: "v1" } }
+    });
+    const key2 = randomUUID();
+    await app.inject({
+      method: "POST", url: "/actions",
+      headers: { "idempotency-key": key2, "content-type": "application/json" },
+      payload: { wallet_address: "GFILTER", action_type: "withdraw", action_payload: { vault_id: "v1" } }
+    });
+    const res = await app.inject({ method: "GET", url: "/actions/export?wallet=GFILTER&format=csv&action_type=deposit" });
+    expect(res.statusCode).toBe(200);
+    const lines = res.body.split("\n").filter((l: string) => l.length > 0);
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain("deposit");
+  });
+
+  it("GET /actions/export respects date range filter", async () => {
+    const key = randomUUID();
+    await app.inject({
+      method: "POST", url: "/actions",
+      headers: { "idempotency-key": key, "content-type": "application/json" },
+      payload: { wallet_address: "GDATE", action_type: "deposit", action_payload: { amount: "50" } }
+    });
+    const now = new Date().toISOString();
+    const future = new Date(Date.now() + 86400000).toISOString();
+    const past = new Date(Date.now() - 86400000).toISOString();
+    const res = await app.inject({ method: "GET", url: `/actions/export?wallet=GDATE&format=csv&from=${past}&to=${future}` });
+    expect(res.statusCode).toBe(200);
+    const lines = res.body.split("\n").filter((l: string) => l.length > 0);
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain("deposit");
+  });
+
+  it("GET /actions/export returns JSON when format is json", async () => {
+    const key = randomUUID();
+    await app.inject({
+      method: "POST", url: "/actions",
+      headers: { "idempotency-key": key, "content-type": "application/json" },
+      payload: { wallet_address: "GJSON", action_type: "deposit", action_payload: { vault_id: "v1" } }
+    });
+    const res = await app.inject({ method: "GET", url: "/actions/export?wallet=GJSON&format=json" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.data).toBeDefined();
+    expect(Array.isArray(body.data)).toBe(true);
+    expect(body.data.length).toBe(1);
+    expect(body.data[0].action_type).toBe("deposit");
+  });
+
   it("DELETE /actions?wallet=G... scrubs payload", async () => {
     const key = randomUUID();
     const create = await app.inject({

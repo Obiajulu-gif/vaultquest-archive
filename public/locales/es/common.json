@@ -1,0 +1,83 @@
+{
+  "meta": {
+    "title": "VaultQuest — Ahorros sin riesgo con premios",
+    "description": "Deposita, genera rendimiento y gana premios sin arriesgar tu capital."
+  },
+  "nav": {
+    "vaults": "Bóvedas",
+    "activity": "Actividad",
+    "account": "Cuenta",
+    "prizes": "Premios",
+    "trust": "Confianza",
+    "notifications": "Notificaciones",
+    "admin": "Admin"
+  },
+  "footer": {
+    "terms": "Términos del producto",
+    "privacy": "Política de privacidad",
+    "language": "Idioma",
+    "copyright": "© {{year}} VaultQuest. Todos los derechos reservados."
+  },
+  "vaults": {
+    "title": "Bóvedas",
+    "empty": "Aún no hay bóvedas disponibles.",
+    "active": "Activa",
+    "archived": "Archivada",
+    "startSaving": "Empezar a ahorrar",
+    "viewDetails": "Ver detalles"
+  },
+  "activity": {
+    "title": "Actividad",
+    "noActivity": "Sin actividad aún.",
+    "status": {
+      "pending": "Pendiente",
+      "submitted": "Enviada",
+      "confirmed": "Confirmada",
+      "failed": "Fallida",
+      "canceled": "Cancelada"
+    }
+  },
+  "account": {
+    "title": "Cuenta",
+    "positions": "Posiciones",
+    "rewards": "Recompensas",
+    "export": "Exportar transacciones"
+  },
+  "prizes": {
+    "title": "Premios",
+    "empty": "Aún no hay premios sorteados.",
+    "countdown": "Próximo sorteo en",
+    "winners": "Ganadores recientes"
+  },
+  "trust": {
+    "title": "Confianza y Seguridad",
+    "sections": {
+      "intro": "Introducción",
+      "contracts": "Contratos",
+      "audits": "Auditorías",
+      "risk": "Factores de riesgo"
+    }
+  },
+  "modals": {
+    "history": {
+      "title": "Historial de transacciones",
+      "empty": "No se encontraron transacciones.",
+      "columns": {
+        "date": "Fecha",
+        "type": "Tipo",
+        "status": "Estado",
+        "amount": "Monto",
+        "token": "Token",
+        "txHash": "Hash de tx"
+      }
+    }
+  },
+  "common": {
+    "loading": "Cargando...",
+    "error": "Algo salió mal.",
+    "retry": "Reintentar",
+    "copy": "Copiar",
+    "copied": "Copiado",
+    "close": "Cerrar"
+  }
+}

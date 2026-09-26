@@ -100,14 +100,12 @@ export function normalizeStellarNetwork(networkOrPassphrase?: string): NetworkTy
   return undefined;
 }
 
-// Dynamically compute EXPECTED_NETWORK based on env
+// Dynamically compute EXPECTED_NETWORK based on manifest or env
 let expected: NetworkType = "testnet";
 try {
   const env = getFrontendEnv();
   const normalized = normalizeStellarNetwork(env.NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE);
-  if (normalized) {
-    expected = normalized;
-  }
+  if (normalized) expected = normalized;
 } catch {
   // Fallback if environment is not parsed/valid yet
 }

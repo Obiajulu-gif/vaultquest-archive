@@ -1,0 +1,8 @@
+[package]
+name = "vaultquest-common"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+soroban-sdk = { workspace = true }

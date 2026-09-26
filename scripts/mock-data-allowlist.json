@@ -1,0 +1,38 @@
+[
+  {
+    "path": "app/app/vaults/page.jsx",
+    "reason": "#510: pre-existing — the vaults listing still reads MOCK_VAULTS pending a real backend vault-listing endpoint. Tracked as a known exception rather than fixed here to keep this gate change focused; wiring a real endpoint is separate follow-up work."
+  },
+  {
+    "path": "app/app/vaults/archive/page.jsx",
+    "reason": "#510: pre-existing — same MOCK_VAULTS/VAULT_ROUND_ARCHIVE dependency as app/app/vaults/page.jsx, same follow-up."
+  },
+  {
+    "path": "app/app/vaults/[id]/page.jsx",
+    "reason": "#510: pre-existing — same MOCK_VAULTS dependency as app/app/vaults/page.jsx, same follow-up."
+  },
+  {
+    "path": "components/app/VaultList.js",
+    "reason": "#510: pre-existing — re-exports MOCK_VAULTS/VAULT_ROUND_ARCHIVE for the vaults pages above; same follow-up."
+  },
+  {
+    "path": "app/app/admin/proposals/page.jsx",
+    "reason": "#510: pre-existing — admin proposals list seeds useState from MOCK_PROPOSALS pending a real proposals-listing endpoint. Tracked as a known exception; not fixed here to keep this gate change focused."
+  },
+  {
+    "path": "components/app/VaultRetryQueue.jsx",
+    "reason": "#510: pre-existing — retry queue seeds useState from MOCK_FAILED_ACTIONS pending a real failed-actions endpoint. Tracked as a known exception; not fixed here to keep this gate change focused."
+  },
+  {
+    "path": "app/app/vaults/calendar/page.jsx",
+    "reason": "#510: introduced by upstream commits merged into this branch after the gate was first written. Same MOCK_VAULTS/vault-mock-data dependency as the other vaults pages; tracked as a known exception rather than fixed here."
+  },
+  {
+    "path": "components/app/PoolApprovalQueue.jsx",
+    "reason": "#510: introduced by upstream commits merged into this branch after the gate was first written. Seeds from MOCK_PENDING_POOLS pending a real pool-approval-queue endpoint; tracked as a known exception rather than fixed here."
+  },
+  {
+    "path": "components/app/RecentWinners.jsx",
+    "reason": "#510: introduced by upstream commits merged into this branch after the gate was first written. Seeds from MOCK_WINNERS pending a real recent-winners endpoint; tracked as a known exception rather than fixed here."
+  }
+]

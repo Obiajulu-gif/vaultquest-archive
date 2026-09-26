@@ -1,19 +1,22 @@
 import type { FC, ReactNode } from "react";
 import { useStore } from "@nanostores/react";
-import { Bookmark, Coins, Trophy, Users } from "lucide-react";
+import { AlertTriangle, Bookmark, CheckCircle2, Coins, ShieldAlert, Trophy, Users } from "lucide-react";
 import {
+  EmergencyPausedBanner,
   ErrorState,
   LoadingState,
-  StaleIndicator,
   WalletDisconnectedState,
 } from "../../components/FallbackStates";
-import type { PoolActionType, PoolStatus, PoolSummary, UserPosition } from "../contract/types";
+import { DataRefreshControl } from "../../components/DataRefreshControl";
+import type { PoolActionType, PoolSummary, UserPosition } from "../contract/types";
 import { formatAmount, formatDate, truncateAddress } from "../lib/format";
 import { OnboardingChecklist } from "./OnboardingChecklist";
 import { isNetworkMismatch } from "../../core/store.js";
 import { NetworkDiagnostics } from "../../components/NetworkDiagnostics";
 import { TransactionTimeline } from "../../components/TransactionTimeline";
 import type { TxFlowResult } from "../lib/txStateMachine";
+import type { ReadConfidenceLevel } from "../../core/criticalReadPolicy";
+import PoolStatusBadge from "./PoolStatusBadge";
 
 /**
  * Pool detail view (#73): overview, the connected user's position, and the
@@ -40,39 +43,92 @@ export interface PoolDetailProps {
   showOnboarding?: boolean;
   /** When provided, renders an inline transaction timeline below the action buttons. */
   txFlow?: TxFlowResult;
+  updatedAt?: number | null;
+  fetching?: boolean;
+  partialError?: Error | null;
+  refetch?: () => void;
+  /**
+   * Confidence level for `pool.tvl`, from `CriticalReadPolicy.evaluate()`
+   * (#658). Omit when the caller isn't running multi-provider reads yet —
+   * the TVL stat renders exactly as before with no indicator.
+   */
+  tvlConfidence?: ReadConfidenceLevel;
 }
 
-const STATUS_BADGE: Record<PoolStatus, { label: string; className: string }> = {
-  open: { label: "Open", className: "bg-emerald-500/15 text-emerald-300" },
-  locked: { label: "Locked", className: "bg-sky-500/15 text-sky-300" },
-  drawing: { label: "Drawing", className: "bg-amber-500/15 text-amber-300" },
-  settled: { label: "Settled", className: "bg-gray-500/15 text-gray-300" },
+const CONFIDENCE_META: Record<
+  ReadConfidenceLevel,
+  { icon: ReactNode; label: string; className: string }
+> = {
+  verified: {
+    icon: <CheckCircle2 className="h-3 w-3" aria-hidden="true" />,
+    label: "Verified across providers",
+    className: "text-emerald-400",
+  },
+  degraded: {
+    icon: <ShieldAlert className="h-3 w-3" aria-hidden="true" />,
+    label: "Balance may be stale — limited provider confirmation",
+    className: "text-amber-400",
+  },
+  conflicting: {
+    icon: <AlertTriangle className="h-3 w-3" aria-hidden="true" />,
+    label: "Providers disagree on this balance",
+    className: "text-red-400",
+  },
 };
 
-const Stat: FC<{ icon: ReactNode; label: string; value: string }> = ({ icon, label, value }) => (
-  <div className="rounded-xl border border-red-900/30 bg-[#1A0505]/60 p-3 sm:p-4">
-    <div className="flex items-center gap-2 text-[10px] sm:text-xs uppercase tracking-wide text-gray-400">
-      {icon}
-      {label}
+const Stat: FC<{ icon: ReactNode; label: string; value: string; confidence?: ReadConfidenceLevel }> = ({
+  icon,
+  label,
+  value,
+  confidence,
+}) => {
+  const meta = confidence ? CONFIDENCE_META[confidence] : null;
+  return (
+    <div className="rounded-xl border border-red-900/30 bg-[#1A0505]/60 p-3 sm:p-4">
+      <div className="flex items-center gap-2 text-[10px] sm:text-xs uppercase tracking-wide text-gray-400">
+        {icon}
+        {label}
+      </div>
+      <div className="mt-1 flex items-center gap-1.5">
+        <p className="text-base sm:text-lg font-semibold text-white truncate" title={value}>{value}</p>
+        {meta && (
+          <span className={`shrink-0 ${meta.className}`} title={meta.label} aria-label={meta.label} role="img">
+            {meta.icon}
+          </span>
+        )}
+      </div>
     </div>
-    <p className="mt-1 text-base sm:text-lg font-semibold text-white truncate" title={value}>{value}</p>
-  </div>
-);
+  );
+};
+
+/**
+ * Actions blocked by the contract's `is_emergency` circuit breaker (#645).
+ * `withdraw` / `withdraw_locked` / `claim` are deliberately NOT gated
+ * on-chain, so users can always exit a paused pool.
+ */
+const EMERGENCY_BLOCKED_ACTIONS: ReadonlySet<PoolActionType> = new Set(["join", "drip"]);
 
 /** Actions available to the connected user given pool state and position. */
 export function availableActions(pool: PoolSummary, position: UserPosition | null): PoolActionType[] {
   const joined = position?.joined ?? false;
-  switch (pool.status) {
-    case "open":
-      return joined ? ["drip", "withdraw"] : ["join"];
-    case "locked":
-      return joined ? ["withdraw"] : [];
-    case "settled":
-      return joined ? ["claim", "withdraw"] : [];
-    case "drawing":
-    default:
-      return [];
+  const actions = (() => {
+    switch (pool.status) {
+      case "open":
+        return joined ? ["drip", "withdraw"] : ["join"];
+      case "locked":
+        return joined ? ["withdraw"] : [];
+      case "settled":
+        return joined ? ["claim", "withdraw"] : [];
+      case "drawing":
+      default:
+        return [];
+    }
+  })() as PoolActionType[];
+
+  if (!pool.isEmergency) {
+    return actions;
   }
+  return actions.filter((action) => !EMERGENCY_BLOCKED_ACTIONS.has(action));
 }
 
 const ACTION_LABEL: Record<PoolActionType, string> = {
@@ -98,6 +154,11 @@ export const PoolDetail: FC<PoolDetailProps> = ({
   savingSavedState = false,
   showOnboarding = true,
   txFlow,
+  updatedAt = null,
+  fetching = false,
+  partialError = null,
+  refetch = () => {},
+  tvlConfidence,
 }) => {
   const mismatch = useStore(isNetworkMismatch);
 
@@ -111,7 +172,6 @@ export const PoolDetail: FC<PoolDetailProps> = ({
     return <ErrorState title="Pool unavailable" message="This pool could not be found." onRetry={onRetry} />;
   }
 
-  const badge = STATUS_BADGE[pool.status];
   const actions = walletConnected ? availableActions(pool, position) : [];
 
   return (
@@ -120,12 +180,12 @@ export const PoolDetail: FC<PoolDetailProps> = ({
 
       <NetworkDiagnostics />
 
+      {pool.isEmergency && <EmergencyPausedBanner />}
+
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold text-white">{pool.name}</h1>
-          <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${badge.className}`}>
-            {badge.label}
-          </span>
+          <PoolStatusBadge status={pool.status} />
         </div>
         <div className="flex items-center gap-3">
           {walletConnected && onToggleSaved && (
@@ -139,13 +199,24 @@ export const PoolDetail: FC<PoolDetailProps> = ({
               {savingSavedState ? "Saving…" : saved ? "Unsave pool" : "Save pool"}
             </button>
           )}
-          {stale && <StaleIndicator />}
+          <DataRefreshControl
+            updatedAt={updatedAt}
+            stale={stale}
+            fetching={fetching}
+            partialError={partialError}
+            onRefresh={refetch}
+          />
         </div>
       </header>
 
       {/* Overview */}
       <div className="grid grid-cols-1 xs:grid-cols-2 lg:grid-cols-4 gap-3">
-        <Stat icon={<Coins className="h-3.5 w-3.5" aria-hidden="true" />} label="TVL" value={formatAmount(pool.tvl, pool.asset)} />
+        <Stat
+          icon={<Coins className="h-3.5 w-3.5" aria-hidden="true" />}
+          label="TVL"
+          value={formatAmount(pool.tvl, pool.asset)}
+          confidence={tvlConfidence}
+        />
         <Stat icon={<Users className="h-3.5 w-3.5" aria-hidden="true" />} label="Participants" value={String(pool.participantCount)} />
         <Stat icon={<Trophy className="h-3.5 w-3.5" aria-hidden="true" />} label="Expected yield" value={pool.expectedYield} />
         <Stat icon={<Trophy className="h-3.5 w-3.5" aria-hidden="true" />} label="Prize" value={pool.prize ?? "—"} />

@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "description": "Golden fixtures for contract events.",
+  "fixtures": {
+    "pool/created": {
+      "topics": [
+        "pool",
+        "created"
+      ],
+      "data": {
+        "type": "address",
+        "description": "The admin who created the pool"
+      }
+    },
+    "pool/joined": {
+      "topics": [
+        "pool",
+        "joined"
+      ],
+      "data": {
+        "type": "address",
+        "description": "The participant who joined"
+      }
+    },
+    "pool/deposit": {
+      "topics": [
+        "pool",
+        "deposit"
+      ],
+      "data": {
+        "type": "vec",
+        "fields": [
+          {
+            "name": "who",
+            "type": "address"
+          },
+          {
+            "name": "amount",
+            "type": "i128"
+          },
+          {
+            "name": "total_deposited",
+            "type": "i128"
+          }
+        ]
+      }
+    },
+    "pool/withdrawn": {
+      "topics": [
+        "pool",
+        "withdrawn"
+      ],
+      "data": {
+        "type": "vec",
+        "fields": [
+          {
+            "name": "who",
+            "type": "address"
+          },
+          {
+            "name": "amount",
+            "type": "i128"
+          }
+        ]
+      }
+    },
+    "pool/claimed": {
+      "topics": [
+        "pool",
+        "claimed"
+      ],
+      "data": {
+        "type": "vec",
+        "fields": [
+          {
+            "name": "who",
+            "type": "address"
+          },
+          {
+            "name": "amount",
+            "type": "i128"
+          }
+        ]
+      }
+    },
+    "pool/payout": {
+      "topics": [
+        "pool",
+        "payout"
+      ],
+      "data": {
+        "type": "vec",
+        "fields": [
+          {
+            "name": "winner",
+            "type": "address"
+          },
+          {
+            "name": "prize",
+            "type": "i128"
+          }
+        ]
+      }
+    }
+  }
+}

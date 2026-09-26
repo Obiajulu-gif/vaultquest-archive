@@ -76,3 +76,9 @@ E2E tests include automated `axe-core` checks. Ensure all new pages or major UI 
 ## Responsive Design
 
 Playwright is configured to run tests across multiple viewports (Chromium, Webkit, Mobile Chrome, Mobile Safari). Use `isMobile` flag in Playwright tests to handle breakpoint-specific logic.
+
+## Maintainer-Safe Fixture Anonymization (#661)
+
+When generating shared bug reports or diagnostic dumps:
+- Use the **Anonymize** toggle in the System Diagnostics panel (`NetworkDiagnostics.tsx`).
+- Sensitive wallet addresses and private identifiers are redacted (e.g. `G...ANONYMIZED`) while maintaining relational structure needed to reproduce issues.

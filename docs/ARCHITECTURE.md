@@ -126,6 +126,20 @@ The frontend is authoritative for:
 - Wallet connection state and signed transaction submission.
 - Local view state until the backend or contract confirms final results.
 
+### Canonical vault metadata
+
+Vault discovery metadata is sourced from the factory registry and indexed event stream, not from local mock data. The canonical fields are:
+
+- `risk_tier`
+- `strategy`
+- `lockup_days`
+- `fee_bps`
+- `accepted_asset`
+- `operational_status`
+- `metadata_version`
+
+The factory persists this metadata with each pool record and increments a version whenever the metadata is updated. Indexers and the API layer only surface the latest versioned record so stale snapshots are rejected during reconciliation and rendered as out-of-date instead of silently replacing the canonical metadata.
+
 ## Configuration boundaries
 
 VaultQuest deployments are boundary-driven by configuration:
@@ -137,6 +151,43 @@ VaultQuest deployments are boundary-driven by configuration:
 - Contract IDs and network endpoints are injected per deployment, not
   hard-coded in application logic.
 
+## Debugging a user-reported discrepancy (cross-layer tracing)
+
+**Standard entry point for "my deposit didn't show up" and every other
+report that the UI disagrees with the chain:** trace the transaction by its
+hash.
+
+```bash
+curl -H "X-Internal-Secret: $INTERNAL_SERVICE_SECRET" \
+  https://<backend>/internal/trace/<tx_hash>
+```
+
+The on-chain transaction hash is the correlation key. It is the one
+identifier every layer already stores, so no new id has to be threaded
+through the stack:
+
+| Layer | Where the hash lives | Timeline stages |
+|---|---|---|
+| Intent (frontend → `POST /actions`) | `action_ledger` row, joined by `tx_hash` | `intent_recorded` |
+| Signing (wallet signs + broadcasts, frontend → `PATCH /actions/:id/submitted`) | `action_ledger.tx_hash`, `submitted_at`; log `action tx_hash attached {txHash}` | `tx_hash_attached` |
+| Chain (Soroban contract emits the event) | `chain_events.tx_hash`, `ledger`, `ledger_closed_at` | `event_emitted` |
+| Ingestion (indexer) | `chain_events.ingested_at`; `poison_events.tx_hash`; `pending_events.tx_hash`; log `indexer: event reconciled {txHash, eventId, matched}` | `event_logged`, `event_quarantined`, `event_parked_awaiting_intent`, `event_matched_to_intent` (pending-event cache invalidated) |
+| Ledger (reconciliation) | `action_ledger.status`, `soroban_event_id`, `confirmed_at` (= ledger close time); `transaction_metrics` via the action id | `action_confirmed` / `action_reverted`, `confirmation_metric_indexed` |
+| Dashboard | `GET /actions/:id`, `GET /actions?wallet=`, `GET /dashboard/summary?wallet=` read the ledger row directly | `visible_on_dashboard` |
+
+The response is the chronologically sorted timeline plus a `gaps` list that
+names where the pipeline stopped: no event ingested (not yet indexed,
+contract outside the indexer filter, reconciled via `POST /internal/reconcile`
+which bypasses the event log, or older than RPC retention), a quarantined
+event holding the cursor, an event with no intent carrying its hash, or an
+event ingested while the action is still `submitted`. To follow the same
+transaction through logs, filter on the structured field `txHash`.
+
+Implementation: `backend/src/services/transactionTrace.ts` (four indexed
+point lookups plus one dependent lookup). Related operational signals:
+[`docs/INDEXER_RUNBOOK.md`](./INDEXER_RUNBOOK.md) §2b (ingestion alerts) and
+[`docs/REPLAY_DETERMINISM.md`](./REPLAY_DETERMINISM.md).
+
 ## Related docs
 
 - [`docs/STATE_MODEL.md`](./STATE_MODEL.md) — contract, backend, and frontend state
@@ -145,3 +196,5 @@ VaultQuest deployments are boundary-driven by configuration:
   boundaries.
 - [`backend/docs/ARCHITECTURE.md`](../backend/docs/ARCHITECTURE.md) — backend service layout
   and reconciliation details.
+- [`docs/QUEST_REWARDS.md`](./QUEST_REWARDS.md) — quest-completion metrics, exactly-once
+  reward-grant idempotency, reorg correction policy, and payout status.

@@ -20,6 +20,47 @@ export interface TransactionStatusView {
 
 type ApiEnvelope<T> = { data: T };
 
+export interface VaultMetadataRecord {
+  id: string;
+  risk_tier?: string | null;
+  strategy?: string | null;
+  lockup_days?: number | null;
+  fee_bps?: number | null;
+  accepted_asset?: string | null;
+  operational_status?: string | null;
+  metadata_version?: number | null;
+}
+
+export interface PortfolioActivePosition {
+  vault_id: string;
+  balance: number;
+  token: string;
+}
+
+export interface PortfolioRecentActivity {
+  id: string;
+  action_type: string;
+  status: string;
+  tx_hash: string | null;
+  created_at: string;
+  payload: unknown;
+}
+
+/**
+ * Matches GET /portfolio/summary's real response shape exactly — see
+ * backend/src/services/ledger.ts's getPortfolioSummary() and
+ * backend/tests/portfolio.spec.ts for the contract this mirrors.
+ */
+export interface PortfolioSummary {
+  wallet_address: string;
+  total_deposits: number;
+  active_positions: PortfolioActivePosition[];
+  pending_rewards: number;
+  claimable_amount: number;
+  invalid_action_count: number;
+  recent_activity: PortfolioRecentActivity[];
+}
+
 type SavedPoolApiRecord = {
   id: string;
   wallet_address: string;
@@ -134,67 +175,98 @@ export class VaultApiClient {
     return `${this.baseUrl}${path}${query}`;
   }
 
-  async listPools(): Promise<PoolSummary[]> {
+  async listPools(options?: { signal?: AbortSignal }): Promise<PoolSummary[]> {
     const body = await parseJsonResponse<ApiEnvelope<PoolSummary[]>>(
-      await fetch(this.url("/pools")),
+      await fetch(this.url("/pools"), { signal: options?.signal }),
       "Pool discovery request failed",
+    );
+    return body.data.map((pool) => {
+      const raw = pool as PoolSummary & Record<string, unknown>;
+      return {
+        ...pool,
+        riskTier: pool.riskTier ?? (raw.risk_tier as string | undefined),
+        strategy: pool.strategy ?? (raw.strategy_name as string | undefined),
+        lockupDays: pool.lockupDays ?? (raw.lockup_days as number | undefined),
+        feeBps: pool.feeBps ?? (raw.fee_bps as number | undefined),
+        acceptedAsset: pool.acceptedAsset ?? (raw.accepted_asset as string | undefined),
+        operationalStatus: pool.operationalStatus ?? (raw.operational_status as string | undefined),
+        metadataVersion: pool.metadataVersion ?? (raw.metadata_version as number | undefined),
+      };
+    });
+
+  }
+
+  async listVaultMetadata(options?: { signal?: AbortSignal }): Promise<VaultMetadataRecord[]> {
+    const body = await parseJsonResponse<ApiEnvelope<VaultMetadataRecord[]>>(
+      await fetch(this.url("/vault-metadata"), { signal: options?.signal }),
+      "Vault metadata request failed",
     );
     return body.data;
   }
 
-  async listPrizeViews(walletAddress?: string | null): Promise<RewardHistoryEntry[]> {
+  async getPortfolioSummary(walletAddress: string, options?: { signal?: AbortSignal }): Promise<PortfolioSummary> {
+    const params = new URLSearchParams({ wallet: walletAddress });
+    const body = await parseJsonResponse<ApiEnvelope<PortfolioSummary>>(
+      await fetch(this.url("/portfolio/summary", params), { signal: options?.signal }),
+      "Portfolio summary request failed",
+    );
+    return body.data;
+  }
+
+  async listPrizeViews(walletAddress?: string | null, options?: { signal?: AbortSignal }): Promise<RewardHistoryEntry[]> {
     const params = walletAddress ? new URLSearchParams({ wallet: walletAddress }) : undefined;
     const body = await parseJsonResponse<ApiEnvelope<RewardHistoryEntry[]>>(
-      await fetch(this.url("/prizes", params)),
+      await fetch(this.url("/prizes", params), { signal: options?.signal }),
       "Prize views request failed",
     );
     return body.data;
   }
 
-  async getTransactionStatus(actionId: string): Promise<TransactionStatusView> {
+  async getTransactionStatus(actionId: string, options?: { signal?: AbortSignal }): Promise<TransactionStatusView> {
     const body = await parseJsonResponse<ApiEnvelope<ActionApiRecord>>(
-      await fetch(this.url(`/actions/${encodeURIComponent(actionId)}`)),
+      await fetch(this.url(`/actions/${encodeURIComponent(actionId)}`), { signal: options?.signal }),
       "Transaction status request failed",
     );
     return toTransactionStatus(body.data);
   }
 
-  async listSavedPools(walletAddress: string): Promise<SavedPoolEntry[]> {
+  async listSavedPools(walletAddress: string, options?: { signal?: AbortSignal }): Promise<SavedPoolEntry[]> {
     const params = new URLSearchParams({ wallet: walletAddress });
     const body = await parseJsonResponse<ApiEnvelope<SavedPoolApiRecord[]>>(
-      await fetch(this.url("/saved-pools", params)),
+      await fetch(this.url("/saved-pools", params), { signal: options?.signal }),
       "Saved pools request failed",
     );
     return body.data.map(toSavedPoolEntry);
   }
 
-  async savePool(walletAddress: string, pool: PoolSummary): Promise<SavedPoolEntry> {
+  async savePool(walletAddress: string, pool: PoolSummary, options?: { signal?: AbortSignal }): Promise<SavedPoolEntry> {
     const body = await parseJsonResponse<ApiEnvelope<{ saved: SavedPoolApiRecord }>>(
       await fetch(this.url("/saved-pools"), {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ wallet_address: walletAddress, pool: poolToPayload(pool) }),
+        signal: options?.signal,
       }),
       "Saving pool failed",
     );
     return toSavedPoolEntry(body.data.saved);
   }
 
-  async unsavePool(walletAddress: string, poolId: string): Promise<number> {
+  async unsavePool(walletAddress: string, poolId: string, options?: { signal?: AbortSignal }): Promise<number> {
     const params = new URLSearchParams({ wallet: walletAddress });
     const body = await parseJsonResponse<ApiEnvelope<{ deleted: number }>>(
-      await fetch(this.url(`/saved-pools/${encodeURIComponent(poolId)}`, params), { method: "DELETE" }),
+      await fetch(this.url(`/saved-pools/${encodeURIComponent(poolId)}`, params), { method: "DELETE", signal: options?.signal }),
       "Removing saved pool failed",
     );
     return body.data.deleted;
   }
 
-  async exportActivity(options: { wallet: string; format: "json" | "csv"; from?: string; to?: string }): Promise<Blob> {
+  async exportActivity(options: { wallet: string; format: "json" | "csv"; from?: string; to?: string; signal?: AbortSignal }): Promise<Blob> {
     const params = new URLSearchParams({ wallet: options.wallet, format: options.format });
     if (options.from) params.set("from", options.from);
     if (options.to) params.set("to", options.to);
 
-    const res = await fetch(this.url("/actions/export", params));
+    const res = await fetch(this.url("/actions/export", params), { signal: options.signal });
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
       throw new Error(body.error?.message ?? `Export failed (${res.status})`);

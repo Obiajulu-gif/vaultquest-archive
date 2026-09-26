@@ -1,0 +1,23 @@
+{
+  "eventType": "claim",
+  "valid": {
+    "topic": "claim",
+    "value": { "vault_id": "v1", "winner": "GWINNER...", "amount": "9999", "version": 2 },
+    "successful": true
+  },
+  "malformed": {
+    "topic": "claim",
+    "rawValue": "<<binary-garbage>>",
+    "successful": true
+  },
+  "legacyVersion": {
+    "topic": "claim",
+    "value": { "vault_id": "v1", "winner": "GWINNER...", "version": 1 },
+    "successful": true
+  },
+  "unknownVersion": {
+    "topic": "claim",
+    "value": { "vault_id": "v1", "winner": "GWINNER...", "version": 999 },
+    "successful": true
+  }
+}

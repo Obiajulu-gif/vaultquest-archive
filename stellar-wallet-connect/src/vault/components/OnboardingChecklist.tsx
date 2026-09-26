@@ -21,16 +21,36 @@ function writeDismissed(value: boolean): void {
   localStorage.setItem(ONBOARDING_STORAGE_KEY, value ? "true" : "false");
 }
 
-function isStepDone(id: string, walletConnected: boolean, hasJoinedVault: boolean): boolean {
+/**
+ * Real onboarding progress, driven by actual wallet/vault state (#628) —
+ * this replaces the earlier version (#202) where "correct-network" and
+ * "connect-wallet" both collapsed onto the same `walletConnected` boolean
+ * (so a wallet on the wrong chain still showed the network step as done),
+ * and every vault-related step collapsed onto a single, often-hardcoded
+ * `hasJoinedVault` flag with no real deposit signal behind it.
+ *
+ * `networkSupported` is `true` when there's no wallet connected at all —
+ * "wrong network" isn't a meaningful state to show before a wallet exists,
+ * and the "connect-wallet" step being incomplete already communicates that.
+ */
+function isStepDone(
+  id: string,
+  walletConnected: boolean,
+  networkSupported: boolean,
+  hasDeposited: boolean,
+): boolean {
   switch (id) {
     case "connect-wallet": return walletConnected;
-    case "correct-network": return walletConnected;
-    case "choose-vault": return hasJoinedVault;
-    case "join-pool": return hasJoinedVault;
-    case "follow-rewards": return hasJoinedVault;
+    case "correct-network": return walletConnected && networkSupported;
+    case "choose-vault": return hasDeposited;
+    case "join-pool": return hasDeposited;
+    case "follow-rewards": return hasDeposited;
     default: return false;
   }
 }
+
+/** Steps whose progress requires the wallet to be on a supported network first. */
+const NETWORK_GATED_STEP_IDS = new Set(["choose-vault", "join-pool", "follow-rewards"]);
 
 function ChecklistSkeleton() {
   return (
@@ -57,6 +77,24 @@ function ChecklistSkeleton() {
 export interface OnboardingChecklistProps {
   className?: string;
   walletConnected?: boolean;
+  /**
+   * Whether the connected wallet is on a VaultQuest-supported network.
+   * Ignored while `walletConnected` is false. Defaults to `true` so a
+   * caller that hasn't wired real network detection yet doesn't
+   * regress to a permanently-blocked checklist — see #628.
+   */
+  networkSupported?: boolean;
+  /**
+   * Whether the wallet holds a real, confirmed deposit — drive this from
+   * actual backend/vault state (e.g. `usePortfolioSummary`'s
+   * `active_positions.length > 0`), never a hardcoded or locally-guessed
+   * value. Superseded `hasJoinedVault` (#202) is still accepted for
+   * backward compatibility but is deprecated: it conflated "joined a
+   * pool" with several unrelated later steps, and #628's audit found at
+   * least one call site where it was a permanently-`false` placeholder.
+   */
+  hasDeposited?: boolean;
+  /** @deprecated Use `hasDeposited`, which is what this actually maps to. */
   hasJoinedVault?: boolean;
   loading?: boolean;
 }
@@ -64,6 +102,8 @@ export interface OnboardingChecklistProps {
 export const OnboardingChecklist: FC<OnboardingChecklistProps> = ({
   className = "",
   walletConnected = false,
+  networkSupported = true,
+  hasDeposited,
   hasJoinedVault = false,
   loading = false,
 }) => {
@@ -72,9 +112,14 @@ export const OnboardingChecklist: FC<OnboardingChecklistProps> = ({
 
   if (loading) return <ChecklistSkeleton />;
 
+  // `hasDeposited` wins when provided; `hasJoinedVault` is the deprecated
+  // fallback for callers not yet migrated.
+  const deposited = hasDeposited ?? hasJoinedVault;
+  const networkBlocked = walletConnected && !networkSupported;
+
   const dismiss = () => { writeDismissed(true); setDismissed(true); setExpanded(false); };
   const revisit = () => { writeDismissed(false); setDismissed(false); setExpanded(true); };
-  const completedCount = STEPS.filter((s) => isStepDone(s.id, walletConnected, hasJoinedVault)).length;
+  const completedCount = STEPS.filter((s) => isStepDone(s.id, walletConnected, networkSupported, deposited)).length;
   const allDone = completedCount === STEPS.length;
 
   if (dismissed) {
@@ -108,6 +153,17 @@ export const OnboardingChecklist: FC<OnboardingChecklistProps> = ({
 
       {expanded && (
         <>
+          {networkBlocked && (
+            <div
+              role="alert"
+              className="mt-4 flex items-start gap-3 rounded-xl border border-amber-500/40 bg-amber-900/20 p-3"
+            >
+              <Circle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" aria-hidden="true" />
+              <p className="text-sm leading-5 text-amber-200">
+                Your wallet is on an unsupported network — switch networks to unlock vault steps below.
+              </p>
+            </div>
+          )}
           {allDone ? (
             <div className="mt-4 flex items-center gap-3 rounded-xl border border-emerald-500/30 bg-emerald-900/20 p-4">
               <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-300" aria-hidden="true" />
@@ -116,15 +172,21 @@ export const OnboardingChecklist: FC<OnboardingChecklistProps> = ({
           ) : (
             <ol className="mt-4 grid gap-3 md:grid-cols-2">
               {STEPS.map((step) => {
-                const done = isStepDone(step.id, walletConnected, hasJoinedVault);
+                const done = isStepDone(step.id, walletConnected, networkSupported, deposited);
+                const blocked = !done && networkBlocked && NETWORK_GATED_STEP_IDS.has(step.id);
                 return (
-                  <li key={step.id} className="flex gap-3 rounded-xl border border-red-900/20 bg-black/20 p-3">
+                  <li
+                    key={step.id}
+                    className={`flex gap-3 rounded-xl border border-red-900/20 bg-black/20 p-3 ${blocked ? "opacity-60" : ""}`}
+                  >
                     {done
                       ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-300" aria-hidden="true" />
                       : <Circle className="mt-0.5 h-4 w-4 shrink-0 text-gray-600" aria-hidden="true" />}
                     <div>
                       <h3 className={`text-sm font-semibold ${done ? "text-emerald-200" : "text-white"}`}>{step.title}</h3>
-                      <p className="mt-1 text-sm leading-5 text-gray-400">{step.body}</p>
+                      <p className="mt-1 text-sm leading-5 text-gray-400">
+                        {blocked ? "Switch to a supported network first." : step.body}
+                      </p>
                     </div>
                   </li>
                 );

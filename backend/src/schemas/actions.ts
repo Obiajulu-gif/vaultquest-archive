@@ -30,7 +30,14 @@ export const reconcileBody = z.object({
   tx_hash: z.string().min(4).max(200),
   soroban_event_id: z.string().min(1).max(200),
   event_payload: z.record(z.unknown()),
-  status_hint: z.enum(["confirmed", "reverted"])
+  status_hint: z.enum(["confirmed", "reverted"]),
+  /** Emitting ledger's close time (#751); becomes the action's confirmedAt. */
+  ledger_closed_at: z.string().datetime().optional()
+});
+
+/** Same bounds as reconcileBody.tx_hash (#753). */
+export const traceParams = z.object({
+  txHash: z.string().min(4).max(200)
 });
 
 export const dashboardQuery = z.object({
@@ -46,6 +53,7 @@ export const portfolioQuery = z.object({
 
 export const checkpointBody = z.object({
   latest_ledger: z.number().int().nonnegative(),
+  last_processed_event_id: z.string().min(1).max(200).nullable().optional(),
   last_error: z.string().nullable().optional(),
   success: z.boolean().default(true)
 });
@@ -56,12 +64,13 @@ export const exportQuery = z.object({
   format: z.enum(["json", "csv"]).default("json"),
   from: z.string().datetime({ offset: true }).optional(),
   to: z.string().datetime({ offset: true }).optional(),
+  action_type: z.enum(ACTION_TYPES).optional(),
   limit: z.coerce.number().int().min(1).max(1000).default(500)
 });
 
 export const actionHistoryQuery = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(10),
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
   type: z.enum(ACTION_TYPES).optional(),
   status: z.enum(ACTION_STATUSES).optional(),
 });

@@ -5,8 +5,10 @@ import { motion } from "framer-motion";
 import Link from "next/link";
 import { ArrowUpDown, ArrowUpRight, Wallet, Info } from "lucide-react";
 import VaultEmptyState from "@/components/app/VaultEmptyState";
+import SavePoolButton from "@/components/app/SavePoolButton";
+import ComparePoolButton from "@/components/app/ComparePoolButton";
 
-export default function VaultComparisonTable({ vaults = [], sortBy = "apy", suggestions = null, onSuggestionClick = null, onClearFilters = null }) {
+export default function VaultComparisonTable({ vaults = [], sortBy = "apy", suggestions = null, onSuggestionClick = null, onClearFilters = null, comparisonMode = null }) {
   const [sortConfig, setSortConfig] = useState({ key: sortBy, direction: "desc" });
 
   const sortedVaults = [...vaults].sort((a, b) => {
@@ -46,6 +48,13 @@ export default function VaultComparisonTable({ vaults = [], sortBy = "apy", sugg
     />
   );
 
+  const getAriaSort = (key) => {
+    if (sortConfig.key === key) {
+      return sortConfig.direction === "asc" ? "ascending" : "descending";
+    }
+    return undefined;
+  };
+
   if (vaults.length === 0) {
     return (
       <div className="space-y-4">
@@ -73,40 +82,54 @@ export default function VaultComparisonTable({ vaults = [], sortBy = "apy", sugg
   return (
     <div className="w-full overflow-x-auto rounded-2xl border border-vault-border bg-vault-surface/50 backdrop-blur-md">
       <table className="w-full min-w-[720px] text-left text-sm">
+        <caption className="sr-only">
+          Vault Comparison Table. Sortable columns include Deposits, Participants, Yield, Lockup, and Activity.
+          {comparisonMode && " Select pools to compare them side-by-side."}
+        </caption>
         <thead className="border-b border-vault-border bg-vault-surface/80 text-xs uppercase tracking-wider text-vault-muted">
           <tr>
-            <th className="px-6 py-4 font-semibold">Vault</th>
+            <th scope="col" className="px-6 py-4 font-semibold">Vault</th>
             <th
+              scope="col"
+              aria-sort={getAriaSort("tvl")}
               className="group cursor-pointer px-6 py-4 font-semibold hover:bg-white/5"
               onClick={() => handleSort("tvl")}
             >
               Deposits (TVL) <SortIcon columnKey="tvl" />
             </th>
             <th
+              scope="col"
+              aria-sort={getAriaSort("participantCount")}
               className="group cursor-pointer px-6 py-4 font-semibold hover:bg-white/5"
               onClick={() => handleSort("participantCount")}
             >
               Participants <SortIcon columnKey="participantCount" />
             </th>
             <th
+              scope="col"
+              aria-sort={getAriaSort("apy")}
               className="group cursor-pointer px-6 py-4 font-semibold hover:bg-white/5"
               onClick={() => handleSort("apy")}
             >
               Est. Yield <SortIcon columnKey="apy" />
             </th>
             <th
+              scope="col"
+              aria-sort={getAriaSort("lockup")}
               className="group cursor-pointer px-6 py-4 font-semibold hover:bg-white/5"
               onClick={() => handleSort("lockup")}
             >
               Lockup <SortIcon columnKey="lockup" />
             </th>
             <th
+              scope="col"
+              aria-sort={getAriaSort("activity")}
               className="group cursor-pointer px-6 py-4 font-semibold hover:bg-white/5"
               onClick={() => handleSort("activity")}
             >
               Activity <SortIcon columnKey="activity" />
             </th>
-            <th className="px-6 py-4 text-right font-semibold">Action</th>
+            <th scope="col" className="px-6 py-4 text-right font-semibold">Action</th>
           </tr>
         </thead>
         <tbody>
@@ -118,7 +141,7 @@ export default function VaultComparisonTable({ vaults = [], sortBy = "apy", sugg
               transition={{ duration: 0.2, delay: idx * 0.05 }}
               className="group border-b border-vault-border/50 transition-colors hover:bg-white/5 last:border-0"
             >
-              <td className="px-6 py-4">
+              <th scope="row" className="px-6 py-4 font-normal">
                 <div className="flex items-center gap-3">
                   <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-vault-accent/10 text-vault-accent">
                     <Wallet size={18} />
@@ -128,7 +151,7 @@ export default function VaultComparisonTable({ vaults = [], sortBy = "apy", sugg
                     <p className="text-xs text-vault-muted">{vault.network} • {vault.asset}</p>
                   </div>
                 </div>
-              </td>
+              </th>
               <td className="px-6 py-4 font-medium text-vault-text">
                 ${(vault.tvl / 1000000).toFixed(2)}M
               </td>
@@ -147,9 +170,26 @@ export default function VaultComparisonTable({ vaults = [], sortBy = "apy", sugg
                 {vault.lastActivity ? new Date(vault.lastActivity).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'N/A'}
               </td>
               <td className="px-6 py-4 text-right">
-                <Link href={`/app/vaults/${vault.id}`} className="inline-flex items-center gap-1 rounded-lg border border-vault-border bg-vault-surface px-3 py-1.5 text-sm font-medium text-vault-text transition-all hover:border-vault-accent hover:text-vault-accent">
-                  View <ArrowUpRight size={14} />
-                </Link>
+                <div className="flex items-center justify-end gap-2">
+                  <SavePoolButton pool={vault} />
+                  {comparisonMode && (
+                    <ComparePoolButton
+                      pool={vault}
+                      isSelected={comparisonMode.isSelected(vault.id)}
+                      onToggle={() => {
+                        if (comparisonMode.isSelected(vault.id)) {
+                          comparisonMode.removePool(vault.id);
+                        } else {
+                          comparisonMode.addPool(vault);
+                        }
+                      }}
+                      disabled={!comparisonMode.isSelected(vault.id) && !comparisonMode.canAddMore}
+                    />
+                  )}
+                  <Link href={`/app/vaults/${vault.id}`} className="inline-flex items-center gap-1 rounded-lg border border-vault-border bg-vault-surface px-3 py-1.5 text-sm font-medium text-vault-text transition-all hover:border-vault-accent hover:text-vault-accent">
+                    View <ArrowUpRight size={14} />
+                  </Link>
+                </div>
               </td>
             </motion.tr>
           ))}

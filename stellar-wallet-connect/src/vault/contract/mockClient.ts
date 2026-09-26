@@ -21,6 +21,11 @@ import {
   type UserPosition,
   type VaultContractClient,
 } from "./types";
+import {
+  validateDepositAmount,
+  validateWithdrawLockup,
+  type ContractBehaviorError,
+} from "../../../../lib/conformance-spec";
 
 export interface MockVaultConfig {
   /** Whether a wallet is connected. Defaults to true. */
@@ -37,6 +42,10 @@ export interface MockVaultConfig {
   failReads?: Exclude<ContractErrorKind, "wallet_disconnected" | "signature_rejected">;
   /** Force specific actions to throw with the given error kind. */
   failActions?: Partial<Record<PoolActionType, ContractErrorKind>>;
+  /** Lockup windows keyed by pool id (ledger seq the principal unlocks). */
+  lockupWindows?: Record<string, number>;
+  /** Current ledger sequence used for lockup checks. Defaults to a large value. */
+  currentLedger?: number;
   /** Deterministic tx hash generator (defaults to a counter). */
   txHashFactory?: (type: PoolActionType, input: PoolActionInput) => string;
 }
@@ -49,6 +58,8 @@ export function createMockVaultClient(config: MockVaultConfig = {}): VaultContra
   const pools = config.pools ?? {};
   const positions = config.positions ?? {};
   const rewardHistory = config.rewardHistory ?? [];
+  const lockupWindows = config.lockupWindows ?? {};
+  const currentLedger = config.currentLedger ?? Number.MAX_SAFE_INTEGER;
   let counter = 0;
 
   const nextTxHash = (type: PoolActionType, input: PoolActionInput): string =>
@@ -66,6 +77,33 @@ export function createMockVaultClient(config: MockVaultConfig = {}): VaultContra
   const maybeFailRead = (): void => {
     if (config.failReads) {
       throw new ContractInterfaceError(config.failReads, `read failed: ${config.failReads}`);
+    }
+  };
+
+  /**
+   * Maps a canonical contract behavior error to the wallet error seam. The
+   * real contract surfaces these as `pool` host errors (revert codes), which
+   * the wallet layer reports as `contract_error`; the name is preserved so
+   * callers can recover exactly like they would on-chain.
+   */
+  const contractReject = (error: ContractBehaviorError): never => {
+    throw new ContractInterfaceError("contract_error", error);
+  };
+
+  const parseAmount = (input: PoolActionInput): number => {
+    const parsed = Number(input.amount);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
+  const validatePrincipalAction = (type: PoolActionType, input: PoolActionInput): void => {
+    const err = validateDepositAmount(parseAmount(input));
+    if (err) contractReject(err);
+    if (type === "withdraw") {
+      const lockedUntil = lockupWindows[input.poolId];
+      if (lockedUntil != null) {
+        const lockupErr = validateWithdrawLockup(lockedUntil, currentLedger);
+        if (lockupErr) contractReject(lockupErr);
+      }
     }
   };
 
@@ -103,6 +141,18 @@ export function createMockVaultClient(config: MockVaultConfig = {}): VaultContra
       if (failure) {
         throw new ContractInterfaceError(failure, `${type} failed: ${failure}`);
       }
+
+      // Contract-edge-case conformance (#651). Deposit/withdraw require a
+      // positive amount; a claim with nothing to pull returns a successful
+      // no-op exactly as the contract's `claim_reward` does with `Ok(0)`.
+      if (type === "drip" || type === "withdraw") {
+        validatePrincipalAction(type, input);
+      } else if (type === "create" || type === "join") {
+        if (input.amount != null && input.amount !== "") {
+          validatePrincipalAction(type, input);
+        }
+      }
+
       return { txHash: nextTxHash(type, input), status: "submitted" };
     },
   };

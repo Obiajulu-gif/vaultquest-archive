@@ -6,11 +6,12 @@ import {
   Check,
   Terminal,
   Settings,
-  AlertCircle
+  AlertCircle,
+  Shield
 } from "lucide-react";
 import { connectedPublicKey, connectedNetwork, isNetworkMismatch } from "../core/store.js";
 import { EXPECTED_NETWORK, STELLAR_NETWORKS, type NetworkType } from "../lib/wallets.js";
-import { getFrontendEnv } from "../core/env.js";
+import { getFrontendEnv, getManifestAttestation } from "../core/env.js";
 import { resolveHorizonUrl } from "../core/horizonConfig.js";
 
 export const NetworkDiagnostics: FC = () => {
@@ -20,6 +21,7 @@ export const NetworkDiagnostics: FC = () => {
 
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [anonymize, setAnonymize] = useState(false);
 
   // Read environment variables safely
   let env: any = {};
@@ -38,13 +40,21 @@ export const NetworkDiagnostics: FC = () => {
   );
 
   const handleCopy = () => {
+    const attestation = getManifestAttestation();
+    const displayKey = publicKey ? (anonymize ? `${publicKey.slice(0, 4)}...ANONYMIZED` : publicKey) : "N/A";
     const info = `### VaultQuest Diagnostic Report
 - **Timestamp**: ${new Date().toISOString()}
 - **Wallet Connected**: ${publicKey ? "Yes" : "No"}
-- **Wallet Public Key**: ${publicKey || "N/A"}
+- **Wallet Public Key**: ${displayKey}
 - **Connected Network**: ${network || "Unknown"} (Passphrase: ${connectedNetworkConfig?.passphrase || "N/A"})
 - **Expected Network**: ${EXPECTED_NETWORK} (Passphrase: ${expectedNetworkConfig?.passphrase || "N/A"})
 - **Network Mismatch Detected**: ${mismatch ? "Yes" : "No"}
+
+#### Deployment Manifest:
+- **Verified**: ${attestation?.verified ? "Yes" : "No"}
+- **Version**: ${attestation?.version || "N/A"}
+- **Environment**: ${attestation?.environment || "N/A"}
+- **Mismatches**: ${attestation?.mismatches.length || 0}
 
 #### Configuration Info:
 - **Drip Pool Contract ID**: ${env.NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID || "Not Set"}
@@ -120,23 +130,34 @@ export const NetworkDiagnostics: FC = () => {
                 <p className="text-[11px] text-gray-400">Useful metadata for network and smart contract status.</p>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={handleCopy}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-red-900/20 border border-red-900/40 hover:bg-red-900/40 px-3 py-1.5 text-xs font-medium text-white transition-colors focus:outline-none focus:ring-1 focus:ring-red-400"
-            >
-              {copied ? (
-                <>
-                  <Check className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
-                  Copied!
-                </>
-              ) : (
-                <>
-                  <Clipboard className="h-3.5 w-3.5" aria-hidden="true" />
-                  Copy Diagnostics
-                </>
-              )}
-            </button>
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={anonymize}
+                  onChange={(e) => setAnonymize(e.target.checked)}
+                  className="rounded border-red-900/40 bg-black/40 text-red-600 focus:ring-red-500"
+                />
+                Anonymize
+              </label>
+              <button
+                type="button"
+                onClick={handleCopy}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-red-900/20 border border-red-900/40 hover:bg-red-900/40 px-3 py-1.5 text-xs font-medium text-white transition-colors focus:outline-none focus:ring-1 focus:ring-red-400"
+              >
+                {copied ? (
+                  <>
+                    <Check className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
+                    Copied!
+                  </>
+                ) : (
+                  <>
+                    <Clipboard className="h-3.5 w-3.5" aria-hidden="true" />
+                    Copy Diagnostics
+                  </>
+                )}
+              </button>
+            </div>
           </div>
 
           <div className="grid gap-4 md:grid-cols-2 text-xs">
@@ -180,6 +201,56 @@ export const NetworkDiagnostics: FC = () => {
                   </dd>
                 </div>
               </dl>
+            </div>
+
+            {/* Deployment Manifest Attestation */}
+            <div className="space-y-2 rounded-xl border border-red-900/10 bg-black/10 p-3 md:col-span-2">
+              <h4 className="font-semibold text-white uppercase tracking-wider text-[10px] text-red-400 flex items-center gap-1.5">
+                <Shield className="h-3 w-3" aria-hidden="true" />
+                Deployment Manifest Attestation
+              </h4>
+              {(() => {
+                const attestation = getManifestAttestation();
+                if (!attestation) {
+                  return (
+                    <p className="text-xs text-gray-500 italic">No deployment manifest loaded</p>
+                  );
+                }
+                return (
+                  <dl className="grid gap-x-4 gap-y-1.5 sm:grid-cols-2">
+                    <div>
+                      <dt className="text-gray-400">Verification Status:</dt>
+                      <dd className={`font-semibold ${attestation.verified ? "text-emerald-400" : "text-red-400"}`}>
+                        {attestation.verified ? "Verified" : "Mismatch Detected"}
+                      </dd>
+                    </div>
+                    {attestation.version && (
+                      <div>
+                        <dt className="text-gray-400">Manifest Version:</dt>
+                        <dd className="font-mono text-gray-200">{attestation.version}</dd>
+                      </div>
+                    )}
+                    {attestation.environment && (
+                      <div>
+                        <dt className="text-gray-400">Environment:</dt>
+                        <dd className="font-mono text-gray-200 uppercase">{attestation.environment}</dd>
+                      </div>
+                    )}
+                    {attestation.mismatches.length > 0 && (
+                      <div className="sm:col-span-2">
+                        <dt className="text-gray-400">Mismatches:</dt>
+                        <dd className="mt-1 space-y-1">
+                          {attestation.mismatches.map((m, i) => (
+                            <div key={i} className="text-[10px] font-mono bg-red-950/30 rounded p-1.5 border border-red-900/20">
+                              <span className="text-red-400">{m.field}</span>: manifest=<span className="text-emerald-400">{m.manifestValue}</span> env=<span className="text-red-400">{m.envValue}</span>
+                            </div>
+                          ))}
+                        </dd>
+                      </div>
+                    )}
+                  </dl>
+                );
+              })()}
             </div>
 
             {/* Smart Contracts Configuration */}

@@ -40,7 +40,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Detect Rust workspace for Soroban contracts
         id: detect
@@ -83,7 +83,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -92,7 +92,7 @@ jobs:
           targets: wasm32v1-none
 
       - name: Cache cargo dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -110,6 +110,19 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace --all-targets --all-features
+
+      - name: Run benchmarks
+        run: |
+          echo "Running contract benchmarks..."
+          cargo test --package drip-pool --lib -- benchmarks -- --nocapture 2>&1 | tee bench_results.txt
+
+          # Check for benchmark failures
+          if grep -q "FAILED" bench_results.txt; then
+            echo "❌ Benchmark failures detected"
+            exit 1
+          fi
+
+          echo "✅ All benchmarks passed within resource budgets"
 
       - name: Build release Wasm artifacts
         run: cargo build --workspace --target wasm32v1-none --release

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { injectConnectedMockWallet } from './helpers/wallet-mock';
 
 test.describe('Mobile Responsiveness Tests', () => {
   test.describe('Mobile Navigation', () => {
@@ -60,7 +61,8 @@ test.describe('Mobile Responsiveness Tests', () => {
     test('should handle tables on mobile with horizontal scroll or collapse', async ({ page, isMobile }) => {
       test.skip(!isMobile, 'This test is only for mobile viewports');
       
-      await page.goto('/app/account?mockConnected=true');
+      await injectConnectedMockWallet(page);
+      await page.goto('/app/account');
       
       const table = page.locator('table, [role="table"]').first();
       await expect(table).toBeVisible();
@@ -76,7 +78,8 @@ test.describe('Mobile Responsiveness Tests', () => {
     test('should display transaction table on mobile without breaking layout', async ({ page, isMobile }) => {
       test.skip(!isMobile, 'This test is only for mobile viewports');
       
-      await page.goto('/app/account?mockConnected=true');
+      await injectConnectedMockWallet(page);
+      await page.goto('/app/account');
       
       const transactionSection = page.locator('text=Past transactions').locator('..');
       await expect(transactionSection).toBeVisible();
@@ -199,7 +202,8 @@ test.describe('Mobile Responsiveness Tests', () => {
     test('should handle swipe gestures for scrollable content', async ({ page, isMobile }) => {
       test.skip(!isMobile, 'This test is only for mobile viewports');
       
-      await page.goto('/app/account?mockConnected=true');
+      await injectConnectedMockWallet(page);
+      await page.goto('/app/account');
       
       const scrollableElement = page.locator('table, [role="table"]').first();
       

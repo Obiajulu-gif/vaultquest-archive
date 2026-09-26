@@ -40,8 +40,20 @@ export async function startTestDb(): Promise<TestDb> {
 }
 
 export async function resetDb(prisma: PrismaClient): Promise<void> {
+  await prisma.walletSession.deleteMany({});
+  await prisma.walletChallenge.deleteMany({});
+  await prisma.protocolAudit.deleteMany({});
+  await prisma.repairAudit.deleteMany({});
+  await prisma.repairQuarantine.deleteMany({});
+  await prisma.actionLease.deleteMany({});
   await prisma.pendingEvent.deleteMany({});
+  await prisma.chainEvent.deleteMany({});
   await prisma.savedPool.deleteMany({});
   await prisma.userQuest.deleteMany({});
+  await prisma.vaultSettlement.deleteMany({});
   await prisma.actionLedger.deleteMany({});
+  // #750: clear dashboard aggregate snapshots between test runs
+  await prisma.$executeRawUnsafe(`DELETE FROM "dashboard_aggregates"`).catch(() => {
+    // Table may not exist yet on older test DBs — safe to ignore.
+  });
 }

@@ -1,4 +1,6 @@
-import type { FastifyPluginAsync } from "fastify";
+import { createHash } from "node:crypto";
+import { loadManifest } from "../../../lib/deployment-manifest.js";
+import type { FastifyPluginAsync, preHandlerHookHandler } from "fastify";
 import type { LedgerService } from "../services/ledger.js";
 import {
   createActionBody,
@@ -37,7 +39,10 @@ function serialize(row: Awaited<ReturnType<LedgerService["getAction"]>>) {
   };
 }
 
-export const actionsRoutes = (svc: LedgerService): FastifyPluginAsync =>
+export const actionsRoutes = (
+  svc: LedgerService,
+  apiKeyGuard: preHandlerHookHandler
+): FastifyPluginAsync =>
   async (app) => {
     app.post("/actions", async (req, reply) => {
       const keyHeader = req.headers["idempotency-key"];
@@ -67,7 +72,10 @@ export const actionsRoutes = (svc: LedgerService): FastifyPluginAsync =>
 
     app.patch<{ Params: { id: string } }>("/actions/:id/submitted", async (req) => {
       const body = attachTxBody.parse(req.body);
-      const result = await svc.attachTxHash(req.params.id, body.tx_hash);
+      const workerId = (req.headers["x-worker-id"] as string | undefined) ?? "anonymous";
+      const result = await svc.attachTxHash(req.params.id, body.tx_hash, { workerId });
+      // #753: the signing layer's hand-off, logged under the correlation key.
+      req.log.info({ txHash: body.tx_hash, actionId: result.id, status: result.status }, "action tx_hash attached");
       return ok(serialize(result));
     });
 
@@ -91,7 +99,22 @@ export const actionsRoutes = (svc: LedgerService): FastifyPluginAsync =>
         cursor: q.cursor,
         limit: q.limit
       });
-      return page(result.items.map(serialize), { nextCursor: result.nextCursor, limit: q.limit });
+      // #731: reports the ingestion point this list was read at, so a
+      // caller comparing it against another read (e.g. /dashboard/summary's
+      // own watermark) can tell whether the two came from the same
+      // ingestion generation or straddled a burst of new writes — see
+      // backend/docs/READ_CONSISTENCY.md.
+      const watermark = await svc.getIngestionWatermark();
+      return page(
+        result.items.map(serialize),
+        { nextCursor: result.nextCursor, limit: q.limit },
+        {
+          watermark: {
+            latest_ledger: watermark.latestLedger,
+            as_of: watermark.asOf
+          }
+        }
+      );
     });
 
     app.delete("/actions", async (req) => {
@@ -122,7 +145,14 @@ export const actionsRoutes = (svc: LedgerService): FastifyPluginAsync =>
         pending_tx_hashes: summary.pendingTxHashes,
         is_stale: summary.isStale,
         latest_activity_at: summary.latestActivityAt,
-        latest_confirmed_at: summary.latestConfirmedAt
+        latest_confirmed_at: summary.latestConfirmedAt,
+        // #731: read from the same snapshot transaction as the fields
+        // above, so it exactly describes the ingestion point this summary
+        // was computed at (see getDashboardSummary / READ_CONSISTENCY.md).
+        watermark: {
+          latest_ledger: summary.watermark.latestLedger,
+          as_of: summary.watermark.asOf
+        }
       });
     });
 
@@ -134,7 +164,18 @@ export const actionsRoutes = (svc: LedgerService): FastifyPluginAsync =>
     app.get("/portfolio/summary", async (req) => {
       const q = portfolioQuery.parse(req.query);
       const summary = await svc.getPortfolioSummary(q.wallet);
-      return ok(summary);
+      // #731: getPortfolioSummary's own read is a single query (one MVCC
+      // snapshot already), but the watermark is still fetched separately
+      // here, so a caller can compare it against a concurrently-fetched
+      // /dashboard/summary or /actions read to detect a straddled burst.
+      const watermark = await svc.getIngestionWatermark();
+      return ok({
+        ...summary,
+        watermark: {
+          latest_ledger: watermark.latestLedger,
+          as_of: watermark.asOf
+        }
+      });
     });
 
     /**
@@ -153,58 +194,114 @@ export const actionsRoutes = (svc: LedgerService): FastifyPluginAsync =>
         walletAddress: q.wallet,
         from: q.from ? new Date(q.from) : undefined,
         to: q.to ? new Date(q.to) : undefined,
+        actionType: q.action_type,
         limit: q.limit
       });
 
+      // Obtain network passphrase securely
+      let networkPassphrase = process.env.NETWORK_PASSPHRASE || process.env.NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE;
+      if (!networkPassphrase) {
+        try {
+          const manifest = loadManifest();
+          networkPassphrase = manifest.network.passphrase || manifest.network.name;
+        } catch {
+          networkPassphrase = "standalone";
+        }
+      }
+
+      // Filter and map only public/non-sensitive fields
+      const cleanRecords = rows.map((r) => {
+        const payload = (r.actionPayload as Record<string, unknown> | null) ?? {};
+        return {
+          id: r.id,
+          date: r.createdAt.toISOString(),
+          action_type: r.actionType,
+          pool_id: String(payload["vault_id"] ?? payload["pool_id"] ?? ""),
+          asset: String(payload["token"] ?? payload["asset"] ?? ""),
+          amount: String(payload["amount"] ?? ""),
+          status: r.status,
+          tx_hash: r.txHash ?? "",
+          error_code: r.errorCode ?? "",
+          submitted_at: r.submittedAt?.toISOString() ?? "",
+          confirmed_at: r.confirmedAt?.toISOString() ?? ""
+        };
+      });
+
+      const generatedAt = new Date().toISOString();
+      const range = {
+        from: q.from || null,
+        to: q.to || null
+      };
+
       if (q.format === "csv") {
         const CSV_HEADERS = [
-          "id", "date", "action_type", "pool_id", "amount", "token",
+          "id", "date", "action_type", "pool_id", "asset", "amount",
           "status", "tx_hash", "error_code", "submitted_at", "confirmed_at"
         ];
 
-        const csvRows = rows.map((r) => {
-          const payload = (r.actionPayload as Record<string, unknown> | null) ?? {};
+        const csvRows = cleanRecords.map((r) => {
           return [
             r.id,
-            r.createdAt.toISOString(),
-            r.actionType,
-            String(payload["vault_id"] ?? ""),
-            String(payload["amount"] ?? ""),
-            String(payload["token"] ?? ""),
+            r.date,
+            r.action_type,
+            r.pool_id,
+            r.asset,
+            r.amount,
             r.status,
-            r.txHash ?? "",
-            r.errorCode ?? "",
-            r.submittedAt?.toISOString() ?? "",
-            r.confirmedAt?.toISOString() ?? ""
+            r.tx_hash,
+            r.error_code,
+            r.submitted_at,
+            r.confirmed_at
           ].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",");
         });
 
-        const csv = [CSV_HEADERS.join(","), ...csvRows].join("\n");
-        const filename = `vaultquest-activity-${q.wallet.slice(0, 8)}.csv`;
+        const dataContent = [CSV_HEADERS.join(","), ...csvRows].join("\n");
+        const checksum = createHash("sha256").update(dataContent).digest("hex");
 
+        const csv = [
+          `# wallet: ${q.wallet}`,
+          `# network: ${networkPassphrase}`,
+          `# range: from=${range.from || "all"} to=${range.to || "all"}`,
+          `# generatedAt: ${generatedAt}`,
+          `# checksum: ${checksum}`,
+          dataContent
+        ].join("\n") + "\n";
+
+        const filename = `vaultquest-activity-${q.wallet.slice(0, 8)}.csv`;
         reply
           .header("Content-Type", "text/csv; charset=utf-8")
           .header("Content-Disposition", `attachment; filename="${filename}"`);
         return reply.send(csv);
       }
 
-      return ok(rows.map(serialize));
+      // Format is JSON
+      const recordsString = JSON.stringify(cleanRecords);
+      const checksum = createHash("sha256").update(recordsString).digest("hex");
+
+      const metadata = {
+        wallet: q.wallet,
+        network: networkPassphrase,
+        range,
+        generatedAt,
+        checksum
+      };
+
+      const filename = `vaultquest-activity-${q.wallet.slice(0, 8)}.json`;
+      reply
+        .header("Content-Type", "application/json; charset=utf-8")
+        .header("Content-Disposition", `attachment; filename="${filename}"`);
+      return reply.send(JSON.stringify({ metadata, data: cleanRecords }, null, 2) + "\n");
     });
 
-    app.get<{ Params: { walletAddress: string } }>("/api/actions/:walletAddress", async (req) => {
+    app.get<{ Params: { walletAddress: string } }>("/api/actions/:walletAddress", { preHandler: apiKeyGuard }, async (req) => {
       const q = actionHistoryQuery.parse(req.query);
-      const skip = (q.page - 1) * q.limit;
-      const result = await svc.getHistoryPaginated({
+      const result = await svc.listActions({
         walletAddress: req.params.walletAddress,
         status: q.status,
         type: q.type,
-        skip,
+        cursor: q.cursor ?? null,
         limit: q.limit
       });
-      return ok({
-        totalCount: result.total,
-        currentPage: q.page,
-        data: result.items.map(serialize)
-      });
+      return page(result.items.map(serialize), { nextCursor: result.nextCursor, limit: q.limit });
     });
   };

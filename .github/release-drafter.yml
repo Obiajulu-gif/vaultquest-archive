@@ -1,0 +1,103 @@
+# Configuration for release-drafter (https://github.com/release-drafter/release-drafter).
+# Drives the "Release Drafter" workflow (.github/workflows/release-drafter.yml),
+# which keeps a draft GitHub Release up to date with merged PRs on `main` and
+# is used as the changelog source when a `v*` tag is pushed (see
+# .github/workflows/release-tagging.yml).
+#
+# Maintainer workflow: the draft release is regenerated on every merge to
+# `main`. Before publishing a tagged release, open the draft on the Releases
+# page, edit/reorder any entries as needed, then publish (or let
+# release-tagging.yml attach build artifacts to it on tag push).
+
+name-template: "v$RESOLVED_VERSION"
+tag-template: "v$RESOLVED_VERSION"
+
+categories:
+  - title: "Frontend"
+    labels:
+      - "frontend"
+      - "ui/ux"
+      - "landing-page"
+      - "dashboard"
+  - title: "Backend"
+    labels:
+      - "backend"
+      - "api"
+      - "database"
+      - "authentication"
+  - title: "Contracts"
+    labels:
+      - "smart-contract"
+      - "soroban"
+  - title: "Indexer"
+    labels:
+      - "indexer"
+      - "indexing"
+  - title: "Security"
+    labels:
+      - "security"
+  - title: "Documentation"
+    labels:
+      - "documentation"
+  - title: "Maintenance"
+    labels:
+      - "devops"
+      - "ci-cd"
+      - "infrastructure"
+      - "testing"
+      - "performance"
+      - "migration"
+
+exclude-labels:
+  - "dependencies"
+  - "internal"
+  - "github_actions"
+  - "duplicate"
+  - "wontfix"
+  - "invalid"
+
+change-template: "- $TITLE (#$NUMBER) @$AUTHOR"
+change-title-escapes: '\<*_&'
+
+version-resolver:
+  major:
+    labels:
+      - "major"
+  minor:
+    labels:
+      - "minor"
+      - "enhancement"
+  patch:
+    labels:
+      - "patch"
+      - "bug"
+  default: patch
+
+autolabeler:
+  - label: "frontend"
+    files:
+      - "app/**/*"
+      - "components/**/*"
+  - label: "backend"
+    files:
+      - "backend/**/*"
+  - label: "smart-contract"
+    files:
+      - "contracts/**/*"
+  - label: "documentation"
+    files:
+      - "**/*.md"
+      - "docs/**/*"
+
+template: |
+  ## What's Changed
+
+  $CHANGES
+
+  ## Contributors
+
+  Thanks to $CONTRIBUTORS for this release!
+
+no-changes-template: "- no user-facing changes"
+sort-by: merged_at
+sort-direction: descending

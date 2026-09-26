@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/client";
 import type { PrismaClient } from "@prisma/client";
-import { ERROR_CODES } from "../constants.js";
+import { ERROR_CODES, FINALITY_POLICY } from "../constants.js";
 import { AppError } from "../errors.js";
 import type { IntentInput, ActionRecord } from "../types.js";
 import type { ActionStatus } from "../constants.js";
@@ -57,7 +57,7 @@ export class LedgerService {
     private readonly cacheService?: CacheService
   ) {}
 
-  async createAction(input: IntentInput): Promise<ActionRecord> {
+  async createAction(input: IntentInput & { observedLedger?: number; confirmationDepth?: number }): Promise<ActionRecord> {
     const existing = await this.prisma.actionLedger.findUnique({
       where: { idempotencyKey: input.idempotencyKey }
     });
@@ -76,18 +76,26 @@ export class LedgerService {
       return existing as unknown as ActionRecord;
     }
 
+    const confirmationDepth = input.confirmationDepth ?? FINALITY_POLICY.defaultConfirmationDepth;
+    const observedLedger = input.observedLedger ?? 0;
+    const finalizedLedger = observedLedger > 0 ? observedLedger + confirmationDepth : null;
+
     const created = await this.prisma.actionLedger.create({
       data: {
         idempotencyKey: input.idempotencyKey,
         walletAddress: input.walletAddress,
         actionType: input.actionType,
-        actionPayload: input.actionPayload as object
+        actionPayload: input.actionPayload as object,
+        observedLedger,
+        finalizedLedger,
+        confirmationDepth,
+        finalityStatus: observedLedger > 0 ? "provisional" : "finalized"
       }
     });
     return created as unknown as ActionRecord;
   }
 
-  async attachTxHash(id: string, txHash: string): Promise<ActionRecord> {
+  async attachTxHash(id: string, txHash: string, observedLedger?: number): Promise<ActionRecord> {
     try {
       return await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const row = await tx.actionLedger.findUnique({ where: { id } });
@@ -132,6 +140,14 @@ export class LedgerService {
         if (this.cacheService) {
           await this.cacheService.deletePendingEvent(txHash);
         }
+        const ledger = pending.eventPayload && typeof pending.eventPayload === "object" && "ledger" in pending.eventPayload
+          ? Number((pending.eventPayload as Record<string, unknown>).ledger)
+          : observedLedger;
+
+        const confirmationDepth = row.confirmationDepth ?? FINALITY_POLICY.defaultConfirmationDepth;
+        const finalizedLedger = ledger && ledger > 0 ? ledger + confirmationDepth : null;
+        const finalityStatus = ledger && ledger > 0 ? "provisional" : "finalized";
+
         const confirmed = await tx.actionLedger.update({
           where: { id },
           data: {
@@ -140,18 +156,28 @@ export class LedgerService {
             submittedAt: new Date(),
             confirmedAt: new Date(),
             sorobanEventId: pending.sorobanEventId,
-            errorCode: pending.statusHint === "reverted" ? ERROR_CODES.REVERTED_ON_CHAIN : null
+            errorCode: pending.statusHint === "reverted" ? ERROR_CODES.REVERTED_ON_CHAIN : null,
+            observedLedger: ledger ?? row.observedLedger,
+            finalizedLedger,
+            finalityStatus
           }
         });
         return confirmed as unknown as ActionRecord;
       }
+
+      const confirmationDepth = row.confirmationDepth ?? FINALITY_POLICY.defaultConfirmationDepth;
+      const finalizedLedger = observedLedger && observedLedger > 0 ? observedLedger + confirmationDepth : null;
+      const finalityStatus = observedLedger && observedLedger > 0 ? "provisional" : "finalized";
 
       const updated = await tx.actionLedger.update({
         where: { id },
         data: {
           status: "submitted",
           txHash,
-          submittedAt: new Date()
+          submittedAt: new Date(),
+          observedLedger: observedLedger ?? row.observedLedger,
+          finalizedLedger,
+          finalityStatus
         }
       });
       return updated as unknown as ActionRecord;
@@ -241,17 +267,21 @@ export class LedgerService {
     sorobanEventId: string;
     eventPayload: unknown;
     statusHint: "confirmed" | "reverted";
+    ledger?: number;
   }): Promise<{ matched: boolean }> {
     return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const row = await tx.actionLedger.findFirst({ where: { txHash: input.txHash } });
 
       if (!row) {
+        const eventPayloadWithLedger = input.ledger
+          ? { ...(input.eventPayload as object), ledger: input.ledger }
+          : input.eventPayload;
         await tx.pendingEvent.upsert({
           where: { txHash: input.txHash },
           create: {
             txHash: input.txHash,
             sorobanEventId: input.sorobanEventId,
-            eventPayload: input.eventPayload as object,
+            eventPayload: eventPayloadWithLedger as object,
             statusHint: input.statusHint
           },
           update: {}
@@ -260,7 +290,7 @@ export class LedgerService {
           await this.cacheService.setPendingEvent({
             txHash: input.txHash,
             sorobanEventId: input.sorobanEventId,
-            eventPayload: input.eventPayload,
+            eventPayload: eventPayloadWithLedger,
             statusHint: input.statusHint,
             receivedAt: new Date(),
             consumedAt: null
@@ -273,17 +303,148 @@ export class LedgerService {
         return { matched: true };
       }
 
+      const ledger = input.ledger ?? row.observedLedger;
+      const confirmationDepth = row.confirmationDepth ?? FINALITY_POLICY.defaultConfirmationDepth;
+      const finalizedLedger = ledger && ledger > 0 ? ledger + confirmationDepth : null;
+      const finalityStatus = ledger && ledger > 0 ? "provisional" : "finalized";
+
       await tx.actionLedger.update({
         where: { id: row.id },
         data: {
           status: input.statusHint === "reverted" ? "reverted" : "confirmed",
           sorobanEventId: input.sorobanEventId,
           confirmedAt: new Date(),
-          errorCode: input.statusHint === "reverted" ? ERROR_CODES.REVERTED_ON_CHAIN : null
+          errorCode: input.statusHint === "reverted" ? ERROR_CODES.REVERTED_ON_CHAIN : null,
+          observedLedger: ledger ?? row.observedLedger,
+          finalizedLedger,
+          finalityStatus
         }
       });
       return { matched: true };
     });
+  }
+
+  /**
+   * Creates a compensating entry for an invalidated provisional event.
+   * This preserves auditability by appending a new record rather than deleting history.
+   * The compensating entry references the original action via compensatesId.
+   */
+  async createCompensatingEntry(input: {
+    originalActionId: string;
+    walletAddress: string;
+    actionType: "compensating";
+    actionPayload: Record<string, unknown>;
+    idempotencyKey: string;
+    reason: string;
+  }): Promise<ActionRecord> {
+    const original = await this.prisma.actionLedger.findUnique({ where: { id: input.originalActionId } });
+    if (!original) throw AppError.notFound(`original action ${input.originalActionId} not found`);
+
+    if (original.finalityStatus === "finalized") {
+      throw AppError.conflict(
+        ERROR_CODES.ILLEGAL_TRANSITION,
+        "cannot create compensating entry for finalized action; use manual reconciliation"
+      );
+    }
+
+    // Mark the original as invalidated
+    await this.prisma.actionLedger.update({
+      where: { id: input.originalActionId },
+      data: { finalityStatus: "invalidated" }
+    });
+
+    // Create the compensating entry
+    const compensating = await this.prisma.actionLedger.create({
+      data: {
+        idempotencyKey: input.idempotencyKey,
+        walletAddress: input.walletAddress,
+        actionType: input.actionType,
+        actionPayload: {
+          ...input.actionPayload,
+          originalActionId: input.originalActionId,
+          reason: input.reason,
+          originalTxHash: original.txHash,
+          originalStatus: original.status
+        } as object,
+        finalityStatus: "finalized",
+        observedLedger: null,
+        finalizedLedger: null,
+        confirmationDepth: null,
+        compensatesId: input.originalActionId
+      }
+    });
+
+    return compensating as unknown as ActionRecord;
+  }
+
+  /**
+   * Finalizes provisional entries whose confirmation depth has been reached.
+   * Called periodically by a background job (e.g., indexer checkpoint advancement).
+   * Returns the number of entries finalized.
+   */
+  async finalizeProvisionalEntries(currentLedger: number): Promise<number> {
+    const provisional = await this.prisma.actionLedger.findMany({
+      where: {
+        finalityStatus: "provisional",
+        finalizedLedger: { not: null, lte: currentLedger }
+      },
+      select: { id: true }
+    });
+
+    if (provisional.length === 0) return 0;
+
+    await this.prisma.actionLedger.updateMany({
+      where: { id: { in: provisional.map((r) => r.id) } },
+      data: { finalityStatus: "finalized" }
+    });
+
+    return provisional.length;
+  }
+
+  /**
+   * Checks if a provisional entry has been invalidated by a reorg.
+   * This would be called when the indexer detects a gap or receives a conflicting event.
+   * Returns the invalidated action IDs.
+   */
+  async detectInvalidatedProvisional(currentLedger: number, knownValidTxHashes: Set<string>): Promise<string[]> {
+    const provisional = await this.prisma.actionLedger.findMany({
+      where: {
+        finalityStatus: "provisional",
+        txHash: { not: null }
+      },
+      select: { id: true, txHash: true, observedLedger: true }
+    });
+
+    const invalidated: string[] = [];
+    for (const row of provisional) {
+      if (row.txHash && !knownValidTxHashes.has(row.txHash)) {
+        // The tx hash is no longer in the canonical chain
+        // Check if we've passed the max tracking depth
+        if (row.observedLedger && currentLedger - row.observedLedger > FINALITY_POLICY.maxTrackedDepth) {
+          invalidated.push(row.id);
+        }
+      }
+    }
+
+    return invalidated;
+  }
+
+  /**
+   * Gets all provisional entries for a wallet (for UI pending indicators).
+   */
+  async getProvisionalEntries(walletAddress: string): Promise<ActionRecord[]> {
+    const rows = await this.prisma.actionLedger.findMany({
+      where: { walletAddress, finalityStatus: "provisional" },
+      orderBy: { createdAt: "desc" }
+    });
+    return rows as unknown as ActionRecord[];
+  }
+
+  /**
+   * Gets the finality policy for documentation/UI display.
+   */
+  getFinalityPolicy(): typeof FINALITY_POLICY {
+    return FINALITY_POLICY;
   }
 
   async findByIdempotencyKey(key: string): Promise<ActionRecord | null> {

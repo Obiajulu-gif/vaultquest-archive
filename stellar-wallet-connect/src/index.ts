@@ -2,6 +2,7 @@ export * from "./core/walletService";
 export * from "./core/store";
 export * from "./core/kit";
 export * from "./core/horizonPool";
+export * from "./core/provider";
 export { default as WalletFundingModal } from "./components/WalletFundingModal";
 export { default as WalletFundingWrapper } from "./components/WalletFundingWrapper";
 export { WalletConnectionStatus, type WalletConnectionStatusProps } from "./components/WalletConnectionStatus";

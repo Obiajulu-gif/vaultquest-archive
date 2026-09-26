@@ -3,7 +3,7 @@ import type { LedgerService } from "../services/ledger.js";
 import type { TransactionTraceService } from "../services/transactionTrace.js";
 import { AppError } from "../errors.js";
 import { reconcileBody, checkpointBody, traceParams } from "../schemas/actions.js";
-import { requireServiceAuth } from "../middleware/service-auth.js";
+import { requirePermission, serviceSecretResolver } from "../middleware/rbac.js";
 import { validateBody } from "../middleware/validate.js";
 import { ok } from "../responses.js";
 import type { z } from "zod";
@@ -14,10 +14,11 @@ export const internalRoutes = (
   traces: TransactionTraceService
 ): FastifyPluginAsync =>
   async (app) => {
-    const guard = requireServiceAuth(secret);
+    const service = serviceSecretResolver(secret);
+    const guard = (perm: Parameters<typeof requirePermission>[0]) => requirePermission(perm, [service]);
 
     app.post("/internal/reconcile", {
-      preHandler: [guard, validateBody(reconcileBody)]
+      preHandler: [guard("internal.reconcile"), validateBody(reconcileBody)]
     }, async (req, reply) => {
       const body = req.body as z.infer<typeof reconcileBody>;
       const result = await svc.reconcileEvent({
@@ -39,7 +40,7 @@ export const internalRoutes = (
     });
 
     app.post("/internal/checkpoint", {
-      preHandler: [guard, validateBody(checkpointBody)]
+      preHandler: [guard("internal.checkpoint"), validateBody(checkpointBody)]
     }, async (req) => {
       const body = req.body as z.infer<typeof checkpointBody>;
       await svc.updateIndexerCheckpoint({
@@ -52,7 +53,7 @@ export const internalRoutes = (
     });
 
     // #753: cross-layer timeline for one transaction, keyed by its hash.
-    app.get("/internal/trace/:txHash", { preHandler: [guard] }, async (req) => {
+    app.get("/internal/trace/:txHash", { preHandler: [guard("internal.trace")] }, async (req) => {
       const parsed = traceParams.safeParse(req.params);
       if (!parsed.success) throw AppError.validation("invalid tx hash");
       const trace = await traces.trace(parsed.data.txHash);

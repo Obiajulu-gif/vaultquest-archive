@@ -3,6 +3,7 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { X, AlertCircle, Copy, ExternalLink, HelpCircle, ChevronRight, Check } from "lucide-react";
 import { useState } from "react";
+import SafeExternalLink from "@/components/ui/SafeExternalLink";
 
 /**
  * Common error mappings for EVM and generic blockchain errors.
@@ -138,15 +139,14 @@ export default function ErrorDebugger({ error, isOpen, onClose }) {
                   <p className="text-sm text-vault-muted mb-6 leading-relaxed">
                     {data.solution}
                   </p>
-                  <a
+                  <SafeExternalLink
                     href={data.link}
-                    target="_blank"
-                    rel="noopener noreferrer"
                     className="flex items-center justify-between rounded-xl bg-vault-bg px-4 py-3 text-xs font-semibold text-vault-text border border-vault-border hover:border-red-500/50 hover:bg-red-500/5 transition-all group"
+                    fallback={null}
                   >
                     Troubleshooting Guide
                     <ExternalLink className="h-3.5 w-3.5 text-vault-muted group-hover:text-red-500 transition-colors" />
-                  </a>
+                  </SafeExternalLink>
                 </div>
 
                 <div className="space-y-3">

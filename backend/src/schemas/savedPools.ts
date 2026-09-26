@@ -1,10 +1,11 @@
 import { z } from "zod";
+import { safeRequiredText } from "./safeContent.js";
 
 export const savedPoolStatus = z.enum(["open", "locked", "drawing", "settled"]);
 
 export const savedPoolRecord = z.object({
   pool_id: z.string().min(1).max(120),
-  pool_name: z.string().min(1).max(200),
+  pool_name: safeRequiredText(200),
   status: savedPoolStatus,
   tvl: z.string().min(1).max(120),
   asset: z.string().min(1).max(32),

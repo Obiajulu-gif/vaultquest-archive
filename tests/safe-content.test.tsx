@@ -36,7 +36,11 @@ describe("sanitizeText", () => {
   it("strips event-handler tags, comments and unterminated tags", () => {
     expect(sanitizeText('a<img src=x onerror=alert(1)>b')).toBe("ab");
     expect(sanitizeText("a<!-- hidden -->b")).toBe("ab");
-    expect(sanitizeText("a<img src=x onerror=alert(1)")).toBe("a");
+  });
+  it("keeps text around a bare or unterminated '<' instead of deleting it", () => {
+    expect(sanitizeText("I think 1<x holds\nsecond paragraph")).toBe("I think 1<x holds second paragraph");
+    expect(sanitizeText("Tom<Jerry fan")).toBe("Tom<Jerry fan");
+    expect(sanitizeText("a<img src=x onerror=alert(1)")).toBe("a<img src=x onerror=alert(1)");
   });
   it("removes control, zero-width and bidi override characters", () => {
     expect(sanitizeText("pay‮txt.exe​\u0000ment")).toBe("paytxt.exement");

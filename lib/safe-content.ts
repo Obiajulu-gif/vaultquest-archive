@@ -65,7 +65,7 @@ export function sanitizeText(input: unknown, options: SanitizeTextOptions = {}):
   let previous: string;
   do {
     previous = text;
-    text = text.replace(/<\/?[a-zA-Z!?][^>]*>?/g, "");
+    text = text.replace(/<\/?[a-zA-Z!?][^>\n]*>/g, "");
   } while (text !== previous);
 
   text = text.replace(INVISIBLE_CHARS, "");

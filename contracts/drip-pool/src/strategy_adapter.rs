@@ -75,12 +75,19 @@ pub(crate) fn set_strategy(env: &Env, caller: &Address, strategy: &Address) -> R
 
         pool.strategy = Some(strategy.clone());
         env.storage().instance().set(&DataKey::Pool, &pool);
-        env.storage().instance().set(&DataKey::StrategyExposureCap, &i128::MAX);
-        env.storage().instance().set(&DataKey::StrategyRotationPhase, &StrategyRotationPhase::Idle);
+        env.storage()
+            .instance()
+            .set(&DataKey::StrategyExposureCap, &i128::MAX);
+        env.storage().instance().set(
+            &DataKey::StrategyRotationPhase,
+            &StrategyRotationPhase::Idle,
+        );
         DripPool::bump_instance(env);
 
-        env.events()
-            .publish((symbol_short!("strat"), symbol_short!("set")), strategy.clone());
+        env.events().publish(
+            (symbol_short!("strat"), symbol_short!("set")),
+            strategy.clone(),
+        );
     }
     Ok(())
 }
@@ -120,13 +127,22 @@ fn internal_propose_strategy(
         return Err(Error::StrategyVersionUnsupported);
     }
 
-    env.storage().instance().set(&DataKey::ProposedStrategy, &Some(strategy.clone()));
-    env.storage().instance().set(&DataKey::ProposedExposureCap, &exposure_cap);
-    env.storage().instance().set(&DataKey::StrategyRotationPhase, &StrategyRotationPhase::Proposed);
+    env.storage()
+        .instance()
+        .set(&DataKey::ProposedStrategy, &Some(strategy.clone()));
+    env.storage()
+        .instance()
+        .set(&DataKey::ProposedExposureCap, &exposure_cap);
+    env.storage().instance().set(
+        &DataKey::StrategyRotationPhase,
+        &StrategyRotationPhase::Proposed,
+    );
     // Strategy rotation is a high-risk governance action: it cannot activate
     // before a ledger-based delay elapses, even once fully reconciled (#533).
     let ready_at = env.ledger().sequence() + HIGH_RISK_DELAY_LEDGERS;
-    env.storage().instance().set(&DataKey::StrategyRotationReadyAt, &ready_at);
+    env.storage()
+        .instance()
+        .set(&DataKey::StrategyRotationReadyAt, &ready_at);
     DripPool::bump_instance(env);
 
     env.events().publish(
@@ -150,7 +166,11 @@ pub(crate) fn validate_strategy(env: &Env, caller: &Address) -> Result<(), Error
         return Err(Error::StrategyRotationNotInProgress);
     }
 
-    let proposed: Option<Address> = env.storage().instance().get(&DataKey::ProposedStrategy).flatten();
+    let proposed: Option<Address> = env
+        .storage()
+        .instance()
+        .get(&DataKey::ProposedStrategy)
+        .flatten();
     let strategy = proposed.ok_or(Error::StrategyNotSet)?;
 
     let client = YieldStrategyClient::new(env, &strategy);
@@ -161,8 +181,7 @@ pub(crate) fn validate_strategy(env: &Env, caller: &Address) -> Result<(), Error
     // #601: Verify the strategy's real token balance matches total_assets
     let token = get_strategy_token(env);
     let reported_total = client.total_assets(&token);
-    let actual_balance = soroban_sdk::token::TokenClient::new(env, &token)
-        .balance(&strategy);
+    let actual_balance = soroban_sdk::token::TokenClient::new(env, &token).balance(&strategy);
     if reported_total != actual_balance {
         return Err(Error::BalanceVerificationFailed);
     }
@@ -179,7 +198,9 @@ pub(crate) fn validate_strategy(env: &Env, caller: &Address) -> Result<(), Error
         StrategyRotationPhase::Reconciled
     };
 
-    env.storage().instance().set(&DataKey::StrategyRotationPhase, &next_phase);
+    env.storage()
+        .instance()
+        .set(&DataKey::StrategyRotationPhase, &next_phase);
     DripPool::bump_instance(env);
 
     env.events().publish(
@@ -212,13 +233,15 @@ pub(crate) fn drain_strategy(env: &Env, caller: &Address, amount: i128) -> Resul
         .ok_or(Error::NotInitialized)?;
 
     if pool.principal_in_strategy == 0 {
-        env.storage()
-            .instance()
-            .set(&DataKey::StrategyRotationPhase, &StrategyRotationPhase::Reconciled);
+        env.storage().instance().set(
+            &DataKey::StrategyRotationPhase,
+            &StrategyRotationPhase::Reconciled,
+        );
     } else {
-        env.storage()
-            .instance()
-            .set(&DataKey::StrategyRotationPhase, &StrategyRotationPhase::Draining);
+        env.storage().instance().set(
+            &DataKey::StrategyRotationPhase,
+            &StrategyRotationPhase::Draining,
+        );
     }
     DripPool::bump_instance(env);
 
@@ -260,9 +283,10 @@ pub(crate) fn reconcile_strategy(env: &Env, caller: &Address) -> Result<(), Erro
         return Err(Error::StrategyUnreconciledPrincipal);
     }
 
-    env.storage()
-        .instance()
-        .set(&DataKey::StrategyRotationPhase, &StrategyRotationPhase::Reconciled);
+    env.storage().instance().set(
+        &DataKey::StrategyRotationPhase,
+        &StrategyRotationPhase::Reconciled,
+    );
     DripPool::bump_instance(env);
 
     env.events().publish(
@@ -305,18 +329,35 @@ pub(crate) fn activate_strategy(env: &Env, caller: &Address) -> Result<(), Error
         return Err(Error::StrategyUnreconciledPrincipal);
     }
 
-    let proposed: Option<Address> = env.storage().instance().get(&DataKey::ProposedStrategy).flatten();
+    let proposed: Option<Address> = env
+        .storage()
+        .instance()
+        .get(&DataKey::ProposedStrategy)
+        .flatten();
     let new_strategy = proposed.ok_or(Error::StrategyNotSet)?;
 
-    let proposed_cap: i128 = env.storage().instance().get(&DataKey::ProposedExposureCap).unwrap_or(i128::MAX);
+    let proposed_cap: i128 = env
+        .storage()
+        .instance()
+        .get(&DataKey::ProposedExposureCap)
+        .unwrap_or(i128::MAX);
 
     pool.strategy = Some(new_strategy.clone());
     env.storage().instance().set(&DataKey::Pool, &pool);
-    env.storage().instance().set(&DataKey::StrategyExposureCap, &proposed_cap);
+    env.storage()
+        .instance()
+        .set(&DataKey::StrategyExposureCap, &proposed_cap);
     env.storage().instance().remove(&DataKey::ProposedStrategy);
-    env.storage().instance().remove(&DataKey::ProposedExposureCap);
-    env.storage().instance().remove(&DataKey::StrategyRotationReadyAt);
-    env.storage().instance().set(&DataKey::StrategyRotationPhase, &StrategyRotationPhase::Idle);
+    env.storage()
+        .instance()
+        .remove(&DataKey::ProposedExposureCap);
+    env.storage()
+        .instance()
+        .remove(&DataKey::StrategyRotationReadyAt);
+    env.storage().instance().set(
+        &DataKey::StrategyRotationPhase,
+        &StrategyRotationPhase::Idle,
+    );
     DripPool::bump_instance(env);
 
     env.events().publish(
@@ -341,9 +382,16 @@ pub(crate) fn cancel_strategy_rotation(env: &Env, caller: &Address) -> Result<()
     }
 
     env.storage().instance().remove(&DataKey::ProposedStrategy);
-    env.storage().instance().remove(&DataKey::ProposedExposureCap);
-    env.storage().instance().remove(&DataKey::StrategyRotationReadyAt);
-    env.storage().instance().set(&DataKey::StrategyRotationPhase, &StrategyRotationPhase::Idle);
+    env.storage()
+        .instance()
+        .remove(&DataKey::ProposedExposureCap);
+    env.storage()
+        .instance()
+        .remove(&DataKey::StrategyRotationReadyAt);
+    env.storage().instance().set(
+        &DataKey::StrategyRotationPhase,
+        &StrategyRotationPhase::Idle,
+    );
     DripPool::bump_instance(env);
 
     env.events().publish(
@@ -379,7 +427,11 @@ pub(crate) fn deploy_to_strategy(env: &Env, caller: &Address, amount: i128) -> R
         .ok_or(Error::NotInitialized)?;
     let strategy = pool.strategy.clone().ok_or(Error::StrategyNotSet)?;
 
-    let exposure_cap: i128 = env.storage().instance().get(&DataKey::StrategyExposureCap).unwrap_or(i128::MAX);
+    let exposure_cap: i128 = env
+        .storage()
+        .instance()
+        .get(&DataKey::StrategyExposureCap)
+        .unwrap_or(i128::MAX);
     if pool.principal_in_strategy.saturating_add(amount) > exposure_cap {
         return Err(Error::ExposureCapExceeded);
     }
@@ -391,7 +443,11 @@ pub(crate) fn deploy_to_strategy(env: &Env, caller: &Address, amount: i128) -> R
 
     // Governance cannot deploy funds below the required idle-liquidity
     // buffer for immediately withdrawable principal (#529).
-    let min_idle_reserve: i128 = env.storage().instance().get(&DataKey::MinIdleReserve).unwrap_or(0);
+    let min_idle_reserve: i128 = env
+        .storage()
+        .instance()
+        .get(&DataKey::MinIdleReserve)
+        .unwrap_or(0);
     if idle - amount < min_idle_reserve {
         return Err(Error::InsufficientIdleReserve);
     }
@@ -444,7 +500,11 @@ pub(crate) fn deploy_to_strategy(env: &Env, caller: &Address, amount: i128) -> R
     Ok(())
 }
 
-pub(crate) fn recall_from_strategy(env: &Env, caller: &Address, amount: i128) -> Result<i128, Error> {
+pub(crate) fn recall_from_strategy(
+    env: &Env,
+    caller: &Address,
+    amount: i128,
+) -> Result<i128, Error> {
     caller.require_auth();
     DripPool::require_signer(env, caller)?;
     internal_recall_from_strategy(env, amount)

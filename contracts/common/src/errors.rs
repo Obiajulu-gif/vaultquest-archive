@@ -87,17 +87,27 @@ impl ContractError {
             ContractError::ProtocolPaused => "protocol is paused",
             ContractError::InvalidAddress => "invalid contract address",
             ContractError::StrategyNotSet => "no yield strategy configured",
-            ContractError::StrategyVersionUnsupported => "strategy interface version is unsupported",
+            ContractError::StrategyVersionUnsupported => {
+                "strategy interface version is unsupported"
+            }
             ContractError::StrategyPaused => "strategy is paused",
-            ContractError::RedeemFailed => "strategy redeem returned less than the caller-verifiable balance",
+            ContractError::RedeemFailed => {
+                "strategy redeem returned less than the caller-verifiable balance"
+            }
             ContractError::DepositFailed => "strategy deposit failed",
             ContractError::StrategyRotationPending => "strategy rotation is pending",
             ContractError::StrategyRotationNotInProgress => "no strategy rotation in progress",
-            ContractError::StrategyUnreconciledPrincipal => "active strategy has unreconciled principal",
+            ContractError::StrategyUnreconciledPrincipal => {
+                "active strategy has unreconciled principal"
+            }
             ContractError::ExposureCapExceeded => "deployment amount exceeds strategy exposure cap",
             ContractError::StrategyAssetMismatch => "strategy asset does not match pool asset",
-            ContractError::StrategyCodeHashNotAllowed => "strategy code hash is not on the allowlist",
-            ContractError::BalanceVerificationFailed => "strategy reported yield not backed by real balance delta",
+            ContractError::StrategyCodeHashNotAllowed => {
+                "strategy code hash is not on the allowlist"
+            }
+            ContractError::BalanceVerificationFailed => {
+                "strategy reported yield not backed by real balance delta"
+            }
             ContractError::TokenDecimalsNotConfigured => "token decimals have not been configured",
         }
     }

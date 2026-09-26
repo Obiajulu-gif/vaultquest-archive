@@ -1,6 +1,7 @@
 export * from "./core/walletService";
 export * from "./core/sessionLiveness";
 export * from "./core/store";
+export * from "./core/useWalletState";
 export * from "./core/kit";
 export * from "./core/horizonPool";
 export * from "./core/provider";

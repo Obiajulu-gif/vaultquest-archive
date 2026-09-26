@@ -12,6 +12,7 @@ import type { LedgerService } from "./services/ledger.js";
 import { LeaseService } from "./services/leaseService.js";
 import { getPrometheusMetrics } from "./services/prometheusMetrics.js";
 import { runReplayEquivalence } from "./services/replayEquivalence.js";
+import { OnChainDriftDetector, type OnChainReader } from "./services/onChainDriftDetector.js";
 
 // #506 — one worker id per process, reused across every job lease this
 // process acquires, so ownership/takeover metrics can be attributed to a
@@ -391,3 +392,32 @@ export function startReplayEquivalenceCron(opts: {
   });
   return task;
 }
+
+/**
+ * Periodically detects drift between on-chain contract state and ledger state (#727).
+ * Runs under a distributed lease to prevent overlapping ticks across worker replicas.
+ */
+export function startOnChainDriftDetectionCron(opts: {
+  prisma: PrismaClient;
+  onChainReader: OnChainReader;
+  logger: Logger;
+  schedule?: string;
+}): cron.ScheduledTask {
+  const schedule = opts.schedule ?? "*/15 * * * *"; // default: every 15 minutes
+  const leases = new LeaseService(opts.prisma);
+  const leaseTtlMs = 10 * 60 * 1000;
+  const detector = new OnChainDriftDetector(opts.prisma, opts.onChainReader, opts.logger);
+
+  const task = cron.schedule(schedule, async () => {
+    try {
+      await withJobLease(leases, "onchain-drift-detection", leaseTtlMs, opts.logger, async () => {
+        const result = await detector.runDetection();
+        opts.logger.info({ summary: result.summary, durationMs: result.durationMs }, "on-chain drift detection tick completed");
+      });
+    } catch (err) {
+      opts.logger.error({ err }, "on-chain drift detection tick failed");
+    }
+  });
+  return task;
+}
+

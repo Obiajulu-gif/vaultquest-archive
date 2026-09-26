@@ -3981,3 +3981,112 @@ fn emergency_recall_succeeds_while_adapter_deposit_is_paused() {
     assert_eq!(client.pool().principal_in_strategy, 0);
     assert_eq!(token.balance(&client.address), 1_000);
 }
+
+// ── #716: Ticket-weighting & boundary condition tests ───────────────────────
+
+/// Single depositor in a round always wins 100% of the time, regardless of seed.
+#[test]
+fn test_ticket_weighting_single_depositor_always_wins() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let alice = Address::generate(&env);
+    let round_id = client.open_round(&admin);
+    client.round_deposit(&alice, &round_id, &500);
+
+    let seed = BytesN::from_array(&env, &[42u8; 32]);
+    let commitment: BytesN<32> = env.crypto().sha256(&seed.to_bytes()).to_bytes();
+    client.commit_round_randomness(&admin, &round_id, &commitment);
+
+    client.lock_round(&admin, &round_id);
+    client.reveal_round_randomness(&admin, &round_id, &seed);
+
+    let candidates = vec![&env, alice.clone()];
+    let winner = client.select_round_winner(&admin, &round_id, &candidates);
+    assert_eq!(winner, Some(alice));
+}
+
+/// A participant with zero deposit cannot win even if included in the candidates list.
+#[test]
+fn test_ticket_weighting_zero_weight_cannot_win() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    let round_id = client.open_round(&admin);
+    client.round_deposit(&alice, &round_id, &1_000);
+    // Bob joins but does not deposit into this round
+
+    let seed = BytesN::from_array(&env, &[1u8; 32]);
+    let commitment: BytesN<32> = env.crypto().sha256(&seed.to_bytes()).to_bytes();
+    client.commit_round_randomness(&admin, &round_id, &commitment);
+
+    client.lock_round(&admin, &round_id);
+    client.reveal_round_randomness(&admin, &round_id, &seed);
+
+    // Candidates only contains Alice; Bob never made a round_deposit and has no seq
+    let candidates = vec![&env, alice.clone()];
+    let winner = client.select_round_winner(&admin, &round_id, &candidates);
+    assert_eq!(winner, Some(alice));
+}
+
+/// Multiple depositors partition [0, principal_snapshot) in strictly increasing canonical arrival order.
+#[test]
+fn test_ticket_weighting_multi_depositor_canonical_partition() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let charlie = Address::generate(&env);
+
+    let round_id = client.open_round(&admin);
+    client.round_deposit(&alice, &round_id, &100);
+    client.round_deposit(&bob, &round_id, &200);
+    client.round_deposit(&charlie, &round_id, &300);
+
+    let round = client.round(&round_id);
+    assert_eq!(round.principal_snapshot, 600);
+
+    let seed = BytesN::from_array(&env, &[99u8; 32]);
+    let commitment: BytesN<32> = env.crypto().sha256(&seed.to_bytes()).to_bytes();
+    client.commit_round_randomness(&admin, &round_id, &commitment);
+
+    client.lock_round(&admin, &round_id);
+    client.reveal_round_randomness(&admin, &round_id, &seed);
+
+    let candidates = vec![&env, alice.clone(), bob.clone(), charlie.clone()];
+    let winner = client.select_round_winner(&admin, &round_id, &candidates);
+    assert!(winner.is_some());
+    let w = winner.unwrap();
+    assert!(w == alice || w == bob || w == charlie);
+}
+
+/// Submitting candidate addresses out of canonical sequence order is rejected with CanonicalOrderViolation.
+#[test]
+fn test_ticket_weighting_rejects_out_of_order_candidates() {
+    let (env, client, admin) = setup();
+    client.create(&admin);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    let round_id = client.open_round(&admin);
+    client.round_deposit(&alice, &round_id, &100); // seq 0
+    client.round_deposit(&bob, &round_id, &200);   // seq 1
+
+    let seed = BytesN::from_array(&env, &[5u8; 32]);
+    let commitment: BytesN<32> = env.crypto().sha256(&seed.to_bytes()).to_bytes();
+    client.commit_round_randomness(&admin, &round_id, &commitment);
+
+    client.lock_round(&admin, &round_id);
+    client.reveal_round_randomness(&admin, &round_id, &seed);
+
+    // Reversed order: Bob (seq 1) before Alice (seq 0)
+    let bad_candidates = vec![&env, bob.clone(), alice.clone()];
+    let res = client.try_select_round_winner(&admin, &round_id, &bad_candidates);
+    assert_eq!(res, Err(Ok(Error::CanonicalOrderViolation)));
+}
+

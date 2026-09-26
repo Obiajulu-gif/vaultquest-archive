@@ -1,0 +1,30 @@
+{
+  "commit": {
+    "roundId": 0,
+    "seedHash": "b4c6a60c0a795dcf69d6d724f0650b651e4d06c3e2de3201f744b359afecd996",
+    "snapshotRoot": "f496f33766a57877137c34669662379c4e9e71d237cb6efe6890c6018ac4d8b5",
+    "leafCount": 3
+  },
+  "draw": {
+    "seed": "2a719d035cbb168f41e077926354a81c0fe36bd28419c7509a2efd6033b58811",
+    "seedHash": "b4c6a60c0a795dcf69d6d724f0650b651e4d06c3e2de3201f744b359afecd996",
+    "merkleRoot": "f496f33766a57877137c34669662379c4e9e71d237cb6efe6890c6018ac4d8b5",
+    "leafCount": 3,
+    "randomness": "400c26aa44df30d8c40e0b0df71eeba79c9100c239ecbc8392242aa6b1c00c7f",
+    "winnerIndex": 1,
+    "winner": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
+    "drawnAtLedger": 0,
+    "winnerDeposit": 500,
+    "winnerLeaf": "4c985305d4ef0f367eaee7f1035b02e1ff82f4da9ce1db97d1830f627a322f20",
+    "winnerProof": [
+      {
+        "hash": "428aa6d681358a35800925f2309c4554f97f43485b39c373f3272e977950e4ac",
+        "position": true
+      },
+      {
+        "hash": "6208eeeb14b6023e857a576ecae6311e6df54e0ed7d46690f010bff2c31d2fa7",
+        "position": false
+      }
+    ]
+  }
+}

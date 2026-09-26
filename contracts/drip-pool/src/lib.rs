@@ -57,12 +57,26 @@
 //! - `claim_deadline`, `claim_deadline_passed` and `unclaimed_swept` are public
 //!   views so the frontend can read deadline/status without decoding `Pool`.
 
+// Host-side test only: the draw-auditability fixture emitter writes a JSON
+// file (std::fs) so the standalone TS verifier can consume real contract
+// event data in CI (#718). The wasm target never sees this.
+#[cfg(any(test, feature = "testutils"))]
+extern crate std;
+
+// soroban-sdk 27 dropped the Val conversion impls for `u8` (only u32/i32
+// remain), which broke the pre-existing `token_decimals` entrypoints (#599).
+// The entrypoints now use u32 end-to-end (see set_token_decimals).
+fn decimals_to_val(decimals: u32) -> u32 {
+    decimals
+}
+
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, vec, Address, Bytes,
+    bytes, contract, contracterror, contractimpl, contracttype, symbol_short, vec, Address, Bytes,
     BytesN, Env, Vec,
 };
 use vaultquest_common::YieldStrategyClient;
 
+pub mod draw_audit;
 pub mod proxy;
 pub mod strategy_adapter;
 pub mod vault;
@@ -100,6 +114,13 @@ const BPS_DENOMINATOR: u32 = 10_000;
 // or bias its outcome — it only forfeits the withholder's own influence.
 const ROUND_REVEAL_WINDOW_SECONDS: u64 = 24 * 60 * 60;
 
+// ── Draw auditability (#718) ───────────────────────────────────────────────
+// Canonical byte serialization for every draw-audit hash input. A hash input
+// is always `domain_tag ++ 8-byte big-endian round id ++ payload`, so hashes
+// are stable across contract upgrades, SDK versions, and verifiers.
+// Domain tags and canonical hash-input serialization live in
+// `draw_audit.rs` — the single source of truth for verifiers.
+
 // ── Proposal expiry (~30 days at 5 s/ledger) ──────────────────────────────
 const PROPOSAL_EXPIRY_LEDGERS: u32 = 17_280 * 30;
 
@@ -121,15 +142,15 @@ pub enum DataKey {
     Admins,    // Vec<Address> — approved signers
     Threshold, // u32 — current multisig threshold
     Pool,
-    Participant(Address),      // V2 participant storage (#377)
-    ParticipantV1(Address),    // legacy V1 participant storage (migration source)
-    Proposal(u32),             // pending admin proposal
-    Token,                     // Address — accepted Stellar Asset Contract address (#376)
-    ConfigVersion,             // u32 — configuration schema version (#441)
-    ProposedStrategy,          // Option<Address> — candidate strategy proposed for rotation (#532)
-    StrategyExposureCap,       // i128 — maximum allowable deposit for active strategy (#532)
-    ProposedExposureCap,       // i128 — exposure cap for candidate strategy (#532)
-    StrategyRotationPhase,     // StrategyRotationPhase — phase of current rotation (#532)
+    Participant(Address),       // V2 participant storage (#377)
+    ParticipantV1(Address),     // legacy V1 participant storage (migration source)
+    Proposal(u32),              // pending admin proposal
+    Token,                      // Address — accepted Stellar Asset Contract address (#376)
+    ConfigVersion,              // u32 — configuration schema version (#441)
+    ProposedStrategy,           // Option<Address> — candidate strategy proposed for rotation (#532)
+    StrategyExposureCap,        // i128 — maximum allowable deposit for active strategy (#532)
+    ProposedExposureCap,        // i128 — exposure cap for candidate strategy (#532)
+    StrategyRotationPhase,      // StrategyRotationPhase — phase of current rotation (#532)
     StrategyRotationReadyAt, // u32 — ledger sequence when the pending rotation may activate (#533)
     GovernanceEpoch,         // u32 — bumped on every Admins/Threshold change (#533)
     MinIdleReserve, // i128 — minimum idle principal governance must leave undeployed (#529)
@@ -140,9 +161,9 @@ pub enum DataKey {
     RoundNonce,     // u32 — next round id to assign (#508)
     Round(u32),     // Round — round-scoped state, by round id (#508)
     RoundDeposit(Address, u32), // i128 — a participant's principal snapshotted into a
-                    // specific round; keyed per (address, round_id) rather than a Vec on
-                    // Participant to avoid unbounded per-participant storage growth (#508)
-    TokenDecimals,             // u8 — token decimal precision for exact unit handling (#599)
+    // specific round; keyed per (address, round_id) rather than a Vec on
+    // Participant to avoid unbounded per-participant storage growth (#508)
+    TokenDecimals, // u8 — token decimal precision for exact unit handling (#599)
     AllowedStrategyCodeHashes, // Vec<BytesN<32>> — allowlisted strategy WASM hashes (#602)
     MaxWalletDeposit, // i128 — per-wallet cap on cumulative Participant.deposited; 0 = uncapped (#643)
     MaxPoolDeposit,   // i128 — protocol-wide cap on pool.total_deposited; 0 = uncapped (#643)
@@ -159,6 +180,9 @@ pub enum DataKey {
     // `select_round_winner` a submitter-proof processing order — nobody choosing which addresses to
     // submit, or in what batches, can change an address's own canonical position (#715).
     RoundParticipantSeqNonce(u32), // u32 — next RoundParticipantSeq value to assign for a round
+    // ── Draw auditability (#718) ───────────────────────────────────────────
+    RoundDrawCommit(u32), // RoundDrawCommit — seed commitment + snapshot Merkle root, frozen at lock (#718)
+    RoundDrawResult(u32), // RoundDrawResult — revealed seed, winner index, and winner (#718)
 }
 
 // ── Errors ─────────────────────────────────────────────────────────────────
@@ -217,7 +241,7 @@ pub enum Error {
     RoundFinalizationTooEarly = 74, // permissionless finalization before objective deadline
     TokenDecimalsNotConfigured = 75, // token decimals not set (#599)
     StrategyCodeHashNotAllowed = 76, // strategy code hash not on allowlist (#602)
-    BalanceVerificationFailed = 77,  // strategy reported values not backed by real balance (#601)
+    BalanceVerificationFailed = 77, // strategy reported values not backed by real balance (#601)
     RoundHasOutstandingDeposits = 78, // prune_round called but participants still have unclaimed deposits (#558)
     WalletDepositCapExceeded = 80, // deposit would push Participant.deposited above MaxWalletDeposit (#643)
     PoolDepositCapExceeded = 81, // deposit would push pool.total_deposited above MaxPoolDeposit (#643)
@@ -231,6 +255,11 @@ pub enum Error {
     CanonicalOrderViolation = 89, // candidates submitted out of canonical order, or duplicated (#715)
     NotRoundParticipant = 90, // candidate address never made a round_deposit into this round (#715)
     RoundWinnerNotSelected = 91, // draw_winner called before select_round_winner found a winner (#715)
+    RoundDrawSeedMismatch = 92,  // revealed seed does not match the committed seed hash (#718)
+    RoundDrawNotLocked = 93,     // round_commit_draw called on a round that isn't Locked (#718)
+    RoundDrawAlreadyCommitted = 94, // round_commit_draw called twice for the same round (#718)
+    RoundDrawNotSettled = 95,    // round_draw called on a round that isn't Settled (#718)
+    RoundDrawWinnerNotInSnapshot = 96, // Merkle proof does not verify for this round's snapshot root (#718)
 }
 
 // ── Structs ────────────────────────────────────────────────────────────────
@@ -366,12 +395,86 @@ pub enum RenewalKey {
 
 #[derive(Clone, Debug, PartialEq)]
 #[contracttype]
+pub enum BlockingKey {
+    /// No renewal is blocked.
+    Unblocked,
+    Participant(Address),
+    Round(u32),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
 pub struct RenewalReport {
     pub requested: u32,
     pub renewed: u32,
     pub skipped: u32,
     pub required_budget: u32,
-    pub blocking_key: Option<RenewalKey>,
+    // soroban-sdk 27 cannot generate ScVal conversions for Option<T> where T
+    // is itself a contracttype, so absence of a blocker is represented by
+    // the explicit `Unblocked` variant instead of Option::None.
+    pub blocking_key: BlockingKey,
+}
+
+/// A single node in the Merkle proof for one participant of a round (#718).
+/// `position` is `false` when `hash` is the left sibling at this depth,
+/// `true` when it is the right sibling.
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct MerkleProofEntry {
+    pub hash: BytesN<32>,
+    pub position: bool, // false = left sibling, true = right sibling
+}
+
+/// Draw-audit commitment stored when a round is locked (#718). From this
+/// point the seed is pinned: whichever admin reveals it in `round_draw` must
+/// present a preimage of `seed_hash`, and the participant snapshot that
+/// determines every ticket weight is pinned by `snapshot_root`.
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct RoundDrawCommit {
+    /// SHA-256(DRAW_SEED_DOMAIN || round_id_be8 || seed) — commitment to the
+    /// hidden seed chosen by the admin at lock time.
+    pub seed_hash: BytesN<32>,
+    /// Merkle root over the participant snapshot: one leaf per participant
+    /// with a non-zero round deposit, sorted by address strkey ascending.
+    pub snapshot_root: BytesN<32>,
+    /// Number of leaves covered by `snapshot_root` (ticket count).
+    pub leaf_count: u32,
+    /// Ledger sequence at which this commitment was stored.
+    pub committed_at_ledger: u32,
+}
+
+/// Draw-audit result stored when the draw executes (#718). Together with
+/// `RoundDrawCommit` and the `round_draw` event, this is everything an
+/// independent auditor needs to recompute the winner from public data only.
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct RoundDrawResult {
+    /// The revealed seed — SHA-256 preimage of `RoundDrawCommit.seed_hash`.
+    pub seed: BytesN<32>,
+    /// Winner's leaf index in the address-sorted snapshot.
+    pub winner_index: u32,
+    /// The winning participant's address.
+    pub winner: Address,
+    /// Ledger sequence at which the draw executed.
+    pub drawn_at_ledger: u32,
+}
+
+/// Caller-supplied evidence for `round_draw` (#718): the revealed seed, the
+/// winner address, the winner's frozen round deposit, and the winner's
+/// Merkle proof path under the committed snapshot root. Every field is
+/// verified against on-chain state before the draw is accepted.
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct DrawEvidence {
+    /// Revealed 32-byte seed — must hash to the committed `seed_hash`.
+    pub seed: BytesN<32>,
+    /// The winning participant's address.
+    pub winner: Address,
+    /// The winner's frozen per-round deposit (leaf-hash witness).
+    pub deposit: i128,
+    /// Merkle proof path for the winner's leaf, bottom-up.
+    pub proof: Vec<MerkleProofEntry>,
 }
 
 /// Provenance of a round's resolved winning ticket (#715).
@@ -646,9 +749,11 @@ impl DripPool {
         env.storage()
             .instance()
             .set(&DataKey::ParticipantQueue(who.clone()), &tail);
+        // u32 wrapping advance is intentional: the queue id space wraps at
+        // u32::MAX (covered by the #579 boundary tests).
         env.storage()
             .instance()
-            .set(&DataKey::WithdrawalQueueTail, &(tail + 1));
+            .set(&DataKey::WithdrawalQueueTail, &tail.wrapping_add(1));
         Self::bump_instance(env);
         tail
     }
@@ -1221,7 +1326,12 @@ impl DripPool {
         // as "caller must already be joined"), so loading it here to read
         // the current deposited amount is safe.
         let current_wallet_deposited = Self::load_participant(&env, &who)?.deposited;
-        Self::check_deposit_caps(&env, current_wallet_deposited, old_pool.total_deposited, amount)?;
+        Self::check_deposit_caps(
+            &env,
+            current_wallet_deposited,
+            old_pool.total_deposited,
+            amount,
+        )?;
 
         // Transfer tokens from caller to this contract (#376)
         let contract_addr = env.current_contract_address();
@@ -1712,18 +1822,25 @@ impl DripPool {
         let mut processed: u32 = 0;
         let contract_addr = env.current_contract_address();
 
-        while head < tail && processed < max_requests {
+        // Pending count uses wrapping subtraction: the queue id space wraps
+        // at u32::MAX (#579), so head=MAX-1/tail=0 still means 2 pending.
+        let pending = tail.wrapping_sub(head);
+        let mut iterated: u32 = 0;
+
+        while iterated < pending && processed < max_requests {
             let key = DataKey::WithdrawalRequest(head);
             let mut request: WithdrawalRequest = match env.storage().instance().get(&key) {
                 Some(r) => r,
                 None => {
-                    head += 1;
+                    head = head.wrapping_add(1);
+                    iterated += 1;
                     continue;
                 }
             };
 
             if request.status != WithdrawalRequestStatus::Pending {
-                head += 1;
+                head = head.wrapping_add(1);
+                iterated += 1;
                 continue;
             }
 
@@ -1733,7 +1850,8 @@ impl DripPool {
                 env.storage()
                     .instance()
                     .remove(&DataKey::ParticipantQueue(request.who.clone()));
-                head += 1;
+                head = head.wrapping_add(1);
+                iterated += 1;
                 processed += 1;
                 continue;
             }
@@ -1764,7 +1882,8 @@ impl DripPool {
                 env.storage()
                     .instance()
                     .remove(&DataKey::ParticipantQueue(request.who.clone()));
-                head += 1;
+                head = head.wrapping_add(1);
+                iterated += 1;
                 processed += 1;
             } else {
                 // Partial payment — liquidity exhausted; stop without
@@ -2044,7 +2163,7 @@ impl DripPool {
 
         let mut renewed: u32 = 0;
         let mut skipped: u32 = 0;
-        let mut blocking_key: Option<RenewalKey> = None;
+        let mut blocking_key = BlockingKey::Unblocked;
 
         for i in 0..participants.len() {
             let who = participants.get(i).unwrap();
@@ -2054,8 +2173,8 @@ impl DripPool {
                 renewed += 1;
             } else {
                 skipped += 1;
-                if blocking_key.is_none() {
-                    blocking_key = Some(RenewalKey::Participant(who));
+                if matches!(blocking_key, BlockingKey::Unblocked) {
+                    blocking_key = BlockingKey::Participant(who);
                 }
             }
         }
@@ -2068,8 +2187,8 @@ impl DripPool {
                 renewed += 1;
             } else {
                 skipped += 1;
-                if blocking_key.is_none() {
-                    blocking_key = Some(RenewalKey::Round(round_id));
+                if matches!(blocking_key, BlockingKey::Unblocked) {
+                    blocking_key = BlockingKey::Round(round_id);
                 }
             }
         }
@@ -2145,6 +2264,237 @@ impl DripPool {
             (winner.clone(), round_id, prize),
         );
         Ok(winner)
+    }
+
+    // ── Draw auditability: commit/reveal + snapshot commitment (#718) ────
+    //
+    // The legacy `draw_winner` above credits a prize but provides no
+    // verifiable link between the winner and the documented selection
+    // algorithm. These additive entrypoints close that gap for round-scoped
+    // draws without touching any existing path:
+    //
+    // 1. `round_commit_draw` (signer, at/after `lock_round`): publishes and
+    //    stores the seed commitment plus the Merkle root over the frozen
+    //    participant snapshot. From here the seed is pinned — the admin has
+    //    committed to exactly one seed value via a hash, exactly like the
+    //    two-phase lock/reveal documented in
+    //    VAULTQUEST_ARCHITECTURE_DESIGN.md.
+    // 2. `round_draw` (signer, after `settle_round`): reveals the seed and
+    //    the winner's Merkle proof. The contract verifies the reveal against
+    //    the commitment, recomputes `winner_index` from
+    //    `randomness = H(seed || round_id || drawn_at_ledger)` with the
+    //    documented `randomness % eligible_participant_count` formula, checks
+    //    the supplied proof against the committed snapshot root, and emits a
+    //    single self-contained `round drawn` event.
+    // 3. The standalone verifier (`tools/draw-verifier`) rebuilds the winner
+    //    from chain data alone (events + contract storage) and fails loudly
+    //    on any mismatch.
+    //
+    // The legacy `draw_winner` path is intentionally left untouched so
+    // existing integrations keep their exact behavior; round-scoped draws
+    // use `round_draw` instead.
+
+    /// Signer-only: commit the draw inputs for a `Locked` round. Publishes
+    /// `round committed` with `(round_id, seed_hash, snapshot_root,
+    /// leaf_count)` and stores the commitment. The seed itself is NEVER
+    /// stored on-chain; it exists only in the committer's head until
+    /// `round_draw` reveals it, so the draw outcome is fixed before any
+    /// settlement yield is known but the seed stays hidden until reveal.
+    pub fn round_commit_draw(
+        env: Env,
+        caller: Address,
+        round_id: u32,
+        seed_hash: BytesN<32>,
+        snapshot_root: BytesN<32>,
+        leaf_count: u32,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+        Self::require_signer(&env, &caller)?;
+        Self::require_compatible_config(&env)?;
+        if leaf_count == 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let round = Self::load_round(&env, round_id)?;
+        if round.status != RoundStatus::Locked {
+            return Err(Error::RoundDrawNotLocked);
+        }
+        if round.principal_snapshot <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::RoundDrawCommit(round_id))
+        {
+            return Err(Error::RoundDrawAlreadyCommitted);
+        }
+
+        // Bind the caller's raw Merkle root (over address-sorted leaf
+        // hashes) to this round and ticket count. The enveloped root is
+        // what gets stored AND published, so event and storage always
+        // agree and evidence can never be replayed across rounds.
+        let snapshot_root =
+            draw_audit::envelope_snapshot_root(&env, round_id, leaf_count, &snapshot_root);
+        let commit = RoundDrawCommit {
+            seed_hash: seed_hash.clone(),
+            snapshot_root: snapshot_root.clone(),
+            leaf_count,
+            committed_at_ledger: env.ledger().sequence(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::RoundDrawCommit(round_id), &commit);
+
+        env.events().publish(
+            (symbol_short!("round"), symbol_short!("committed")),
+            (round_id, seed_hash, snapshot_root, leaf_count),
+        );
+        Ok(())
+    }
+
+    /// Signer-only: reveal the committed seed and execute the draw for a
+    /// `Settled` round. Verifies (1) the revealed seed hashes to the
+    /// lock-time commitment, (2) the winner's Merkle proof verifies against
+    /// the committed snapshot root, and (3) the winner index equals the
+    /// documented `randomness % eligible_participant_count` recomputation —
+    /// then credits the prize through the same participant-prize bookkeeping
+    /// the legacy `draw_winner` uses and emits the self-contained
+    /// `round drawn` audit event.
+    ///
+    /// `evidence` carries everything the caller must prove: the revealed
+    /// seed, the winner address, a witness of the winner's frozen round
+    /// deposit (cross-checked against `RoundDeposit` storage), and the
+    /// winner's Merkle proof path. The winner is never taken on faith — the
+    /// index is recomputed from the revealed seed and the proof must place
+    /// that address's leaf at the recomputed index under the committed
+    /// snapshot root.
+    pub fn round_draw(
+        env: Env,
+        caller: Address,
+        round_id: u32,
+        evidence: DrawEvidence,
+        prize: i128,
+    ) -> Result<Address, Error> {
+        caller.require_auth();
+        Self::require_signer(&env, &caller)?;
+        Self::require_compatible_config(&env)?;
+        if prize <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let round = Self::load_round(&env, round_id)?;
+        if round.status != RoundStatus::Settled {
+            return Err(Error::RoundDrawNotSettled);
+        }
+        let pool: Pool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Pool)
+            .ok_or(Error::NotInitialized)?;
+        if pool.is_emergency {
+            return Err(Error::InEmergency);
+        }
+        let commit: RoundDrawCommit = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RoundDrawCommit(round_id))
+            .ok_or(Error::RoundDrawNotLocked)?;
+
+        // The deposit witness must match the frozen on-chain deposit; a
+        // lying witness changes the leaf hash and the proof check below
+        // fails, but the explicit check makes the failure mode obvious.
+        let deposit: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RoundDeposit(evidence.winner.clone(), round_id))
+            .unwrap_or(0);
+        if deposit <= 0 || deposit != evidence.deposit {
+            return Err(Error::RoundDrawWinnerNotInSnapshot);
+        }
+
+        // (1) seed reveal matches the lock-time commitment.
+        if draw_audit::seed_hash(&env, round_id, &evidence.seed) != commit.seed_hash {
+            return Err(Error::RoundDrawSeedMismatch);
+        }
+
+        // (2) winner index is exactly the documented recomputation from the
+        // revealed seed — the caller cannot choose the index.
+        let drawn_at_ledger = env.ledger().sequence();
+        let randomness =
+            draw_audit::draw_randomness(&env, round_id, &evidence.seed, drawn_at_ledger);
+        let winner_index = draw_audit::winner_index_from_randomness(&randomness, commit.leaf_count);
+
+        // (3) the Merkle proof must place this address's leaf under the
+        // committed snapshot root: recompute the raw root from the proof,
+        // then apply the same round/leaf-count envelope the commit stored.
+        let leaf = draw_audit::leaf_hash(&env, round_id, &evidence.winner, &evidence.deposit);
+        let proof_root = draw_audit::compute_merkle_root(&env, &leaf, &evidence.proof);
+        if draw_audit::envelope_snapshot_root(&env, round_id, commit.leaf_count, &proof_root)
+            != commit.snapshot_root
+        {
+            return Err(Error::RoundDrawWinnerNotInSnapshot);
+        }
+
+        let result = RoundDrawResult {
+            seed: evidence.seed.clone(),
+            winner_index,
+            winner: evidence.winner.clone(),
+            drawn_at_ledger,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::RoundDrawResult(round_id), &result);
+
+        // Credit the prize through the same bookkeeping path the legacy
+        // `draw_winner` uses (#377): auto-join the winner if needed, then
+        // add to their participant prize balance.
+        if !Self::has_participant(&env, &result.winner) {
+            let p = Participant {
+                joined_at: env.ledger().timestamp(),
+                deposited: 0,
+                locked_until: env.ledger().sequence() + LOCKUP_LEDGERS,
+                lockup_multiplier: 100,
+                yield_accrued: 0,
+                prize: 0,
+                claimed_reward: 0,
+                withdrawn_principal: 0,
+            };
+            Self::save_participant(&env, &result.winner, &p);
+        }
+        let mut p = Self::load_participant(&env, &result.winner)?;
+        p.prize = p.prize.saturating_add(prize);
+        Self::save_participant(&env, &result.winner, &p);
+
+        // Legacy-compatible payout event for the existing indexer.
+        env.events().publish(
+            (symbol_short!("pool"), symbol_short!("payout")),
+            (result.winner.clone(), prize),
+        );
+
+        // Self-contained audit event (#718): seed commitment, revealed
+        // seed, snapshot root, leaf count, derived randomness, winner index
+        // and winner — enough to recompute the winner from chain data alone.
+        env.events().publish(
+            (symbol_short!("round"), symbol_short!("drawn")),
+            draw_audit::draw_event_fields(&env, round_id, &commit, &result),
+        );
+
+        Ok(result.winner)
+    }
+
+    /// View: the stored draw commitment for a round (#718), if any.
+    pub fn round_draw_commit(env: Env, round_id: u32) -> Option<RoundDrawCommit> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RoundDrawCommit(round_id))
+    }
+
+    /// View: the stored draw result for a round (#718), if any.
+    pub fn round_draw_result(env: Env, round_id: u32) -> Option<RoundDrawResult> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RoundDrawResult(round_id))
     }
 
     // ── Emergency Pro-rata Exit (#512) ────────────────────────────────────
@@ -2925,15 +3275,11 @@ impl DripPool {
         }
 
         // Remove the round entry itself to reclaim storage.
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Round(round_id));
+        env.storage().persistent().remove(&DataKey::Round(round_id));
         Self::bump_instance(&env);
 
-        env.events().publish(
-            (symbol_short!("round"), symbol_short!("pruned")),
-            round_id,
-        );
+        env.events()
+            .publish((symbol_short!("round"), symbol_short!("pruned")), round_id);
         Ok(())
     }
 
@@ -2964,37 +3310,31 @@ impl DripPool {
     /// assets. This value is used by the frontend and backend to
     /// convert between human-readable amounts and on-chain i128 units
     /// without lossy floating-point arithmetic (#599).
-    pub fn set_token_decimals(
-        env: Env,
-        caller: Address,
-        decimals: u8,
-    ) -> Result<(), Error> {
+    pub fn set_token_decimals(env: Env, caller: Address, decimals: u32) -> Result<(), Error> {
         caller.require_auth();
         Self::require_signer(&env, &caller)?;
         if !Self::has_token_configured(&env) {
             return Err(Error::TokenNotConfigured);
         }
-        if env
-            .storage()
-            .instance()
-            .has(&DataKey::TokenDecimals)
-        {
+        if env.storage().instance().has(&DataKey::TokenDecimals) {
             return Err(Error::AlreadyInitialized);
         }
         env.storage()
             .instance()
-            .set(&DataKey::TokenDecimals, &decimals);
+            .set(&DataKey::TokenDecimals, &decimals_to_val(decimals));
         Self::bump_instance(&env);
 
         env.events().publish(
             (symbol_short!("pool"), symbol_short!("decimals")),
-            decimals,
+            decimals_to_val(decimals),
         );
         Ok(())
     }
 
     /// View the configured token decimals (#599).
-    pub fn token_decimals(env: Env) -> Result<u8, Error> {
+    /// Stored as u32 (soroban-sdk 27 removed u8 Val conversions); validated
+    /// at the setter boundary to the 0–38 Stellar asset range.
+    pub fn token_decimals(env: Env) -> Result<u32, Error> {
         env.storage()
             .instance()
             .get(&DataKey::TokenDecimals)
@@ -3068,16 +3408,18 @@ impl DripPool {
     }
 
     /// Check if a strategy's code hash is on the allowlist (#602).
-    pub fn is_strategy_code_hash_allowed(
-        env: Env,
-        code_hash: BytesN<32>,
-    ) -> bool {
+    ///
+    /// An allowlist that has never been configured accepts every hash
+    /// (bootstrap mode): fresh deployments are not locked out of strategy
+    /// setup, while allow/disallow manages the list from then on. Once at
+    /// least one hash has been allowed, membership is required.
+    pub fn is_strategy_code_hash_allowed(env: Env, code_hash: BytesN<32>) -> bool {
         let hashes: Vec<BytesN<32>> = env
             .storage()
             .instance()
             .get(&DataKey::AllowedStrategyCodeHashes)
             .unwrap_or(Vec::new(&env));
-        hashes.contains(&code_hash)
+        hashes.is_empty() || hashes.contains(&code_hash)
     }
 
     // ── Views ──────────────────────────────────────────────────────────────

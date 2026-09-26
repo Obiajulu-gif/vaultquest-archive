@@ -121,11 +121,17 @@ impl MockYield {
     }
 
     pub fn is_paused(env: Env) -> bool {
-        env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
     }
 
     fn tracked_principal(env: &Env) -> i128 {
-        env.storage().instance().get(&DataKey::Principal).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&DataKey::Principal)
+            .unwrap_or(0)
     }
 }
 
@@ -172,14 +178,24 @@ impl YieldStrategy for MockYield {
         // actually there (partial redeem / slippage / prior loss) so the
         // caller's emergency-recall path can always get *something* back
         // instead of being stranded by a strict full-amount requirement.
-        let redeemed = if amount < available { amount } else { available };
+        let redeemed = if amount < available {
+            amount
+        } else {
+            available
+        };
         if redeemed > 0 {
             token.transfer(&env.current_contract_address(), &to, &redeemed);
         }
 
         let principal = Self::tracked_principal(&env);
-        let new_principal = if redeemed > principal { 0 } else { principal - redeemed };
-        env.storage().instance().set(&DataKey::Principal, &new_principal);
+        let new_principal = if redeemed > principal {
+            0
+        } else {
+            principal - redeemed
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::Principal, &new_principal);
 
         Ok(redeemed)
     }
@@ -236,7 +252,13 @@ mod strategy_tests {
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::token;
 
-    fn setup() -> (Env, MockYieldClient<'static>, Address, token::TokenClient<'static>, token::StellarAssetClient<'static>) {
+    fn setup() -> (
+        Env,
+        MockYieldClient<'static>,
+        Address,
+        token::TokenClient<'static>,
+        token::StellarAssetClient<'static>,
+    ) {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, MockYield);
@@ -357,7 +379,10 @@ mod strategy_tests {
     #[test]
     fn interface_version_matches_shared_constant() {
         let (_env, client, _contract_id, _token, _issuer) = setup();
-        assert_eq!(client.interface_version(), vaultquest_common::STRATEGY_INTERFACE_VERSION);
+        assert_eq!(
+            client.interface_version(),
+            vaultquest_common::STRATEGY_INTERFACE_VERSION
+        );
     }
 }
 

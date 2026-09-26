@@ -21,9 +21,7 @@ use soroban_sdk::{BytesN, Env};
 // Swap this back to importing drip-pool's real wasm once that separate
 // bug is fixed.
 mod pool_wasm {
-    soroban_sdk::contractimport!(
-        file = "../target/wasm32v1-none/release/mock_pool.wasm"
-    );
+    soroban_sdk::contractimport!(file = "../target/wasm32v1-none/release/mock_pool.wasm");
 }
 
 fn setup() -> (Env, VaultFactoryClient<'static>, Address, BytesN<32>) {
@@ -154,11 +152,7 @@ fn update_pool_metadata_rejects_stale_versions() {
 // flagged as blocked in the admin simulation UI can never be written even by
 // the factory admin.
 
-fn base_update(
-    approved_asset: &Address,
-    lockup_days: u32,
-    fee_bps: u32,
-) -> PoolMetadataUpdate {
+fn base_update(approved_asset: &Address, lockup_days: u32, fee_bps: u32) -> PoolMetadataUpdate {
     PoolMetadataUpdate {
         risk_tier: symbol_short!("low"),
         strategy: symbol_short!("stable"),
@@ -187,7 +181,10 @@ fn update_pool_metadata_rejects_fee_below_stringency() {
     );
 
     let meta = client.get_pool(&s);
-    assert_eq!(meta.fee_bps, 75, "rejected update must not mutate stored metadata");
+    assert_eq!(
+        meta.fee_bps, 75,
+        "rejected update must not mutate stored metadata"
+    );
     assert_eq!(meta.metadata_version, 1);
 }
 
@@ -316,7 +313,10 @@ fn deploy_pool_requires_admin_auth() {
 #[test]
 fn get_pool_on_unknown_salt_fails() {
     let (env, client, _admin, _wasm_hash) = setup();
-    assert_eq!(client.try_get_pool(&salt(&env, 99)), Err(Ok(Error::PoolNotFound)));
+    assert_eq!(
+        client.try_get_pool(&salt(&env, 99)),
+        Err(Ok(Error::PoolNotFound))
+    );
 }
 
 #[test]

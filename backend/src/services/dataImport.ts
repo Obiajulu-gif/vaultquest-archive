@@ -164,13 +164,13 @@ export class DataImportService {
         rows[index] = { index, pool_id: parsed.pool_id, action };
         if (prior) restore.push(projectRecord(prior));
         else created.push(parsed.pool_id);
-      } catch (err) {
+      } catch {
         rows[index] = {
           index,
           pool_id: parsed.pool_id,
           action: "error",
           reason: "write_failed",
-          errors: [err instanceof Error ? err.message : "write failed"],
+          errors: ["A database error occurred"],
         };
       }
     }

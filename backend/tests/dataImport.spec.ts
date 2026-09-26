@@ -146,7 +146,7 @@ describe("DataImportService", () => {
       records: [row("a"), row("boom"), row("c")],
     });
     expect(report.summary).toMatchObject({ create: 2, error: 1 });
-    expect(report.rows[1]).toMatchObject({ action: "error", reason: "write_failed", errors: ["db down"] });
+    expect(report.rows[1]).toMatchObject({ action: "error", reason: "write_failed", errors: ["A database error occurred"] });
     // rollback lists only what was actually created
     expect(report.rollback?.delete_pool_ids).toEqual(["a", "c"]);
   });

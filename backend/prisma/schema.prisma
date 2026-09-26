@@ -26,6 +26,7 @@ enum ActionType {
   create_vault
   claim
   select_winner
+  compensating
 }
 
 enum ActionStatus {
@@ -62,11 +63,15 @@ model ActionLedger {
   updatedAt         DateTime     @updatedAt @map("updated_at")
   submittedAt       DateTime?    @map("submitted_at")
   confirmedAt       DateTime?    @map("confirmed_at")
+  finalityStatus    String       @default("provisional") @map("finality_status")
+  observedLedger    Int?         @map("observed_ledger")
+  finalizedLedger   Int?         @map("finalized_ledger")
+  confirmationDepth Int?         @map("confirmation_depth")
+  compensatesId     String?      @map("compensates_id")
 
   @@index([walletAddress, createdAt(sort: Desc)])
   @@index([status, updatedAt])
-  @@index([walletAddress, actionType])
-  @@index([status, createdAt(sort: Desc)])
+  @@index([finalityStatus, observedLedger])
   @@map("action_ledger")
 }
 
@@ -390,129 +395,23 @@ model SavedPool {
   @@map("saved_pools")
 }
 
-model Product {
-  id         String   @id @default(uuid()) @db.Uuid
-  name       String
-  categoryId String   @map("category_id")
-  price      Float
-  images     ProductImage[]
-  createdAt  DateTime @default(now())
+model OutboundAction {
+  id              String   @id @default(uuid()) @db.Uuid
+  actionKey       String   @unique @map("action_key")
+  actionType      String   @map("action_type")
+  payload         Json     @map("payload")
+  status          String   @default("pending")
+  txHash          String?  @unique @map("tx_hash")
+  errorCode       String?  @map("error_code")
+  errorDetail     String?  @map("error_detail")
+  attempts        Int      @default(0)
+  maxAttempts     Int      @default(3) @map("max_attempts")
+  version         Int      @default(0)
+  lastAttemptAt   DateTime? @map("last_attempt_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  confirmedAt     DateTime? @map("confirmed_at")
 
-  @@index([categoryId])
-  @@index([price])
-}
-
-model ProductImage {
-  id        String   @id @default(uuid()) @db.Uuid
-  url       String
-  productId String   @map("product_id") @db.Uuid
-  product   Product  @relation(fields: [productId], references: [id])
-}
-
-model DrawProof {
-  id                String    @id @default(uuid()) @db.Uuid
-  drawId            String    @unique @map("draw_id")
-  roundId           Int       @map("round_id")
-  contractId        String    @map("contract_id")
-  proofJson         Json      @map("proof_json")
-  proofHash         String    @unique @map("proof_hash")
-  signature         String?
-  verified          Boolean   @default(false)
-  verifiedAt        DateTime? @map("verified_at")
-  verificationError String?   @map("verification_error")
-  createdAt         DateTime  @default(now()) @map("created_at")
-
-  @@index([roundId])
-  @@index([contractId, createdAt(sort: Desc)])
-  @@map("draw_proofs")
-}
-
-// #750 — Transactionally consistent dashboard aggregate snapshot.
-//
-// Aggregates (TVL, prize pool, win distribution) are computed and stored
-// in the same database transaction as the detail rows they summarise, so
-// the numbers shown on the dashboard always correspond to a single
-// consistent snapshot of the underlying data.
-//
-// `watermark` is the `action_ledger.updated_at` ceiling of the most
-// recent row included in this snapshot. The dashboard endpoint returns
-// both the aggregate and the watermark; the UI compares the watermark
-// against the freshness of independently-fetched detail rows and shows
-// a staleness warning if they diverge.
-//
-// `scope` identifies which logical dataset this aggregate covers
-// (e.g. "global", "vault:<id>", "wallet:<address>").
-model DashboardAggregate {
-  id                  String   @id @default(uuid()) @db.Uuid
-  /// Identifies the logical dataset: "global", "vault:<id>", etc.
-  scope               String
-  /// The updated_at of the most recent action_ledger row included.
-  /// All detail rows with updated_at <= watermark are included in this snapshot.
-  watermark           DateTime
-  /// Total value locked across all active deposits (string to preserve precision).
-  totalValueLocked    String   @map("total_value_locked")
-  /// Current prize pool balance (string to preserve precision).
-  totalPrizePool      String   @map("total_prize_pool")
-  /// Historical win distribution serialised as JSON array.
-  winDistribution     Json     @map("win_distribution")
-  /// Number of confirmed deposit rows included in this snapshot.
-  depositCount        Int      @map("deposit_count")
-  /// Sum of all confirmed deposit amounts included in this snapshot.
-  depositTotal        String   @map("deposit_total")
-  /// ISO timestamp when this snapshot was computed.
-  computedAt          DateTime @default(now()) @map("computed_at")
-
-  @@unique([scope])
-  @@index([scope, watermark])
-  @@map("dashboard_aggregates")
-}
-
-model Category {
-  id          String   @id @default(uuid()) @db.Uuid
-  slug        String   @unique
-  name        String
-  description String?
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
-
-  @@map("categories")
-}
-
-model Notification {
-  id             String    @id @default(uuid()) @db.Uuid
-  walletAddress  String    @map("wallet_address")
-  type           String
-  positionId     String    @map("position_id")
-  title          String
-  message        String
-  dismissedAt    DateTime? @map("dismissed_at")
-  createdAt      DateTime  @default(now()) @map("created_at")
-
-  @@unique([walletAddress, positionId, type])
-  @@index([walletAddress, dismissedAt])
-  @@map("notifications")
-}
-
-model NotificationPreference {
-  walletAddress String   @id @map("wallet_address")
-  disabledTypes String[] @default([]) @map("disabled_types")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-
-  @@map("notification_preferences")
-}
-
-model TransactionMetric {
-  id            String    @id @default(uuid()) @db.Uuid
-  actionId      String    @unique @map("action_id")
-  actionType    String    @map("action_type")
-  network       String
-  walletAddress String    @map("wallet_address")
-  submittedAt   DateTime  @map("submitted_at")
-  confirmedAt   DateTime? @map("confirmed_at")
-  indexedAt     DateTime? @map("indexed_at")
-  createdAt     DateTime  @default(now()) @map("created_at")
-
-  @@index([actionType, network])
-  @@index([submittedAt])
-  @@map("transaction_metrics")
+  @@index([status, updatedAt])
+  @@map("outbound_actions")
 }

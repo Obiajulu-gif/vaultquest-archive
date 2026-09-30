@@ -27,7 +27,7 @@
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.12",
     "@rainbow-me/rainbowkit": "^2.2.1",
-    "@tanstack/react-query": "^5.62.8",
+    "@tanstack/react-query": "^5.102.8",
     "@vaultquest/stellar-wallet-connect": "workspace:*",
     "canvas-confetti": "^1.9.4",
     "framer-motion": "^11.15.0",

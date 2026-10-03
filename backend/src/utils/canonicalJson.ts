@@ -5,9 +5,10 @@ import crypto from "crypto";
  *
  * Receipts are signed and audit records are hash-chained, so the bytes that
  * get signed/hashed must not depend on object key order or on how a value was
- * built. This module implements RFC 8785-style canonical JSON: object keys are
- * sorted lexicographically by UTF-16 code unit, array order is preserved, and
- * numbers are normalized to a single canonical form.
+ * built. This module implements VaultQuest's canonical JSON profile: object
+ * keys are sorted lexicographically by UTF-16 code unit, array order is
+ * preserved, and domain-specific whitespace, enum casing, and decimal
+ * normalization are applied before serialization.
  *
  *  - sorts object keys lexicographically at every depth,
  *  - drops `undefined` object values (JSON has no undefined),
@@ -34,7 +35,7 @@ export type CanonicalValue =
   | { [key: string]: CanonicalValue };
 
 export interface CanonicalizeOptions {
-  /** When true, unknown object keys are dropped instead of being serialized. */
+  /** With `allowedKeys`, reject top-level keys outside that allowlist. */
   strict?: boolean;
   /** Optional allowlist of top-level keys to keep. */
   allowedKeys?: readonly string[];
@@ -114,6 +115,11 @@ export function normalizeDecimal(value: unknown): string {
         `unsupported numeric value: ${String(value)}`,
       );
     }
+    if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
+      throw new CanonicalizationError(
+        "unsafe integer: provide precision-sensitive values as decimal strings",
+      );
+    }
     return normalizeDecimalString(value.toString());
   }
 
@@ -127,6 +133,9 @@ export function normalizeDecimal(value: unknown): string {
 }
 
 function normalizeDecimalString(raw: string): string {
+  if (raw.length > 1024) {
+    throw new CanonicalizationError("numeric string exceeds 1024 characters");
+  }
   const trimmed = raw.trim();
   if (trimmed === "") {
     throw new CanonicalizationError("empty numeric string");
@@ -134,7 +143,7 @@ function normalizeDecimalString(raw: string): string {
 
   // Reject hex-like or non-numeric strings that could slip through
   // Number() coercion (e.g. "0x10", "123abc").
-  if (!/^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+\-]?\d+)?$/.test(trimmed)) {
+  if (!/^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/.test(trimmed)) {
     throw new CanonicalizationError(`malformed numeric string: "${raw}"`);
   }
 
@@ -179,6 +188,10 @@ function expandExponent(value: string): string {
   const sign = match[1] === "-" ? "-" : "";
   const mantissa = match[2];
   const exponent = match[3] ? Number(match[3]) : 0;
+
+  if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 1024) {
+    throw new CanonicalizationError("numeric exponent exceeds supported range");
+  }
 
   if (!exponent) return `${sign}${mantissa}`;
 
@@ -250,6 +263,11 @@ function canonicalizeValue(
         `unsupported numeric value: ${String(value)}`,
       );
     }
+    if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
+      throw new CanonicalizationError(
+        "unsafe integer: provide precision-sensitive values as decimal strings",
+      );
+    }
     if (key !== null && DECIMAL_KEYS.has(key)) {
       return normalizeDecimal(value);
     }
@@ -273,16 +291,23 @@ function canonicalizeValue(
   }
 
   if (isPlainObject(value)) {
-    const out: Record<string, CanonicalValue> = {};
+    // A null prototype keeps a payload key named `__proto__` as data instead
+    // of invoking Object.prototype's legacy setter during serialization.
+    const out = Object.create(null) as Record<string, CanonicalValue>;
     const originalKeys = Object.keys(value).filter(
       (k) => value[k] !== undefined,
     );
     const keys = originalKeys
       .map(normalizeKey)
       .filter((key) => {
+        if (depth !== 0) return true;
         if (options.deniedKeys?.includes(key)) return false;
-        if (options.allowedKeys && !options.allowedKeys.includes(key))
+        if (options.allowedKeys && !options.allowedKeys.includes(key)) {
+          if (options.strict) {
+            throw new CanonicalizationError(`unknown top-level key: "${key}"`);
+          }
           return false;
+        }
         return true;
       })
       .sort();

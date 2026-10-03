@@ -1,0 +1,14 @@
+{
+  "legacyPayload": {
+    "signature": "legacy_sig",
+    "payout": {
+      "recipientConfirmed": true,
+      "ledgerSeq": 1001,
+      "txHash": "tx_abc",
+      "asset": "USDC",
+      "amount": "500000.0000"
+    },
+    "version": "1.0.0"
+  },
+  "canonical": "{\"payout\":{\"amount\":\"500000\",\"asset\":\"usdc\",\"ledgerSeq\":\"1001\",\"recipientConfirmed\":true,\"txHash\":\"tx_abc\"},\"signature\":\"legacy_sig\",\"version\":\"1.0.0\"}"
+}

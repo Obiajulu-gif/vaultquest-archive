@@ -95,3 +95,58 @@ These are consumed by `backend/src/env.ts`.
 | `WEBHOOK_TOLERANCE_SECONDS` | Maximum allowed timestamp drift in seconds for replay-window enforcement | Default 300 |
 
 
+
+## Secure configuration preflight (#805)
+
+The backend validates configuration before opening its HTTP listener or starting
+workers. Run `pnpm --dir backend config:validate` after provisioning `backend/.env`
+(or run `pnpm --dir backend exec tsx src/scripts/validateEnv.ts` with environment
+variables injected by your deployment platform). Run this preflight before database
+migrations and deployment. It exits nonzero with variable names and remediation
+messages, never configuration values. `SKIP_ENV_VALIDATION=1` is now refused.
+
+| Mode | Requirements |
+| --- | --- |
+| Local | `APP_ENV=local`, `NODE_ENV=development` or `test`; PostgreSQL and Redis hosts must be loopback, resource names must not contain prod/production/live; use independently generated local secrets and a non-mainnet network. |
+| Staging | `APP_ENV=staging`, `NODE_ENV=production`; dedicated staging databases and secrets; PostgreSQL `sslmode=require`, `verify-ca`, or `verify-full`; Redis `rediss:`; credential-free HTTPS RPC; non-mainnet passphrase. |
+| Production | `APP_ENV=production`, `NODE_ENV=production`; production-only databases and secrets with the same transport requirements; set the intended Stellar network explicitly. |
+
+When `APP_ENV` is absent, `NODE_ENV=production` implies production and other values
+imply local. Staging must set `APP_ENV` explicitly. Shared environments require
+`API_KEY` (32+ characters), `INTERNAL_SERVICE_SECRET` (32+ characters), a valid
+checksum-verified `RECEIPT_SIGNING_SECRET`, and `NETWORK_PASSPHRASE`. Local internal
+and webhook secrets require 20+ characters. All configured secrets reject
+placeholders, whitespace padding, and repeated-character values. Generate independent
+secrets using a cryptographic generator, for example
+`node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`.
+Keep them in the deployment secret manager, never in source control or `NEXT_PUBLIC_*`.
+
+Local mode rejects known production prefixes (`prod_`, `production-`, `sk_live_`,
+`whsec_live_`). Opaque random secrets cannot reveal which deployment owns them:
+operators must maintain separate secret-manager entries for each environment.
+The validator does not infer deployment ownership from an arbitrary secret.
+
+Indexer configuration requires RPC URL, contract IDs, and network passphrase
+together. Supported passphrases are Stellar public, testnet, futurenet, and
+standalone. Contract IDs and signing keys are checksum validated. SendGrid requires
+its key and sender together. Feature switches accept only literal `true` or `false`,
+ports must be 1–65535, and schedules must be valid cron expressions. Sandbox mode
+is local-only and requires a loopback sandbox database.
+
+Migration: remove validation bypasses, replace weak/placeholder secrets, explicitly
+set staging mode, enable transport security, and provision a stable receipt signing
+key before upgrading shared deployments. Existing receipts signed with ephemeral
+keys still require their original public key for verification.
+
+The frontend validator uses the same `APP_ENV` modes and refuses mainnet outside
+production, URL credentials, non-HTTP protocols, malformed contract IDs, and
+secret-bearing `NEXT_PUBLIC_*` variables. Shared frontend endpoints require HTTPS.
+Frontend contract IDs receive structural validation; the backend SDK checks the
+checksum for indexer contract IDs. Set `APP_ENV=staging` during staging builds as
+well as at runtime; public frontend configuration is bundled at build time.
+
+For frontend build preflight, inject the build variables and run
+`pnpm --dir backend exec tsx ../scripts/validate-frontend-env.ts` from the repository
+root. To load the root `.env.local` instead, run
+`pnpm --dir backend exec node --env-file=../.env.local --import tsx ../scripts/validate-frontend-env.ts`.
+Both preflight commands finish without contacting databases or network services.

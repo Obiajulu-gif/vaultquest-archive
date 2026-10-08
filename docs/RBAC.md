@@ -58,3 +58,52 @@ follow-up because it changes the client contract.
 
 `ADMIN_WALLET_ADDRESSES` (comma-separated) is the maintainer allowlist. No
 migration is required.
+
+## Permission Diff Preview (#863)
+
+Before applying role, policy, or access updates, maintainers must preview the computed permission diff (`computePermissionDiff` in [`lib/permission-diff.ts`](../lib/permission-diff.ts)).
+
+The preview:
+- Identifies added, removed, and unchanged permissions per role.
+- Lists affected actions and user-facing capabilities.
+- Requires explicit confirmation (`requiresConfirmation: true`) for broad changes (e.g. granting critical admin permissions to user roles, high-volume role modifications, or revoking core user permissions).
+- Protects against unauthorized actors (`PermissionDiffDeniedError`) and stale policy inputs (`StalePolicyInputError`).
+
+Maintainers can POST to `/admin/permissions/preview` using their wallet session:
+
+```json
+{
+  "baseVersion": 1,
+  "proposedPolicy": {
+    "version": 2,
+    "roles": { "user": ["own.data.read"] }
+  }
+}
+```
+
+Supply the complete role matrix: omitted roles revoke their grants. Responses
+include added/removed permissions, affected scopes/actions, and effective actor
+diffs when an actor inventory is supplied by the policy provider. Actor grants
+are the union of their assigned roles, so redundant grants are not counted.
+The default provider previews the existing static `ROLE_PERMISSIONS` matrix at
+version 1. It has no actor inventory; it does not guess session identities.
+
+POST the same body to `/admin/permissions/prepare` to obtain a validated
+deployment candidate. Broad changes require the `confirmationToken` from the
+exact preview in the body. The token binds both complete policies and is an
+explicit acknowledgement, not an authorization credential. Changed proposals
+invalidate it. A stale base revision or missing confirmation returns 409;
+unauthenticated/non-maintainer callers receive 401/403.
+
+Broad changes include critical grants on any role, revoking core user reads,
+more than three aggregate permission changes, or changes affecting ten actors.
+`preparePolicyChange` rechecks authorization, revision and confirmation before
+returning an isolated candidate. Custom persistence adapters must reload their
+authoritative policy and use an atomic compare-and-swap on `baseVersion` when
+writing it. The configured RBAC matrix remains code-managed; preparation
+returns `activated: false` and requires the normal reviewed deployment to take
+effect. No runtime permission switching, migration or configuration is added.
+
+Validation: `pnpm exec vitest run --config vitest.config.ts tests/permission-diff.test.ts`
+and `pnpm --dir backend exec vitest run tests/permission-preview.spec.ts`.
+

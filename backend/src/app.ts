@@ -48,6 +48,7 @@ import { DataExportService } from "./services/dataExport.js";
 import { DataImportService } from "./services/dataImport.js";
 import { exportsRoutes } from "./routes/exports.js";
 import { importsRoutes } from "./routes/imports.js";
+import { permissionPreviewRoutes } from "./routes/permissionPreview.js";
 import { OperationalHealthService } from "./services/operationalHealthService.js";
 import { operationalHealthRoutes } from "./routes/operationalHealth.js";
 import { privacyAnalyticsRoutes } from "./routes/privacyAnalytics.js";
@@ -432,6 +433,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   );
 
   // Wallet-scoped data portability (#772, #773). Authorization is enforced by
+  app.register(permissionPreviewRoutes(requirePermission("admin.audit.write", [walletPrincipal])));
   // the permission guards and by the services' own wallet-scope checks.
   const exportSvc = new DataExportService({
     listActions: ({ walletAddress, cursor, limit }) =>

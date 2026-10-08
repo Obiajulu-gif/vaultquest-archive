@@ -36,6 +36,7 @@ import type { CacheService } from "./services/cacheService.js";
 import { walletAuthRoutes } from "./routes/walletAuth.js";
 import { WalletAuthService } from "./services/walletAuth.js";
 import { requirePermission, walletSessionResolver } from "./middleware/rbac.js";
+import { requireMaintainerApproval } from "./middleware/maintainerApproval.js";
 import { transactionMetricsRoutes } from "./routes/transactionMetrics.js";
 import { CategoryService } from "./services/categoryService.js";
 import { categoriesRoutes } from "./routes/categories.js";
@@ -474,7 +475,10 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         enforceOperationLimit(operationLimits, "recovery.retry"),
       ),
       adminRead: requirePermission("admin.recovery.read", [walletPrincipal]),
-      adminWrite: requirePermission("admin.recovery.write", [walletPrincipal]),
+      adminWrite: chainPreHandlers(
+        requirePermission("admin.recovery.write", [walletPrincipal]),
+        requireMaintainerApproval("admin.recovery.write")
+      ),
     }),
   );
   app.register(
@@ -489,7 +493,10 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.register(
     operationLimitsRoutes(operationLimits, {
       read: requirePermission("admin.limits.read", [walletPrincipal]),
-      write: requirePermission("admin.limits.write", [walletPrincipal]),
+      write: chainPreHandlers(
+        requirePermission("admin.limits.write", [walletPrincipal]),
+        requireMaintainerApproval("admin.limits.write")
+      ),
     }),
   );
 
@@ -502,7 +509,10 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.register(
     impersonationRoutes(impersonationSvc, {
       read: requirePermission("admin.impersonation.read", [walletPrincipal]),
-      write: requirePermission("admin.impersonation.write", [walletPrincipal]),
+      write: chainPreHandlers(
+        requirePermission("admin.impersonation.write", [walletPrincipal]),
+        requireMaintainerApproval("admin.impersonation.write")
+      ),
     }),
   );
 
@@ -511,7 +521,10 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.register(
     partialFailureRoutes(partialFailureSvc, {
       read: requirePermission("admin.recovery.read", [walletPrincipal]),
-      write: requirePermission("admin.recovery.write", [walletPrincipal]),
+      write: chainPreHandlers(
+        requirePermission("admin.recovery.write", [walletPrincipal]),
+        requireMaintainerApproval("admin.recovery.write")
+      ),
     }),
   );
 

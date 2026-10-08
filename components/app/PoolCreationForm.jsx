@@ -78,10 +78,10 @@ function validateForm(form) {
   return errors;
 }
 
-function FieldError({ message }) {
+function FieldError({ id, message }) {
   if (!message) return null;
   return (
-    <p className="mt-1 flex items-center gap-1 text-xs text-red-500" role="alert">
+    <p id={id} className="mt-1 flex items-center gap-1 text-xs text-red-500" role="alert">
       <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
       {message}
     </p>
@@ -190,8 +190,10 @@ export default function PoolCreationForm({ onSubmit }) {
               className="mt-1 w-full rounded-xl border border-vault-border bg-vault-surface px-4 py-2.5 text-sm text-vault-text outline-none transition focus:border-red-400 focus:ring-2 focus:ring-red-400/25"
               placeholder="e.g. USDC Stable Yield Pool"
               maxLength={VALIDATION.name.maxLength}
+              aria-invalid={!!fieldError("name")}
+              aria-describedby={fieldError("name") ? "pool-name-error" : undefined}
             />
-            <FieldError message={fieldError("name")} />
+            <FieldError id="pool-name-error" message={fieldError("name")} />
           </div>
 
           {/* Asset + Lockup row */}
@@ -241,8 +243,10 @@ export default function PoolCreationForm({ onSubmit }) {
                 value={form.minDeposit}
                 onChange={(e) => update("minDeposit", e.target.value)}
                 className="mt-1 w-full rounded-xl border border-vault-border bg-vault-surface px-4 py-2.5 text-sm text-vault-text outline-none transition focus:border-red-400 focus:ring-2 focus:ring-red-400/25"
+                aria-invalid={!!fieldError("minDeposit")}
+                aria-describedby={fieldError("minDeposit") ? "pool-min-error" : undefined}
               />
-              <FieldError message={fieldError("minDeposit")} />
+              <FieldError id="pool-min-error" message={fieldError("minDeposit")} />
             </div>
             <div>
               <label htmlFor="pool-max" className="block text-sm font-medium text-vault-text">
@@ -255,8 +259,10 @@ export default function PoolCreationForm({ onSubmit }) {
                 value={form.maxDeposit}
                 onChange={(e) => update("maxDeposit", e.target.value)}
                 className="mt-1 w-full rounded-xl border border-vault-border bg-vault-surface px-4 py-2.5 text-sm text-vault-text outline-none transition focus:border-red-400 focus:ring-2 focus:ring-red-400/25"
+                aria-invalid={!!fieldError("maxDeposit")}
+                aria-describedby={fieldError("maxDeposit") ? "pool-max-error" : undefined}
               />
-              <FieldError message={fieldError("maxDeposit")} />
+              <FieldError id="pool-max-error" message={fieldError("maxDeposit")} />
             </div>
           </div>
 
@@ -274,8 +280,10 @@ export default function PoolCreationForm({ onSubmit }) {
                 value={form.maxParticipants}
                 onChange={(e) => update("maxParticipants", e.target.value)}
                 className="mt-1 w-full rounded-xl border border-vault-border bg-vault-surface px-4 py-2.5 text-sm text-vault-text outline-none transition focus:border-red-400 focus:ring-2 focus:ring-red-400/25"
+                aria-invalid={!!fieldError("maxParticipants")}
+                aria-describedby={fieldError("maxParticipants") ? "pool-participants-error" : undefined}
               />
-              <FieldError message={fieldError("maxParticipants")} />
+              <FieldError id="pool-participants-error" message={fieldError("maxParticipants")} />
             </div>
             <div>
               <label htmlFor="pool-yield" className="block text-sm font-medium text-vault-text">
@@ -306,8 +314,10 @@ export default function PoolCreationForm({ onSubmit }) {
                 value={form.startDate}
                 onChange={(e) => update("startDate", e.target.value)}
                 className="mt-1 w-full rounded-xl border border-vault-border bg-vault-surface px-4 py-2.5 text-sm text-vault-text outline-none transition focus:border-red-400 focus:ring-2 focus:ring-red-400/25"
+                aria-invalid={!!fieldError("startDate")}
+                aria-describedby={fieldError("startDate") ? "pool-start-error" : undefined}
               />
-              <FieldError message={fieldError("startDate")} />
+              <FieldError id="pool-start-error" message={fieldError("startDate")} />
             </div>
             <div>
               <label htmlFor="pool-end" className="block text-sm font-medium text-vault-text">
@@ -319,8 +329,10 @@ export default function PoolCreationForm({ onSubmit }) {
                 value={form.endDate}
                 onChange={(e) => update("endDate", e.target.value)}
                 className="mt-1 w-full rounded-xl border border-vault-border bg-vault-surface px-4 py-2.5 text-sm text-vault-text outline-none transition focus:border-red-400 focus:ring-2 focus:ring-red-400/25"
+                aria-invalid={!!fieldError("endDate")}
+                aria-describedby={fieldError("endDate") ? "pool-end-error" : undefined}
               />
-              <FieldError message={fieldError("endDate")} />
+              <FieldError id="pool-end-error" message={fieldError("endDate")} />
             </div>
           </div>
 

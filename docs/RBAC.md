@@ -106,4 +106,3 @@ effect. No runtime permission switching, migration or configuration is added.
 
 Validation: `pnpm exec vitest run --config vitest.config.ts tests/permission-diff.test.ts`
 and `pnpm --dir backend exec vitest run tests/permission-preview.spec.ts`.
-

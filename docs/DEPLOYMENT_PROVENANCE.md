@@ -167,4 +167,3 @@ Deploy the additive migration before deploying the updated backend:
 
 Validation: `pnpm exec vitest run --config vitest.config.ts tests/record-provenance.test.ts tests/archive-export.test.ts`
 and `pnpm --dir backend exec vitest run tests/dataImport.spec.ts tests/dataExport.spec.ts tests/saved-pool-provenance.spec.ts`.
-

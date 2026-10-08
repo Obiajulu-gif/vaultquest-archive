@@ -271,3 +271,77 @@ Policy: text is **stripped**, URLs are **rejected** (never silently rewritten).
 React escapes text at render time; sanitization on write is defence in depth.
 Not covered: a Content-Security-Policy header (the root layout uses an inline
 theme script and would need a nonce first).
+
+---
+
+## #868: Sensitive Field Access Logging & Anomaly Detection
+
+### Overview
+Access to sensitive fields (e.g. `ssn`, `tax_id`, `private_key`, `secret`, `email`, `wallet_seed`, `vault_pin`) is logged without retaining raw values, capturing authorized and unauthorized attempts, and providing anomaly detection hooks for suspicious patterns.
+
+### Components
+- **SensitiveFieldAccessLogger**: `lib/sensitive-field-access.ts`
+- **Redaction**: Field values are strictly omitted from log entries.
+- **Anomaly Detection Hooks**: Real-time callback alerts for `UNAUTHORIZED_BURST`, `BULK_SENSITIVE_ACCESS`, `UNAUTHORIZED_BULK_ACCESS`, and `RAPID_MULTI_RESOURCE_ACCESS`.
+
+### Usage
+```typescript
+import { sensitiveAccessLogger } from "@/lib/sensitive-field-access";
+
+// Log authorized access
+sensitiveAccessLogger.logAccess({
+  actor: "admin-wallet",
+  purpose: "vault_audit",
+  resourceType: "vault",
+  resourceId: "v-100",
+  fieldNames: ["secret", "email"],
+  authorized: true,
+});
+
+// Register anomaly hook
+sensitiveAccessLogger.onAnomaly((anomaly) => {
+  console.warn(`[ANOMALY ALERT ${anomaly.severity}] ${anomaly.rule}: ${anomaly.description}`);
+});
+```
+
+The wallet export path is instrumented in `DataExportService` and its RBAC
+guard. Successful exports log a stable SHA-256 subject identifier, fixed purpose
+`data_export`, a SHA-256 wallet resource identifier, sensitive field names and record
+count. Cross-wallet denials are logged before data is read. Anonymous and
+denied-role attempts use `unspecified` rather than copying untrusted request
+fields, headers or credentials. Exported financial amounts and payloads never
+enter the access log. Other access paths can use the same logger explicitly;
+this is not automatic instrumentation of every database read.
+
+Profile GET/PUT `/api/users/me` logs allowed attempts after the existing
+authentication guard and denied attempts before profile reads. It records
+`profile_read`/`profile_update`, a hashed user ID and email/wallet field names;
+contact values and authorization headers are excluded. Existing profile
+authentication and mock-update semantics are unchanged.
+
+Sensitive fields include wallet addresses, amounts, balances, action payloads,
+profile contacts, password hashes, private keys and seeds. Camel-case field
+names are normalized; repeated and public fields do not inflate bulk counts.
+Multi-record exports are bulk accesses even when only one field is requested.
+Metadata must contain identifiers and a fixed purpose, never field values.
+
+`buildApp` forwards allowlisted entries to the existing structured logger as
+`sensitive_field_access`, and immediate unauthorized bulk alerts as
+`sensitive_access_anomaly`. Configure normal backend log collection/retention
+to retain these events across process restarts. The local query buffer keeps
+at most 10,000 entries and is process-local; it is not durable storage. Values
+and raw hook exceptions are omitted. Returned entries and hook payloads are
+isolated copies, so consumers cannot rewrite retained history.
+
+`evaluateAnomalies()` supplies windowed denied-burst, distinct resource and
+bulk-access reports and invokes subscribed hooks. Call it from a trusted
+reporting/scheduled consumer, or implement aggregation in the log collector;
+windowed reports are not automatically scheduled. Consumers should deduplicate
+repeated reports by rule and log IDs. Detection thresholds are configurable
+positive integers, with a five-minute default window. Hooks can be unsubscribed.
+No database migration or new environment variable is required for logging.
+
+Validation for all three maintainer utilities:
+`pnpm exec vitest run --config vitest.maintainer.config.mjs`.
+Backend access checks:
+`pnpm --dir backend exec vitest run tests/sensitive-export-access.spec.ts tests/sensitive-profile-access.spec.ts tests/permission-preview.spec.ts tests/saved-pool-provenance.spec.ts`.

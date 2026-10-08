@@ -4,6 +4,8 @@ import { hasPermission } from "../../../lib/rbac.js";
 import type { Principal } from "../middleware/rbac.js";
 import type { ActionRecord } from "../types.js";
 import type { SavedPoolRecord } from "./savedPools.js";
+import { SensitiveFieldAccessLogger, sensitiveAccessLogger } from "../../../lib/sensitive-field-access.js";
+import { sensitiveAccessId } from "../utils/sensitiveAccessId.js";
 
 /** Bump the major version on any breaking change to the exported record shapes. */
 export const EXPORT_SCHEMA_VERSION = "1.0.0";
@@ -85,6 +87,7 @@ function projectSavedPool(r: SavedPoolRecord) {
     opens_at: r.opensAt?.toISOString() ?? null,
     locks_at: r.locksAt?.toISOString() ?? null,
     draws_at: r.drawsAt?.toISOString() ?? null,
+    ...(r.provenance ? { provenance: structuredClone(r.provenance) } : {}),
   };
 }
 
@@ -109,12 +112,14 @@ async function collect<T, U>(
 }
 
 export class DataExportService {
-  constructor(private readonly source: ExportSource) {}
+  constructor(private readonly source: ExportSource, private readonly accessLogger: SensitiveFieldAccessLogger = sensitiveAccessLogger) {}
 
   /** Callers may export their own wallet; `admin.export.any` is required for anyone else's. */
   authorize(principal: Principal, wallet: string): void {
     if (principal.walletAddress && principal.walletAddress === wallet) return;
     if (hasPermission([principal.role], "admin.export.any")) return;
+    this.accessLogger.logAccess({ actor: sensitiveAccessId(principal.subject), purpose: "data_export",
+      resourceType: "wallet_export", resourceId: sensitiveAccessId(wallet), fieldNames: ["wallet_address", "amount"], authorized: false });
     throw AppError.forbidden("cannot export data outside your authorization scope");
   }
 
@@ -151,6 +156,11 @@ export class DataExportService {
     }
 
     const recordCounts = Object.fromEntries(sections.map((s) => [s, data[s]?.length ?? 0]));
+    this.accessLogger.logAccess({
+      actor: sensitiveAccessId(req.principal.subject), purpose: "data_export", resourceType: "wallet_export", resourceId: sensitiveAccessId(wallet),
+      fieldNames: ["wallet_address", ...(sections.includes("actions") ? ["amount", "action_payload"] : [])],
+      authorized: true, resourceCount: Math.max(1, Object.values(recordCounts).reduce((a, b) => a + b, 0)),
+    });
     return {
       metadata: {
         schema_version: EXPORT_SCHEMA_VERSION,

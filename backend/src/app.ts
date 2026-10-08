@@ -48,6 +48,8 @@ import { DataExportService } from "./services/dataExport.js";
 import { DataImportService } from "./services/dataImport.js";
 import { exportsRoutes } from "./routes/exports.js";
 import { importsRoutes } from "./routes/imports.js";
+import { permissionPreviewRoutes } from "./routes/permissionPreview.js";
+import { SensitiveFieldAccessLogger } from "../../lib/sensitive-field-access.js";
 import { OperationalHealthService } from "./services/operationalHealthService.js";
 import { operationalHealthRoutes } from "./routes/operationalHealth.js";
 import { privacyAnalyticsRoutes } from "./routes/privacyAnalytics.js";
@@ -150,6 +152,12 @@ declare module "fastify" {
 
 export function buildApp(deps: AppDeps): FastifyInstance {
   const loggerInstance = deps.logger || createLogger("silent");
+  const sensitiveFields = new SensitiveFieldAccessLogger(undefined, (entry) => {
+    loggerInstance.info({ event: "sensitive_field_access", ...entry }, "sensitive field access");
+  });
+  sensitiveFields.onAnomaly((anomaly) => {
+    loggerInstance.warn({ event: "sensitive_access_anomaly", ...anomaly }, "sensitive access anomaly");
+  });
   const app = Fastify({
     // Fastify 5 passes logger instances via `loggerInstance`; `logger` only
     // accepts a configuration object (FSTDEP / fastify@5 breaking change).
@@ -397,7 +405,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   );
   app.register(privacyAnalyticsRoutes(deps.prisma, deps.internalSecret));
   if (jobQueue) app.register(jobsRoutes(jobQueue, deps.internalSecret));
-  app.register(usersRoutes, { prefix: "/api/users", prisma: deps.prisma });
+  app.register(usersRoutes, { prefix: "/api/users", prisma: deps.prisma, accessLogger: sensitiveFields });
   app.register(metricsRoutes(metricsSvc, apiKeyGuard));
   app.register(prometheusRoutes);
   app.register(drawProofRoutes(drawProofSvc));
@@ -432,18 +440,19 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   );
 
   // Wallet-scoped data portability (#772, #773). Authorization is enforced by
+  app.register(permissionPreviewRoutes(requirePermission("admin.audit.write", [walletPrincipal])));
   // the permission guards and by the services' own wallet-scope checks.
   const exportSvc = new DataExportService({
     listActions: ({ walletAddress, cursor, limit }) =>
       svc.listActions({ walletAddress, cursor, limit }),
     listSavedPools: (wallet, cursor, limit) =>
       savedPoolsSvc.listSavedPools(wallet, cursor, limit),
-  });
+  }, sensitiveFields);
   app.register(
     exportsRoutes(
       exportSvc,
       chainPreHandlers(
-        requirePermission("own.data.export", [walletPrincipal]),
+        requirePermission("own.data.export", [walletPrincipal], sensitiveFields),
         enforceOperationLimit(operationLimits, "data.export"),
       ),
     ),

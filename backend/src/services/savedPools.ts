@@ -1,5 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { IdempotencyService } from "./idempotencyService.js";
+import { provenanceManager, type RecordProvenance } from "../../../lib/record-provenance.js";
+import type { Prisma } from "@prisma/client";
 
 /**
  * Persists user-saved vault/pool references for quick access and watchlists.
@@ -45,9 +47,12 @@ export interface SavedPoolInput {
     drawsAt: Date | null;
   };
   idempotencyKey?: string;
+  /** Trusted server-generated import metadata, never accepted from request rows. */
+  provenance?: RecordProvenance;
 }
 
 export interface SavedPoolRecord {
+  provenance?: RecordProvenance | null;
   id: string;
   walletAddress: string;
   poolId: string;
@@ -124,6 +129,12 @@ export class SavedPoolsService {
     });
 
     if (existing) {
+      const prior = existing.provenance as unknown as RecordProvenance | null;
+      const provenance = prior
+        ? provenanceManager.updateRecordPreservingProvenance(
+            { id: existing.id, provenance: prior }, {}, input.walletAddress,
+          ).provenance
+        : input.provenance;
       // Update existing pool with latest details
       const updated = await this.prisma.savedPool.update({
         where: {
@@ -133,6 +144,7 @@ export class SavedPoolsService {
           },
         },
         data: {
+          ...(provenance ? { provenance: provenance as unknown as Prisma.InputJsonValue } : {}),
           poolName: input.pool.poolName,
           status: input.pool.status,
           tvl: input.pool.tvl,
@@ -150,6 +162,7 @@ export class SavedPoolsService {
 
     const created = await this.prisma.savedPool.create({
       data: {
+        ...(input.provenance ? { provenance: input.provenance as unknown as Prisma.InputJsonValue } : {}),
         walletAddress: input.walletAddress,
         poolId: input.pool.poolId,
         poolName: input.pool.poolName,

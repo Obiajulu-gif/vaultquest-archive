@@ -467,6 +467,7 @@ model SavedPool {
   asset            String
   participantCount Int      @map("participant_count")
   expectedYield    String   @map("expected_yield")
+  provenance       Json?
   prize            String?
   opensAt          DateTime? @map("opens_at")
   locksAt          DateTime? @map("locks_at")

@@ -60,6 +60,19 @@ function target(initial: any[] = [], failOn: string[] = []) {
 }
 
 describe("DataImportService", () => {
+  it("uses one server-generated provenance batch and ignores supplied provenance", async () => {
+    const t = target();
+    const report = await new DataImportService(t).run({
+      wallet: WALLET, dryRun: false,
+      records: [row("a", { provenance: { actor: "forged" } }), row("b")],
+    });
+    for (const [input] of t.savePool.mock.calls) {
+      expect(input.provenance).toMatchObject({
+        source: "import_batch", importBatchId: report.import_batch_id,
+        transformVersion: IMPORT_FORMAT_VERSION, actor: WALLET,
+      });
+    }
+  });
   it("dry run classifies rows and performs no writes", async () => {
     const t = target([stored("same"), stored("changed")]);
     const report = await new DataImportService(t).run({

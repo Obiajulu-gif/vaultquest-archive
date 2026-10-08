@@ -85,6 +85,7 @@ function projectSavedPool(r: SavedPoolRecord) {
     opens_at: r.opensAt?.toISOString() ?? null,
     locks_at: r.locksAt?.toISOString() ?? null,
     draws_at: r.drawsAt?.toISOString() ?? null,
+    ...(r.provenance ? { provenance: structuredClone(r.provenance) } : {}),
   };
 }
 

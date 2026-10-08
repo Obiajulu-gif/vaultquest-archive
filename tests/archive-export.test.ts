@@ -68,6 +68,14 @@ const ROUNDS: ArchiveRoundInput[] = [
 
 const OPTIONS = { generatedAt: "2026-06-30T00:00:00.000Z", source: "test" };
 
+it("includes source lineage only in an explicit maintainer archive export", () => {
+  expect(createArchiveExport(ROUNDS, OPTIONS).provenance).toBeUndefined();
+  const report = createArchiveExport(ROUNDS, { ...OPTIONS, includeProvenance: true }).provenance!;
+  expect(report.records).toHaveLength(ROUNDS.length);
+  expect(report.records[0].provenance.sourceRecordIds).toEqual([ROUNDS[0].id]);
+  expect(report.records[0].provenance.transformVersion).toBe("vaultquest.archive.v1");
+});
+
 describe("archive record normalization", () => {
   it("derives winRate and defaults eligibleDeposits/claimStatus", () => {
     const record = normalizeArchiveRecord(ROUNDS[2]);

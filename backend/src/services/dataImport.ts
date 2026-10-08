@@ -1,6 +1,8 @@
 import { AppError } from "../errors.js";
 import { savedPoolRecord } from "../schemas/savedPools.js";
 import type { SavedPoolInput, SavedPoolRecord } from "./savedPools.js";
+import { randomUUID } from "node:crypto";
+import { provenanceManager } from "../../../lib/record-provenance.js";
 
 /** Supported import format version (matches the `saved_pools` export section). */
 export const IMPORT_FORMAT_VERSION = "1.0.0";
@@ -24,6 +26,7 @@ export type ImportRowResult = {
 };
 
 export type ImportReport = {
+  import_batch_id: string;
   format_version: string;
   dry_run: boolean;
   wallet: string;
@@ -111,6 +114,7 @@ export class DataImportService {
 
   async run(input: { wallet: string; records: unknown[]; dryRun: boolean }): Promise<ImportReport> {
     const { wallet, records, dryRun } = input;
+    const importBatchId = randomUUID();
     if (records.length > IMPORT_MAX_ROWS) {
       throw AppError.validation(`too many records (max ${IMPORT_MAX_ROWS})`);
     }
@@ -160,7 +164,11 @@ export class DataImportService {
         continue;
       }
       try {
-        await this.target.savePool(toInput(wallet, parsed));
+        const poolInput = toInput(wallet, parsed);
+        poolInput.provenance = provenanceManager.attachImportProvenance(
+          { id: parsed.pool_id }, importBatchId, IMPORT_FORMAT_VERSION, wallet,
+        ).provenance;
+        await this.target.savePool(poolInput);
         rows[index] = { index, pool_id: parsed.pool_id, action };
         if (prior) restore.push(projectRecord(prior));
         else created.push(parsed.pool_id);
@@ -179,6 +187,7 @@ export class DataImportService {
     for (const r of rows) summary[r.action] += 1;
 
     return {
+      import_batch_id: importBatchId,
       format_version: IMPORT_FORMAT_VERSION,
       dry_run: dryRun,
       wallet,

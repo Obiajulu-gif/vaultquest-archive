@@ -124,6 +124,20 @@ The `SearchIndexRepairService` acts as a background auditor that reconciles the 
 4. **`orphaned`**: Index document exists, but source record was deleted or purged.
    - *Action*: Purges document from the search index.
 
+Every finding includes a recommendation and source/index version evidence. The detector also compares the projected description, network, searchable text, metadata, role/permission requirements, and source timestamp; matching a version number alone does not establish freshness. Visibility mismatches are identified separately so operators can prioritize a stale public document that should now be restricted.
+
+### Operator preview
+
+Maintainers can request a bounded, read-only preview before applying repair:
+
+```http
+GET /api/search/repair/preview?type=vault&limit=100
+```
+
+The endpoint uses the same permission guard as the repair action. `type` is optional; `limit` is 1–500. The response includes each finding's reason, versions, visibility evidence, and recommendation. It reports `complete: false` because it is intentionally bounded; a zero count is not proof that the entire index is clean. The preview does not mutate the index.
+
+`POST /api/search/repair` retains its existing behavior and permission contract. It rebuilds missing/stale documents from primary records, applies source visibility to visibility mismatches, and removes orphaned documents. The scheduled sweep also runs hourly.
+
 ### Idempotency
 Running `detectAnomalies()` immediately after `runRepair()` yields `0` anomalies, verifying deterministic and idempotent behavior.
 
@@ -133,7 +147,37 @@ Running `detectAnomalies()` immediately after `runRepair()` yields `0` anomalies
 
 The repair job runs periodically via `startSearchIndexRepairCron` in `backend/src/cron.ts`:
 - **Frequency**: Hourly by default (`0 * * * *`).
-- **Distributed Lock**: Guarded by `LeaseService` (`withJobLease`) with job name `"search-index-repair"`. This prevents concurrent execution and split-brain states across multiple server replicas.
+- The server hydrates the process-local index from primary records before accepting requests, then performs the hourly sweep.
+- The search index is process-local memory, so each replica must run its own refresh; a distributed lease would leave replicas that did not acquire it stale. A sweep failure is logged and retried on the next schedule. Search authorization is still evaluated against the document visibility at read time.
+
+### Cache inspection and repair
+
+The Redis/in-memory cache exposes service-authenticated internal operations:
+
+```http
+GET /internal/cache/stale?kind=asset_metadata&limit=100
+POST /internal/cache/repair
+X-Internal-Secret: <internal service secret>
+Content-Type: application/json
+
+{"dry_run":true,"kind":"asset_metadata","limit":100}
+```
+
+Repair is dry-run by default. Findings include the cache key, kind, reason, source/cache version when known, and a recommendation. A repair invalidates the cache entry so the next ordinary read repopulates it from its source; it does not edit the action ledger or chain state. `kind` and exact `keys` can scope an apply. Limits are clamped to 500 findings. Responses include `scanned` (entries inspected) separately from the findings count. `complete: false` means the bounded Redis scan has not completed a full cursor cycle or the findings limit was exceeded; use subsequent scans to cover remaining pages. Malformed payloads requiring review are reported as failures and are not automatically invalidated. Redis scan failures fail the inspection rather than returning a success-shaped partial report.
+
+Indexer checkpoint comparisons use PostgreSQL as the persisted source and compare ledger, event cursor, and indexer version. A Redis checkpoint marked dirty is intentionally omitted until write-behind synchronization completes. Checkpoint writes and the dirty marker are updated atomically; repair atomically checks the marker before invalidating, deferring if a write-behind update raced with the scan. The next read after invalidation falls back to PostgreSQL.
+
+Production starts a five-minute cache repair sweep on every backend process. Each tick advances one bounded Redis index page and repairs local in-memory stale entries; invalidation is idempotent across replicas. Cache repair runs are recorded in `cache_repair_runs`, including dry-run plans and incomplete runs (a missing `completed_at` means the process stopped before recording completion). Apply the additive migration with `pnpm --filter backend exec prisma migrate deploy` before deploying code that uses the audit table.
+
+### Failure handling, rollback, and recovery
+
+- A stale-cache eviction is reversible by normal cache repopulation. If a source loader is unavailable, repair may cause a cache miss/read-through failure; restore source availability and retry. No database or on-chain values are changed by cache repair.
+- The projection migration only adds `derived_cache` and `cache_repair_runs`. For application rollback, redeploy the previous backend; leave the additive tables in place. Do not drop either table while run evidence is needed. If the migration fails, inspect Prisma migration status and database logs, correct the underlying cause, then rerun `prisma migrate deploy`; do not manually mark a failed migration applied.
+- To inspect incomplete or recent cache repair attempts, query `cache_repair_runs` by `job_name` and `started_at`; compare `plan_json`, `applied_json`, `failed_count`, and `completed_at`. A failed audit write blocks a manual repair request; if the process stops after invalidation but before the final update, the initial plan row remains for investigation.
+- A search-index repair is rebuilt from primary records. If its output is incorrect, correct the source record and rerun repair; do not restore an old index snapshot as it can restore stale visibility or private data.
+- If an operator suspects a false positive caused by indexer lag, inspect indexer health and chain-event evidence first. Do not mutate confirmed vault deposits, prize outcomes, wallet flows, or quest rewards based only on a projection finding.
+- A failed or interrupted repair is safe to retry: cache invalidation is idempotent and search documents are regenerated from the source. Review per-entry failures and rerun a scoped dry-run before applying again.
+- Cache and search previews expose operational identifiers only behind their service/maintainer guards. Do not copy findings or wallet-scoped identifiers into public issue reports or logs.
 
 ---
 

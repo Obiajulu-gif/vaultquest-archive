@@ -61,6 +61,7 @@ import { impersonationRoutes } from "./routes/impersonation.js";
 import { createImpersonationHook } from "./middleware/impersonation.js";
 import { PartialFailureService } from "./services/partialFailureService.js";
 import { partialFailureRoutes } from "./routes/partialFailures.js";
+import { cacheRepairRoutes } from "./routes/cacheRepair.js";
 
 import { configureTelemetry } from "./services/telemetry.js";
 import { type JobStore } from "./worker/jobStore.js";
@@ -137,6 +138,8 @@ export type AppDeps = {
   jobWorkerPollIntervalMs?: number;
   /** Comma-separated Soroban RPC endpoints used by dependency diagnostics. */
   sorobanRpcUrls?: string;
+  searchIndexService?: SearchIndexService;
+  searchIndexRepairService?: SearchIndexRepairService;
 };
 
 declare module "fastify" {
@@ -400,6 +403,9 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     ),
   );
   app.register(reconciliationRoutes(deps.prisma, deps.internalSecret));
+  if (deps.cacheService) {
+    app.register(cacheRepairRoutes(deps.cacheService, deps.internalSecret));
+  }
   app.register(
     operationalHealthRoutes(operationalHealthSvc, deps.internalSecret),
   );
@@ -567,4 +573,3 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 
   return app;
 }
-

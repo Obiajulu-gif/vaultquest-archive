@@ -152,7 +152,7 @@ const normalize = (sql: string) => sql.replace(/\s+/g, " ").trim();
 
 const identifier = (after: string): string => {
   const match = after.match(/"([^"]+)"|([A-Za-z_][\w$]*)/);
-  return match ? (match[1] ?? match[2]) : "";
+  return match?.[1] ?? match?.[2] ?? "";
 };
 
 /**
@@ -180,10 +180,9 @@ export function parseMigrationSql(migrationId: string, sql: string): MigrationPl
   for (const raw of withoutComments.split(";")) {
     const statement = normalize(raw);
     if (!statement) continue;
-    const upper = statement.toUpperCase();
     let match: RegExpExecArray | null;
 
-    if ((match = /^CREATE TABLE (IF NOT EXISTS )?"?([^"\s(]+)"?/.exec(upper))) {
+    if ((match = /^CREATE TABLE (IF NOT EXISTS )?"?([^"\s(]+)"?/i.exec(statement))) {
       const name = identifier(statement.replace(/^CREATE TABLE (IF NOT EXISTS )?/i, ""));
       actions.push({
         kind: "create-table",
@@ -197,7 +196,7 @@ export function parseMigrationSql(migrationId: string, sql: string): MigrationPl
       continue;
     }
 
-    if ((match = /^DROP TABLE (IF EXISTS )?"?([^"\s;]+)"?/.exec(upper))) {
+    if ((match = /^DROP TABLE (IF EXISTS )?"?([^"\s;]+)"?/i.exec(statement))) {
       const name = identifier(statement.replace(/^DROP TABLE (IF EXISTS )?/i, ""));
       actions.push({
         kind: "drop-table",
@@ -211,13 +210,13 @@ export function parseMigrationSql(migrationId: string, sql: string): MigrationPl
       continue;
     }
 
-    if ((match = /^CREATE (UNIQUE )?INDEX (IF NOT EXISTS )?"?([^"\s(]+)"?/.exec(upper))) {
+    if ((match = /^CREATE (UNIQUE )?INDEX (IF NOT EXISTS )?"?([^"\s(]+)"?/i.exec(statement))) {
       const name = identifier(statement.replace(/^CREATE (UNIQUE )?INDEX (IF NOT EXISTS )?/i, ""));
       const onTable = / ON "?([A-Za-z_][\w$]*)"?/i.exec(statement);
       actions.push({
         kind: "create-index",
         name,
-        table: onTable ? identifier(onTable[1]) : undefined,
+        table: onTable?.[1] ? identifier(onTable[1]) : undefined,
         destructive: false,
         touchesData: false,
         rewritesAllRows: false,
@@ -226,7 +225,7 @@ export function parseMigrationSql(migrationId: string, sql: string): MigrationPl
       continue;
     }
 
-    if ((match = /^DROP INDEX (IF EXISTS )?"?([^"\s;]+)"?/.exec(upper))) {
+    if ((match = /^DROP INDEX (IF EXISTS )?"?([^"\s;]+)"?/i.exec(statement))) {
       const name = identifier(statement.replace(/^DROP INDEX (IF EXISTS )?/i, ""));
       actions.push({
         kind: "drop-index",
@@ -239,9 +238,9 @@ export function parseMigrationSql(migrationId: string, sql: string): MigrationPl
       continue;
     }
 
-    if ((match = /^ALTER TABLE "?([^"\s]+)"? ADD COLUMN (IF NOT EXISTS )?"?([^"\s]+)"?/.exec(upper))) {
-      const table = identifier(match[1]);
-      const column = identifier(match[3]);
+    if ((match = /^ALTER TABLE "?([^"\s]+)"? ADD COLUMN (IF NOT EXISTS )?"?([^"\s]+)"?/i.exec(statement))) {
+      const table = identifier(match[1] ?? "");
+      const column = identifier(match[3] ?? "");
       actions.push({
         kind: "add-column",
         name: `${table}.${column}`,
@@ -255,9 +254,9 @@ export function parseMigrationSql(migrationId: string, sql: string): MigrationPl
       continue;
     }
 
-    if ((match = /^ALTER TABLE "?([^"\s]+)"? DROP COLUMN (IF EXISTS )?"?([^"\s]+)"?/.exec(upper))) {
-      const table = identifier(match[1]);
-      const column = identifier(match[3]);
+    if ((match = /^ALTER TABLE "?([^"\s]+)"? DROP COLUMN (IF EXISTS )?"?([^"\s]+)"?/i.exec(statement))) {
+      const table = identifier(match[1] ?? "");
+      const column = identifier(match[3] ?? "");
       actions.push({
         kind: "drop-column",
         name: `${table}.${column}`,
@@ -271,9 +270,9 @@ export function parseMigrationSql(migrationId: string, sql: string): MigrationPl
       continue;
     }
 
-    if ((match = /^ALTER TABLE "?([^"\s]+)"? ALTER COLUMN "?([^"\s]+)"? (.+)/.exec(upper))) {
-      const table = identifier(match[1]);
-      const column = identifier(match[2]);
+    if ((match = /^ALTER TABLE "?([^"\s]+)"? ALTER COLUMN "?([^"\s]+)"? (.+)/i.exec(statement))) {
+      const table = identifier(match[1] ?? "");
+      const column = identifier(match[2] ?? "");
       const alteration = match[3] ?? "";
       const isNotNull = /SET NOT NULL/.test(alteration);
       actions.push({
@@ -290,8 +289,8 @@ export function parseMigrationSql(migrationId: string, sql: string): MigrationPl
       continue;
     }
 
-    if ((match = /^UPDATE "?([^"\s]+)"?/.exec(upper))) {
-      const table = identifier(match[1]);
+    if ((match = /^UPDATE "?([^"\s]+)"?/i.exec(statement))) {
+      const table = identifier(match[1] ?? "");
       const hasWhere = /\bWHERE\b/i.test(statement);
       actions.push({
         kind: "data-update",
@@ -474,7 +473,7 @@ export function rollbackNotes(plan: MigrationPlan): string[] {
     if (action.kind === "data-update") {
       notes.push(
         `${action.name}: ${action.rewritesAllRows ? "every row is rewritten" : "matching rows are rewritten"} ` +
-          `in place. Reverse by restoring the affected columns from a pre-migration dump.`,
+          `in place. Reverse by restoring the affected columns from a pre-migration pg_dump.`,
       );
     }
     if (action.kind === "alter-column" && action.touchesData) {
@@ -656,12 +655,19 @@ function findNearDuplicate(
     const matchedFields: string[] = [];
     let allClose = true;
     for (let i = 0; i < key.fields.length; i++) {
-      if (candidateParts[i] === recordParts[i]) {
-        matchedFields.push(key.fields[i]);
+      const field = key.fields[i];
+      const candidatePart = candidateParts[i];
+      const existingPart = recordParts[i];
+      if (field === undefined || candidatePart === undefined || existingPart === undefined) {
+        allClose = false;
+        break;
+      }
+      if (candidatePart === existingPart) {
+        matchedFields.push(field);
         continue;
       }
-      if (isNearMatch(candidateParts[i], recordParts[i])) {
-        matchedFields.push(key.fields[i]);
+      if (isNearMatch(candidatePart, existingPart)) {
+        matchedFields.push(field);
         continue;
       }
       allClose = false;

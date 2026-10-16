@@ -21,6 +21,7 @@
     "dr:drill": "tsx src/scripts/drDrill.ts",
     "diagnostics": "tsx src/scripts/diagnostics.ts",
     "diagnostics:json": "tsx src/scripts/diagnostics.ts --json",
+    "integrity-monitor": "tsx src/scripts/integrity-monitor.ts",
     "db:validate-restore": "tsx src/scripts/validateRestore.ts",
     "lint": "eslint \"src/**/*.ts\" \"tests/**/*.ts\"",
     "test": "vitest run",

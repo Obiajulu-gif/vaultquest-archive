@@ -96,6 +96,10 @@ Every route the server registers. `HEAD` variants are implied for each `GET`.
 | `GET` | `/api/notifications` | List notifications | Public |
 | `POST` | `/api/notifications/:id/dismiss` | Dismiss a notification | Public + CSRF |
 | `PUT` | `/api/notifications/preferences` | Update preferences | Public + CSRF |
+| `GET` | `/api/search` | Search permission-filtered records | Public |
+| `GET` | `/api/search/repair/preview` | Preview bounded search-index anomalies | Maintainer |
+| `POST` | `/api/search/repair` | Repair search-index anomalies | Maintainer |
+| `GET` | `/api/search/stats` | Search-index counts | Public |
 | `POST` | `/admin/audit` | Record an audit entry | Admin session + CSRF |
 | `GET` | `/admin/audit` | List audit entries | Admin session |
 | `GET` | `/admin/audit/export` | Export audit entries | Admin session |
@@ -105,6 +109,8 @@ Every route the server registers. `HEAD` variants are implied for each `GET`.
 | `POST` | `/internal/reconciliation/proposals` | Create a repair proposal | Service secret |
 | `POST` | `/internal/reconciliation/proposals/:id/approve` | Approve a proposal | Service secret |
 | `POST` | `/internal/reconciliation/proposals/:id/execute` | Execute a proposal | Service secret |
+| `GET` | `/internal/cache/stale` | Inspect bounded cache anomalies | Service secret |
+| `POST` | `/internal/cache/repair` | Preview or apply scoped cache repair | Service secret |
 | `GET` | `/internal/jobs` | List background jobs | Service secret |
 | `GET` | `/internal/jobs/:id` | Inspect a background job | Service secret |
 | `POST` | `/internal/jobs/:id/retry` | Requeue a dead job | Service secret |

@@ -10,7 +10,9 @@ import {
   startIndexerCron,
   startBackupCron,
   startNotificationReminderCron,
-  startReplayEquivalenceCron
+  startReplayEquivalenceCron,
+  startSearchIndexRepairCron,
+  startCacheRepairCron
 } from "./cron.js";
 import { CacheService } from "./services/cacheService.js";
 import { LedgerService } from "./services/ledger.js";
@@ -24,6 +26,8 @@ import type { ScheduledTask } from "node-cron";
 import { SCHEMA_VERSIONS } from "./constants.js";
 import { PrismaClient } from "@prisma/client";
 import { isSameDatabase } from "./services/backupService.js";
+import { SearchIndexService } from "./services/search/searchIndexService.js";
+import { SearchIndexRepairService } from "./services/search/searchIndexRepairService.js";
 
 let loadManifest: typeof import("../../../lib/deployment-manifest.js").loadManifest | undefined;
 let validateManifestAgainstEnv: typeof import("../../../lib/deployment-manifest.js").validateManifestAgainstEnv | undefined;
@@ -78,6 +82,8 @@ const prisma = getPrisma(env.DATABASE_URL);
 
 // Initialize Cache Service (pointing to REDIS_URL if set, otherwise defaults to local Redis)
 const cacheService = new CacheService(prisma, logger, env.SANDBOX_MODE ? undefined : process.env.REDIS_URL);
+const searchIndexService = new SearchIndexService();
+const searchIndexRepairService = new SearchIndexRepairService(prisma, searchIndexService, logger);
 
 const app = buildApp({
   prisma,
@@ -85,6 +91,8 @@ const app = buildApp({
   apiKey: env.API_KEY,
   logger,
   cacheService,
+  searchIndexService,
+  searchIndexRepairService,
   sorobanRpcUrls: env.SOROBAN_RPC_URL,
   categoriesCacheTtlSeconds: env.CATEGORIES_CACHE_TTL_SECONDS,
   reminderLeadHours: env.REMINDER_LEAD_HOURS,
@@ -111,6 +119,17 @@ const app = buildApp({
   stellarWebhookPublicKey: env.STELLAR_WEBHOOK_PUBLIC_KEY,
   webhookToleranceSeconds: env.WEBHOOK_TOLERANCE_SECONDS
 });
+
+const searchRepairCronTask = env.SANDBOX_MODE
+  ? undefined
+  : startSearchIndexRepairCron({
+      repairService: searchIndexRepairService,
+      logger,
+    });
+
+const cacheRepairCronTask = env.SANDBOX_MODE
+  ? undefined
+  : startCacheRepairCron({ cacheService, logger });
 
 // Periodic write-behind sync task: sync checkpoint from cache to PostgreSQL database every 15 seconds
 const cacheSyncInterval = env.SANDBOX_MODE ? undefined : setInterval(async () => {
@@ -223,6 +242,8 @@ async function shutdown(signal: string) {
   indexerCronTask?.stop();
   backupCronTask?.stop();
   replayCronTask?.stop();
+  searchRepairCronTask?.stop();
+  cacheRepairCronTask?.stop();
   await app.close();
   await cacheService.disconnect();
   await prisma.$disconnect();
@@ -232,11 +253,20 @@ async function shutdown(signal: string) {
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 
-pingDatabase(prisma).then((isConnected) => {
+pingDatabase(prisma).then(async (isConnected) => {
   if (!isConnected) {
     logger.error("failed to connect to database on startup. shutting down.");
     process.exit(1);
   }
+  const searchIndexReport = await searchIndexRepairService.runRepair();
+  logger.info(
+    {
+      scannedSources: searchIndexReport.scannedSources,
+      repairedCount: searchIndexReport.repairedCount,
+      anomalies: searchIndexReport.anomaliesDetected,
+    },
+    "search index initialized from primary records",
+  );
   return app.listen({ port: env.PORT, host: "0.0.0.0" });
 }).then((addr) => {
   if (addr) logger.info({ addr }, "listening");

@@ -17,6 +17,11 @@ const searchQuerySchema = z.object({
   include_unlisted: z.coerce.boolean().optional(),
 });
 
+const repairPreviewQuerySchema = z.object({
+  type: z.enum(["vault", "saved_pool", "quest", "settlement"]).optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+});
+
 export const searchRoutes = (
   searchService: SearchIndexService,
   repairService: SearchIndexRepairService,
@@ -64,6 +69,30 @@ export const searchRoutes = (
     });
 
     const repairPreHandlers = repairGuard ? [repairGuard] : [];
+    app.get(
+      "/api/search/repair/preview",
+      { preHandler: repairPreHandlers },
+      async (req) => {
+        const query = repairPreviewQuerySchema.parse(req.query);
+        const anomalies = await repairService.detectAnomalies({
+          recordType: query.type,
+          limit: query.limit,
+        });
+        return ok({
+          dryRun: true,
+          complete: false,
+          count: anomalies.length,
+          anomalies,
+          recommendations: {
+            rebuild: anomalies.filter((item) => item.recommendation === "rebuild_from_source").length,
+            restrictVisibility: anomalies.filter((item) => item.recommendation === "restrict_visibility").length,
+            refreshVisibility: anomalies.filter((item) => item.recommendation === "refresh_visibility").length,
+            purgeOrReview: anomalies.filter((item) => item.recommendation === "purge_or_review").length,
+          },
+        });
+      },
+    );
+
     app.post(
       "/api/search/repair",
       { preHandler: repairPreHandlers },

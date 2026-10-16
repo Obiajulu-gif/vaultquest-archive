@@ -1,5 +1,7 @@
 import { SearchIndexRepairService } from "./services/search/searchIndexRepairService.js";
+import type { CacheService } from "./services/cacheService.js";
 import cron from "node-cron";
+import type { ScheduledTask } from "node-cron";
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import type { Logger } from "pino";
@@ -648,45 +650,69 @@ export function startDataRetentionCron(opts: {
  * Compares primary records in the database with the discovery search index and repairs
  * missing, stale, orphaned, and visibility-mismatched entries.
  *
- * Runs hourly by default, guarded by a job lease to prevent concurrent ticks across replicas.
+ * Runs hourly by default on each replica because the search index is process-local.
  */
 export function startSearchIndexRepairCron(opts: {
-  prisma: PrismaClient;
   repairService: SearchIndexRepairService;
   logger: Logger;
   schedule?: string;
-  leaseTtlMs?: number;
 }): cron.ScheduledTask {
   const schedule = opts.schedule ?? "0 * * * *"; // default: hourly
-  const leases = new LeaseService(opts.prisma);
-  const leaseTtlMs = opts.leaseTtlMs ?? 15 * 60 * 1000; // 15 minutes
 
   const task = cron.schedule(schedule, async () => {
     try {
-      await withJobLease(
-        leases,
-        "search-index-repair",
-        leaseTtlMs,
-        opts.logger,
-        async () => {
-          opts.logger.info("starting scheduled search index repair audit");
-          const report = await opts.repairService.runRepair();
-          opts.logger.info(
-            {
-              event: "search_index_repair.sweep_complete",
-              scannedSources: report.scannedSources,
-              scannedIndexEntries: report.scannedIndexEntries,
-              repairedCount: report.repairedCount,
-              anomalies: report.anomaliesDetected,
-              durationMs: report.durationMs,
-            },
-            `search index repair audit complete: repaired ${report.repairedCount} anomalies in ${report.durationMs}ms`,
-          );
+      // SearchIndexService is process-local memory. Every replica must refresh
+      // its own index; a distributed lease would leave non-holder replicas stale.
+      opts.logger.info("starting scheduled search index repair audit");
+      const report = await opts.repairService.runRepair();
+      opts.logger.info(
+        {
+          event: "search_index_repair.sweep_complete",
+          scannedSources: report.scannedSources,
+          scannedIndexEntries: report.scannedIndexEntries,
+          repairedCount: report.repairedCount,
+          anomalies: report.anomaliesDetected,
+          durationMs: report.durationMs,
         },
+        `search index repair audit complete: repaired ${report.repairedCount} anomalies in ${report.durationMs}ms`,
       );
     } catch (err) {
       opts.logger.error({ err }, "search index repair audit tick failed");
     }
   });
   return task;
+}
+
+/**
+ * Repairs bounded cache pages on every process: local LRU entries are
+ * process-specific, while shared Redis invalidation is idempotent.
+ */
+export function startCacheRepairCron(opts: {
+  cacheService: CacheService;
+  logger: Logger;
+  schedule?: string;
+  limit?: number;
+}): ScheduledTask {
+  const schedule = opts.schedule ?? "*/5 * * * *";
+  const limit = opts.limit ?? 100;
+  return cron.schedule(schedule, async () => {
+    try {
+      const result = await opts.cacheService.repairStaleCache({
+        dryRun: false,
+        limit,
+        auditNoop: false,
+      });
+      opts.logger.info(
+        {
+          event: "cache_repair.sweep_complete",
+          scanned: result.scanned,
+          repaired: result.repaired.length,
+          failed: result.failed.length,
+        },
+        "cache repair sweep complete",
+      );
+    } catch (err) {
+      opts.logger.error({ err }, "cache repair sweep failed");
+    }
+  });
 }

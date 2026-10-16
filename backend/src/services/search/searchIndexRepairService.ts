@@ -5,7 +5,8 @@ import type {
   RepairReport,
   SearchIndexDocument,
 } from "./types.js";
-import type { SearchIndexService } from "./searchIndexService.js";
+import { canonicalJson } from "../../utils/canonicalJson.js";
+import { normalizeSearchText, type SearchIndexService } from "./searchIndexService.js";
 import {
   type QuestHookInput,
   type SavedPoolHookInput,
@@ -18,17 +19,20 @@ import {
 } from "./searchIndexHooks.js";
 
 export interface SearchSourceLoader {
-  loadVaults(): Promise<VaultInput[]>;
-  loadSavedPools(): Promise<SavedPoolHookInput[]>;
-  loadQuests(): Promise<QuestHookInput[]>;
-  loadSettlements(): Promise<SettlementHookInput[]>;
+  loadVaults(limit?: number): Promise<VaultInput[]>;
+  loadSavedPools(limit?: number): Promise<SavedPoolHookInput[]>;
+  loadQuests(limit?: number): Promise<QuestHookInput[]>;
+  loadSettlements(limit?: number): Promise<SettlementHookInput[]>;
 }
 
 export class PrismaSearchSourceLoader implements SearchSourceLoader {
   constructor(private readonly prisma: PrismaClient) {}
 
-  public async loadVaults(): Promise<VaultInput[]> {
-    const rows = await this.prisma.poolRegistry.findMany();
+  public async loadVaults(limit?: number): Promise<VaultInput[]> {
+    const rows = await this.prisma.poolRegistry.findMany({
+      orderBy: { id: "asc" },
+      ...(limit === undefined ? {} : { take: limit }),
+    });
     return rows.map((r) => ({
       id: r.id,
       name: `Pool ${r.poolAddress.slice(0, 8)}`,
@@ -40,8 +44,11 @@ export class PrismaSearchSourceLoader implements SearchSourceLoader {
     }));
   }
 
-  public async loadSavedPools(): Promise<SavedPoolHookInput[]> {
-    const rows = await this.prisma.savedPool.findMany();
+  public async loadSavedPools(limit?: number): Promise<SavedPoolHookInput[]> {
+    const rows = await this.prisma.savedPool.findMany({
+      orderBy: { id: "asc" },
+      ...(limit === undefined ? {} : { take: limit }),
+    });
     return rows.map((r) => ({
       id: r.id,
       walletAddress: r.walletAddress,
@@ -54,8 +61,11 @@ export class PrismaSearchSourceLoader implements SearchSourceLoader {
     }));
   }
 
-  public async loadQuests(): Promise<QuestHookInput[]> {
-    const rows = await this.prisma.userQuest.findMany();
+  public async loadQuests(limit?: number): Promise<QuestHookInput[]> {
+    const rows = await this.prisma.userQuest.findMany({
+      orderBy: { id: "asc" },
+      ...(limit === undefined ? {} : { take: limit }),
+    });
     return rows.map((r) => ({
       id: r.id,
       walletAddress: r.walletAddress,
@@ -67,8 +77,11 @@ export class PrismaSearchSourceLoader implements SearchSourceLoader {
     }));
   }
 
-  public async loadSettlements(): Promise<SettlementHookInput[]> {
-    const rows = await this.prisma.vaultSettlement.findMany();
+  public async loadSettlements(limit?: number): Promise<SettlementHookInput[]> {
+    const rows = await this.prisma.vaultSettlement.findMany({
+      orderBy: { id: "asc" },
+      ...(limit === undefined ? {} : { take: limit }),
+    });
     return rows.map((r) => ({
       id: r.id,
       vaultId: r.vaultId,
@@ -97,36 +110,32 @@ export class SearchIndexRepairService {
     }
   }
 
-  public async detectAnomalies(): Promise<RepairAnomaly[]> {
+  public async detectAnomalies(options: {
+    limit?: number;
+    recordType?: RepairAnomaly["recordType"];
+  } = {}): Promise<RepairAnomaly[]> {
+    const sourceDocs = await this.loadSourceDocuments(options.limit, options.recordType);
+    const allIndexDocs = await this.indexService.listAllDocuments();
+    const currentIndexDocs = options.recordType
+      ? allIndexDocs.filter((doc) => doc.recordType === options.recordType)
+      : allIndexDocs;
+    const anomalies = this.findAnomalies(
+      sourceDocs,
+      currentIndexDocs,
+      options.limit === undefined,
+    );
+    const scoped = options.recordType
+      ? anomalies.filter((anomaly) => anomaly.recordType === options.recordType)
+      : anomalies;
+    return options.limit === undefined ? scoped : scoped.slice(0, options.limit);
+  }
+
+  private findAnomalies(
+    sourceDocs: Map<string, SearchIndexDocument>,
+    currentIndexDocs: SearchIndexDocument[],
+    includeOrphans = true,
+  ): RepairAnomaly[] {
     const anomalies: RepairAnomaly[] = [];
-
-    const [vaults, savedPools, quests, settlements] = await Promise.all([
-      this.loader.loadVaults(),
-      this.loader.loadSavedPools(),
-      this.loader.loadQuests(),
-      this.loader.loadSettlements(),
-    ]);
-
-    const sourceDocs: Map<string, SearchIndexDocument> = new Map();
-
-    for (const v of vaults) {
-      const doc = vaultToSearchDocument(v);
-      sourceDocs.set(doc.id, doc);
-    }
-    for (const sp of savedPools) {
-      const doc = savedPoolToSearchDocument(sp);
-      sourceDocs.set(doc.id, doc);
-    }
-    for (const q of quests) {
-      const doc = questToSearchDocument(q);
-      sourceDocs.set(doc.id, doc);
-    }
-    for (const s of settlements) {
-      const doc = settlementToSearchDocument(s);
-      sourceDocs.set(doc.id, doc);
-    }
-
-    const currentIndexDocs = await this.indexService.listAllDocuments();
     const indexDocsMap = new Map(currentIndexDocs.map((d) => [d.id, d]));
 
     // 1. Check for missing, stale, or visibility-mismatched records
@@ -139,6 +148,7 @@ export class SearchIndexRepairService {
           recordId: expectedDoc.recordId,
           anomalyType: "missing",
           reason: `Record ${id} exists in primary source but is absent from search index`,
+          recommendation: "rebuild_from_source",
           sourceVersion: expectedDoc.version,
           expectedVisibility: expectedDoc.visibility,
         });
@@ -151,8 +161,13 @@ export class SearchIndexRepairService {
           recordId: expectedDoc.recordId,
           anomalyType: "visibility_mismatch",
           reason: `Visibility mismatch for ${id}: index has '${indexedDoc.visibility}', source expected '${expectedDoc.visibility}'`,
+          recommendation:
+            indexedDoc.visibility === "public" && expectedDoc.visibility !== "public"
+              ? "restrict_visibility"
+              : "refresh_visibility",
           sourceVersion: expectedDoc.version,
           indexVersion: indexedDoc.version,
+          indexSourceUpdatedAt: indexedDoc.sourceUpdatedAt,
           expectedVisibility: expectedDoc.visibility,
           actualVisibility: indexedDoc.visibility,
         });
@@ -165,75 +180,108 @@ export class SearchIndexRepairService {
       const isOwnerStale =
         (indexedDoc.ownerWallet || "").toLowerCase() !==
         (expectedDoc.ownerWallet || "").toLowerCase();
-      const isVersionStale = (indexedDoc.version || 0) < (expectedDoc.version || 0);
+      const isVersionStale = indexedDoc.version < expectedDoc.version;
+      const isSourceTimestampStale =
+        indexedDoc.sourceUpdatedAt.getTime() < expectedDoc.sourceUpdatedAt.getTime();
+      const expectedSearchableText = normalizeSearchText(
+        [
+          expectedDoc.title,
+          expectedDoc.description || "",
+          expectedDoc.asset || "",
+          expectedDoc.network || "",
+          expectedDoc.status || "",
+          expectedDoc.ownerWallet || "",
+        ].join(" "),
+      );
+      const isProjectionStale =
+        indexedDoc.description !== expectedDoc.description ||
+        indexedDoc.network !== expectedDoc.network ||
+        indexedDoc.searchableText !== expectedSearchableText ||
+        canonicalJson(indexedDoc.metadata ?? null) !== canonicalJson(expectedDoc.metadata ?? null) ||
+        canonicalJson(indexedDoc.requiredRoles ?? null) !== canonicalJson(expectedDoc.requiredRoles ?? null) ||
+        canonicalJson(indexedDoc.requiredPermissions ?? null) !== canonicalJson(expectedDoc.requiredPermissions ?? null);
 
       if (
         isTitleStale ||
         isStatusStale ||
         isAssetStale ||
         isOwnerStale ||
-        isVersionStale
+        isVersionStale ||
+        isSourceTimestampStale ||
+        isProjectionStale
       ) {
         anomalies.push({
           recordType: expectedDoc.recordType,
           recordId: expectedDoc.recordId,
           anomalyType: "stale",
           reason: `Stale content in index for ${id}`,
+          recommendation: "rebuild_from_source",
           sourceVersion: expectedDoc.version,
           indexVersion: indexedDoc.version,
+          indexSourceUpdatedAt: indexedDoc.sourceUpdatedAt,
         });
       }
     }
 
     // 2. Check for orphaned index entries (exist in index, but no longer in source)
-    for (const [id, indexedDoc] of indexDocsMap.entries()) {
-      if (indexedDoc.deletedAt) continue;
-      if (!sourceDocs.has(id)) {
-        anomalies.push({
-          recordType: indexedDoc.recordType,
-          recordId: indexedDoc.recordId,
-          anomalyType: "orphaned",
-          reason: `Entry ${id} exists in search index but was deleted or revoked from source of truth`,
-          indexVersion: indexedDoc.version,
-          actualVisibility: indexedDoc.visibility,
-        });
+    if (includeOrphans) {
+      for (const [id, indexedDoc] of indexDocsMap.entries()) {
+        if (indexedDoc.deletedAt) continue;
+        if (!sourceDocs.has(id)) {
+          anomalies.push({
+            recordType: indexedDoc.recordType,
+            recordId: indexedDoc.recordId,
+            anomalyType: "orphaned",
+            reason: `Entry ${id} exists in search index but was deleted or revoked from source of truth`,
+            recommendation: "purge_or_review",
+            indexVersion: indexedDoc.version,
+            indexSourceUpdatedAt: indexedDoc.sourceUpdatedAt,
+            actualVisibility: indexedDoc.visibility,
+          });
+        }
       }
     }
 
     return anomalies;
   }
 
+  private async loadSourceDocuments(
+    limit?: number,
+    recordType?: RepairAnomaly["recordType"],
+  ): Promise<Map<string, SearchIndexDocument>> {
+    const [vaults, savedPools, quests, settlements] = await Promise.all([
+      recordType && recordType !== "vault" ? [] : this.loader.loadVaults(limit),
+      recordType && recordType !== "saved_pool" ? [] : this.loader.loadSavedPools(limit),
+      recordType && recordType !== "quest" ? [] : this.loader.loadQuests(limit),
+      recordType && recordType !== "settlement" ? [] : this.loader.loadSettlements(limit),
+    ]);
+    const sourceDocs = new Map<string, SearchIndexDocument>();
+    for (const source of vaults) {
+      const doc = vaultToSearchDocument(source);
+      sourceDocs.set(doc.id, doc);
+    }
+    for (const source of savedPools) {
+      const doc = savedPoolToSearchDocument(source);
+      sourceDocs.set(doc.id, doc);
+    }
+    for (const source of quests) {
+      const doc = questToSearchDocument(source);
+      sourceDocs.set(doc.id, doc);
+    }
+    for (const source of settlements) {
+      const doc = settlementToSearchDocument(source);
+      sourceDocs.set(doc.id, doc);
+    }
+    return sourceDocs;
+  }
+
   public async runRepair(): Promise<RepairReport> {
     const startedAt = new Date();
     const startMs = performance.now();
 
-    const [vaults, savedPools, quests, settlements] = await Promise.all([
-      this.loader.loadVaults(),
-      this.loader.loadSavedPools(),
-      this.loader.loadQuests(),
-      this.loader.loadSettlements(),
-    ]);
-
-    const sourceDocs: Map<string, SearchIndexDocument> = new Map();
-    for (const v of vaults) {
-      const doc = vaultToSearchDocument(v);
-      sourceDocs.set(doc.id, doc);
-    }
-    for (const sp of savedPools) {
-      const doc = savedPoolToSearchDocument(sp);
-      sourceDocs.set(doc.id, doc);
-    }
-    for (const q of quests) {
-      const doc = questToSearchDocument(q);
-      sourceDocs.set(doc.id, doc);
-    }
-    for (const s of settlements) {
-      const doc = settlementToSearchDocument(s);
-      sourceDocs.set(doc.id, doc);
-    }
-
+    const sourceDocs = await this.loadSourceDocuments();
     const currentIndexDocs = await this.indexService.listAllDocuments();
-    const anomalies = await this.detectAnomalies();
+    const anomalies = this.findAnomalies(sourceDocs, currentIndexDocs);
 
     const counts = {
       missing: 0,
@@ -251,11 +299,20 @@ export class SearchIndexRepairService {
         const expected = sourceDocs.get(compositeId);
         if (expected) {
           await this.indexService.indexDocument(expected);
+          const current = await this.indexService.getDocument(
+            anomaly.recordType,
+            anomaly.recordId,
+          );
           details.push({
             recordType: anomaly.recordType,
             recordId: anomaly.recordId,
             anomalyType: "missing",
-            actionTaken: "inserted",
+            recommendation: anomaly.recommendation,
+            actionTaken:
+              current?.version === expected.version &&
+              current.sourceUpdatedAt.getTime() === expected.sourceUpdatedAt.getTime()
+                ? "inserted"
+                : "skipped_changed",
           });
         }
       } else if (
@@ -268,24 +325,42 @@ export class SearchIndexRepairService {
         const expected = sourceDocs.get(compositeId);
         if (expected) {
           await this.indexService.indexDocument(expected);
+          const current = await this.indexService.getDocument(
+            anomaly.recordType,
+            anomaly.recordId,
+          );
           details.push({
             recordType: anomaly.recordType,
             recordId: anomaly.recordId,
             anomalyType: anomaly.anomalyType,
-            actionTaken: "updated",
+            recommendation: anomaly.recommendation,
+            actionTaken:
+              current?.version === expected.version &&
+              current.sourceUpdatedAt.getTime() === expected.sourceUpdatedAt.getTime()
+                ? "updated"
+                : "skipped_changed",
           });
         }
       } else if (anomaly.anomalyType === "orphaned") {
         counts.orphaned++;
-        await this.indexService.removeDocument(
-          anomaly.recordType,
-          anomaly.recordId,
-        );
+        const removed =
+          anomaly.indexVersion !== undefined && anomaly.indexSourceUpdatedAt !== undefined
+            ? await this.indexService.removeDocumentIfUnchanged(
+                anomaly.recordType,
+                anomaly.recordId,
+                anomaly.indexVersion,
+                anomaly.indexSourceUpdatedAt,
+              )
+            : await this.indexService.removeDocument(
+                anomaly.recordType,
+                anomaly.recordId,
+              );
         details.push({
           recordType: anomaly.recordType,
           recordId: anomaly.recordId,
           anomalyType: "orphaned",
-          actionTaken: "deleted",
+          recommendation: anomaly.recommendation,
+          actionTaken: removed ? "deleted" : "skipped_changed",
         });
       }
     }
@@ -297,7 +372,7 @@ export class SearchIndexRepairService {
       scannedSources: sourceDocs.size,
       scannedIndexEntries: currentIndexDocs.length,
       anomaliesDetected: counts,
-      repairedCount: details.length,
+      repairedCount: details.filter((detail) => detail.actionTaken !== "skipped_changed").length,
       details,
       startedAt,
       completedAt,

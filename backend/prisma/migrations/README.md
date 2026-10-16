@@ -59,6 +59,7 @@ Performance improvements, index additions, and query optimizations.
 | --------------------------------------- | ------------------------------------------- |
 | `20260627000000_optimize_query_indexes` | Add indexes for frequently-filtered columns |
 | `20260930000000_add_action_recovery_checkpoints` | Persist action recovery checkpoints |
+| `20261016000000_stale_projection_repair` | Add derived projection cache and repair-run audit tables |
 
 **Indexes Added:**
 
@@ -67,6 +68,8 @@ Performance improvements, index additions, and query optimizations.
 - `vault_settlements_recipient_state_idx` - Recipient lookup for vault releases
 - `pending_events_status_hint_received_at_idx` - Status hint filter for event processing
 - `saved_pools_pool_id_idx` - Pool ID lookup across wallets
+
+`derived_cache` stores versioned derived projections; `cache_repair_runs` retains bounded dry-run and applied cache-repair evidence. The migration is additive. For app rollback, keep these tables and their audit rows; they can be removed only through a separately approved data-retention plan.
 
 ## Running Migrations
 

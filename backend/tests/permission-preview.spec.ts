@@ -27,6 +27,23 @@ describe("Maintainer permission preview API", () => {
     } finally { await app.close(); }
   });
 
+  it("returns a readable report with the preview and requires the same authorization", async () => {
+    const app = await build();
+    try {
+      const post = (token: string) => app.inject({ method: "POST", url: "/admin/permissions/report", headers: { authorization: `Bearer ${token}` }, payload });
+      expect((await post("")).statusCode).toBe(401);
+      expect((await post("user")).statusCode).toBe(403);
+      const response = await post("admin");
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.report).toContain("Verdict: BROAD CHANGE");
+      expect(body.report).toContain("+ admin.audit.write");
+      expect(body.preview.confirmationToken).toBeTruthy();
+      const stale = await app.inject({ method: "POST", url: "/admin/permissions/report", headers: { authorization: "Bearer admin" }, payload: { ...payload, baseVersion: 2 } });
+      expect(stale.statusCode).toBe(409);
+    } finally { await app.close(); }
+  });
+
   it("shows actor impact and blocks preparation until the exact diff is confirmed", async () => {
     const app = await build();
     try {

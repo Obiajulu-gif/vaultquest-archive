@@ -24,6 +24,10 @@
  *  4. **Duplicate detection** — {@link detectDuplicates} checks user-submitted
  *     records against canonical fields, flagging exact duplicates as blocking
  *     and near duplicates as ambiguous for maintainer review.
+ *
+ *  5. **Rollback verification** — {@link verifyRollback} classifies the schema
+ *     after a failed or reverted migration as fully reverted, fully applied or
+ *     partial, and cross-checks Prisma's migration ledger (#1000).
  */
 
 import * as fs from "fs";
@@ -550,6 +554,182 @@ export async function runPostChecks(db: MigrationDatabase, plan: MigrationPlan):
   return { ok: failures.length === 0, checks, failures };
 }
 
+export type RollbackExpectation = "reverted" | "applied";
+export type RollbackState = RollbackExpectation | "partial" | "unverifiable";
+/** What an object's presence says about the migration: applied, reverted, or nothing reliable. */
+export type RollbackSignal = "applied" | "reverted" | "ambiguous" | "unknown";
+export type LedgerStatus = "applied" | "failed" | "rolled-back" | "absent" | "unknown";
+
+export interface RollbackCheck {
+  name: string;
+  present: boolean | null;
+  signal: RollbackSignal;
+  detail: string;
+}
+
+export interface RollbackReport {
+  migrationId: string;
+  expected: RollbackExpectation;
+  state: RollbackState;
+  /** True only when the observed state matches the expectation and the ledger agrees. */
+  ok: boolean;
+  checks: RollbackCheck[];
+  ledger: LedgerStatus;
+  guidance: string[];
+}
+
+interface TrackedObject {
+  kind: "table" | "index" | "column";
+  name: string;
+  table?: string;
+  column?: string;
+  /** Whether the object exists once the migration has been applied. */
+  presentWhenApplied: boolean;
+  /** A DROP ... IF EXISTS of an absent object is a no-op, so absence proves nothing. */
+  ifExists: boolean;
+}
+
+/** Final intended state of every schema object the plan touches; later statements win. */
+function trackedObjects(plan: MigrationPlan): TrackedObject[] {
+  const objects = new Map<string, TrackedObject>();
+  for (const action of plan.actions) {
+    const ifExists = /\bIF EXISTS\b/i.test(action.sql);
+    if ((action.kind === "create-table" || action.kind === "drop-table") && action.table) {
+      objects.set(`table:${action.table}`, {
+        kind: "table", name: action.table, table: action.table,
+        presentWhenApplied: action.kind === "create-table", ifExists,
+      });
+    } else if ((action.kind === "create-index" || action.kind === "drop-index") && action.name) {
+      objects.set(`index:${action.name}`, {
+        kind: "index", name: action.name, presentWhenApplied: action.kind === "create-index", ifExists,
+      });
+    } else if ((action.kind === "add-column" || action.kind === "drop-column") && action.table && action.column) {
+      objects.set(`column:${action.table}.${action.column}`, {
+        kind: "column", name: `${action.table}.${action.column}`, table: action.table, column: action.column,
+        presentWhenApplied: action.kind === "add-column", ifExists,
+      });
+    }
+  }
+  return [...objects.values()];
+}
+
+async function probe(db: MigrationDatabase, object: TrackedObject): Promise<boolean | null> {
+  try {
+    if (object.kind === "column") return await columnExists(db, object.table!, object.column!);
+    return await relationExists(db, object.name, object.kind);
+  } catch {
+    return null;
+  }
+}
+
+/** Reads Prisma's own migration ledger; `unknown` when it cannot be queried. */
+export async function readMigrationLedger(db: MigrationDatabase, migrationId: string): Promise<LedgerStatus> {
+  try {
+    const res = await db.query(
+      `SELECT finished_at, rolled_back_at FROM _prisma_migrations WHERE migration_name = $1 ORDER BY started_at DESC LIMIT 1`,
+      [migrationId],
+    );
+    const row = res.rows[0];
+    if (!row) return "absent";
+    if (row.rolled_back_at) return "rolled-back";
+    return row.finished_at ? "applied" : "failed";
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * Verifies the database after a failed migration or a rollback (#1000).
+ *
+ * Each object the plan creates or drops is probed and classified as evidence
+ * the migration is applied or reverted. All-applied is `applied`, all-reverted
+ * is `reverted`, a mix is `partial`, and a plan with no reliable evidence (or a
+ * probe that could not run) is `unverifiable`. Anything but the expected state
+ * fails the report, as does a Prisma ledger that disagrees with the schema.
+ * Row data is never inspected, so data-changing statements always get guidance
+ * to compare against a pre-migration dump.
+ */
+export async function verifyRollback(
+  db: MigrationDatabase,
+  plan: MigrationPlan,
+  expected: RollbackExpectation = "reverted",
+): Promise<RollbackReport> {
+  const checks: RollbackCheck[] = [];
+  for (const object of trackedObjects(plan)) {
+    const present = await probe(db, object);
+    const label = `${object.kind} ${object.name}`;
+    if (present === null) {
+      checks.push({ name: label, present, signal: "unknown", detail: "could not query the database" });
+    } else if (present === object.presentWhenApplied) {
+      const ambiguous = !present && object.ifExists;
+      checks.push({
+        name: label,
+        present,
+        signal: ambiguous ? "ambiguous" : "applied",
+        detail: ambiguous
+          ? "absent; DROP ... IF EXISTS makes this indistinguishable from never having existed"
+          : present ? "present (as after the migration)" : "absent (as after the migration)",
+      });
+    } else {
+      checks.push({
+        name: label,
+        present,
+        signal: "reverted",
+        detail: present ? "present (as before the migration)" : "absent (as before the migration)",
+      });
+    }
+  }
+
+  const signals = new Set(checks.map((c) => c.signal).filter((s) => s !== "ambiguous"));
+  let state: RollbackState;
+  if (signals.has("unknown") || signals.size === 0) state = "unverifiable";
+  else if (signals.size === 2) state = "partial";
+  else state = signals.has("applied") ? "applied" : "reverted";
+
+  const ledger = await readMigrationLedger(db, plan.migrationId);
+  const guidance: string[] = [];
+  const names = (signal: RollbackSignal) => checks.filter((c) => c.signal === signal).map((c) => c.name).join(", ");
+  const resolve = (flag: "--rolled-back" | "--applied") =>
+    `npx prisma migrate resolve ${flag} ${plan.migrationId}`;
+
+  if (state === "partial") {
+    guidance.push(
+      `Partial migration. Applied: ${names("applied")}. Reverted: ${names("reverted")}. ` +
+        "Do not re-run blindly: either finish the rollback by hand (see rollback notes) or fix forward by re-applying the missing statements.",
+    );
+  } else if (state === "unverifiable") {
+    guidance.push(
+      "Schema state could not be determined (no reliable evidence, or the database could not be queried). " +
+        "Treat the migration as unverified and inspect the schema manually.",
+    );
+  } else if (state !== expected) {
+    guidance.push(
+      expected === "reverted"
+        ? "The schema is still fully migrated: the rollback did not take effect."
+        : "The schema is fully reverted: the migration is not applied.",
+    );
+  }
+
+  if (state === "reverted" && ledger === "failed") {
+    guidance.push(`Schema is clean but Prisma still blocks deploys on the failed record. Run: ${resolve("--rolled-back")}`);
+  } else if (state === "applied" && (ledger === "failed" || ledger === "absent" || ledger === "rolled-back")) {
+    guidance.push(`Schema is migrated but Prisma's ledger says "${ledger}". After confirming, run: ${resolve("--applied")}`);
+  } else if (state === "reverted" && ledger === "applied") {
+    guidance.push("Schema is reverted but Prisma's ledger still records the migration as applied; the next deploy would skip it.");
+  }
+
+  if (state === "reverted" && (plan.destructive.length > 0 || plan.dataChanges.length > 0)) {
+    guidance.push(
+      "Schema objects are back, but row data is not verified here. Compare row counts and checksums against the pre-migration dump.",
+    );
+  }
+
+  const ledgerAgrees =
+    ledger === "unknown" ||
+    (expected === "reverted" ? ledger !== "applied" && ledger !== "failed" : ledger === "applied");
+  return { migrationId: plan.migrationId, expected, state, ok: state === expected && ledgerAgrees, checks, ledger, guidance };
+}
+
 /**
  * Builds a canonical, deterministic key string for a candidate using the
  * supplied {@link DuplicateKey}. Returns null when any canonical field is
@@ -779,6 +959,25 @@ export function formatPostChecks(report: PostCheckReport): string {
   }
   lines.push("");
   lines.push(report.ok ? "All post-checks passed." : `${report.failures.length} post-check(s) failed.`);
+  return lines.join("\n");
+}
+
+export function formatRollbackReport(report: RollbackReport): string {
+  const lines: string[] = [];
+  lines.push(`Rollback verification: ${report.migrationId}`);
+  lines.push("=========================================");
+  lines.push(`Expected: ${report.expected}`);
+  lines.push(`Observed: ${report.state}`);
+  lines.push(`Prisma ledger: ${report.ledger}`);
+  lines.push("");
+  for (const check of report.checks) {
+    lines.push(`  ${check.signal.toUpperCase().padEnd(9)} ${check.name} - ${check.detail}`);
+  }
+  if (report.guidance.length > 0) {
+    lines.push("", "Guidance:");
+    for (const note of report.guidance) lines.push(`  - ${note}`);
+  }
+  lines.push("", report.ok ? `Rollback verified: schema is ${report.expected}.` : "Rollback verification FAILED.");
   return lines.join("\n");
 }
 

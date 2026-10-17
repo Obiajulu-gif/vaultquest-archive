@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync, preHandlerHookHandler } from "fastify";
 import { z } from "zod";
 import { PERMISSIONS, ROLE_PERMISSIONS } from "../../../lib/rbac.js";
-import { computePermissionDiff, preparePolicyChange, StalePolicyInputError, PermissionConfirmationRequiredError, InvalidPolicyError, type RolePolicy } from "../../../lib/permission-diff.js";
+import { computePermissionDiff, preparePolicyChange, renderPermissionDiffReport, StalePolicyInputError, PermissionConfirmationRequiredError, InvalidPolicyError, type RolePolicy } from "../../../lib/permission-diff.js";
 import { AppError } from "../errors.js";
 
 const policySchema = z.object({
@@ -15,14 +15,14 @@ const inputSchema = z.object({
   confirmationToken: z.string().optional(),
 });
 
-/** Preview configured RBAC changes; preparation returns a candidate, never silently activates it. */
+/** Preview or report on configured RBAC changes; preparation returns a candidate, never silently activates it. */
 export const permissionPreviewRoutes = (
   guard: preHandlerHookHandler,
   currentPolicy: () => RolePolicy = () => ({ version: 1,
     roles: Object.fromEntries(Object.entries(ROLE_PERMISSIONS).map(([role, permissions]) => [role, [...permissions]])),
   }),
 ): FastifyPluginAsync => async (app) => {
-  for (const action of ["preview", "prepare"] as const) {
+  for (const action of ["preview", "report", "prepare"] as const) {
     app.post(`/admin/permissions/${action}`, { preHandler: [guard] }, async (req, reply) => {
       if (req.principal?.role !== "maintainer") throw AppError.forbidden("maintainer role required");
       const input = inputSchema.parse(req.body);
@@ -30,7 +30,9 @@ export const permissionPreviewRoutes = (
       const options = { ...input, actorRoles: [req.principal.role], currentPolicy: current };
       reply.header("Cache-Control", "no-store");
       try {
-        return action === "preview" ? computePermissionDiff(options) : { policy: preparePolicyChange(options), activated: false };
+        if (action === "prepare") return { policy: preparePolicyChange(options), activated: false };
+        const preview = computePermissionDiff(options);
+        return action === "preview" ? preview : { report: renderPermissionDiffReport(preview), preview };
       } catch (error) {
         if (error instanceof InvalidPolicyError) throw AppError.validation(error.message);
         if (error instanceof StalePolicyInputError) return reply.code(409).send({ error: "stale_policy" });

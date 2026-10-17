@@ -169,6 +169,28 @@ model BackgroundJob {
   @@map("background_jobs")
 }
 
+// #923 — ledger of user-visible side effects (notifications, webhooks, emails).
+// One row per effect key so a replayed or dead-letter-requeued job skips effects
+// that already happened. `in_progress` rows are leased via `lockedAt`; a crashed
+// worker's claim becomes reclaimable once the lease expires.
+model SideEffectLedger {
+  effectKey   String    @id @map("effect_key")
+  effectType  String    @map("effect_type")
+  status      String    @default("in_progress")
+  attempts    Int       @default(0)
+  lockedBy    String?   @map("locked_by")
+  lockedAt    DateTime? @map("locked_at") @db.Timestamptz
+  lastError   String?   @map("last_error")
+  result      Json?
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  completedAt DateTime? @map("completed_at") @db.Timestamptz
+
+  @@index([effectType, status])
+  @@index([status, lockedAt])
+  @@map("side_effect_ledger")
+}
+
 model IndexerCheckpoint {
   id                  String   @id @default("singleton")
   latestLedger        Int      @map("latest_ledger")

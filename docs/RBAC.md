@@ -88,6 +88,15 @@ are the union of their assigned roles, so redundant grants are not counted.
 The default provider previews the existing static `ROLE_PERMISSIONS` matrix at
 version 1. It has no actor inventory; it does not guess session identities.
 
+POST the same body to `/admin/permissions/report` for a plain-text report
+(`renderPermissionDiffReport`) alongside the preview: verdict (no-op, limited
+or broad), the reason confirmation is required, per-role and per-actor
+additions/removals with affected scopes and actions, and rollback guidance. The
+report is a pure function of the preview, takes the same authorization and
+version checks, and changes nothing. To roll back an activated change, prepare a
+new policy version carrying the previous role matrix and review its report;
+policy versions only move forward.
+
 POST the same body to `/admin/permissions/prepare` to obtain a validated
 deployment candidate. Broad changes require the `confirmationToken` from the
 exact preview in the body. The token binds both complete policies and is an

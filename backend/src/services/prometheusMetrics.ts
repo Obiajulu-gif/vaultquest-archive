@@ -7,9 +7,14 @@ import {
   type Registry,
 } from "prom-client";
 import type { Logger } from "pino";
+import { LabelCardinalityGuard } from "./telemetryGuard.js";
+
+const HTTP_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]);
 
 export class PrometheusMetrics {
   private registry: Registry;
+  /** Bounds every request-derived label so abusive input cannot create unbounded series (#925). */
+  private readonly labelGuard = new LabelCardinalityGuard();
 
   // HTTP metrics
   readonly httpRequestDuration: Histogram;
@@ -278,6 +283,8 @@ export class PrometheusMetrics {
     requestSize?: number,
     responseSize?: number,
   ) {
+    method = HTTP_METHODS.has(method) ? method : "OTHER";
+    route = this.labelGuard.resolve("http", "route", route);
     this.httpRequestDuration.observe(
       { method, route, status_code: statusCode },
       durationSeconds,
@@ -311,12 +318,20 @@ export class PrometheusMetrics {
     durationSeconds: number,
     errorCode?: string,
   ) {
+    operation = this.labelGuard.resolve("operation", "operation", operation);
+    actorType = this.labelGuard.resolve("operation", "actor_type", actorType);
+    errorCode = errorCode === undefined ? undefined : this.labelGuard.resolve("operation", "error_code", errorCode);
     const labels = { operation, actor_type: actorType, result };
     this.operationsTotal.inc(labels);
     this.operationDuration.observe(labels, durationSeconds);
     if (result === "failure") {
       this.operationFailuresTotal.inc({ operation, error_code: errorCode ?? "INTERNAL" });
     }
+  }
+
+  /** Distinct, overflowed and rejected label counts per guarded label (#925). */
+  getLabelCardinalityReport() {
+    return this.labelGuard.report();
   }
 
   /**

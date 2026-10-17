@@ -15,6 +15,7 @@ where users fail, where latency spikes, and which operations are unhealthy.
 | `wallet.verify_challenge` | `WalletAuthService.verifyChallenge` | `user` |
 | `settlement.settle_vault` | `EscrowService.settleVault` | `service` |
 | `draw_proof.generate` | `DrawProofService.generateProof` | `worker` |
+| `side_effect.dispatch` (`detail` = effect type) | `SideEffectDispatcher.dispatch`; one event per effect, a `duplicate` or `in_flight` skip counts as success | `worker` |
 | `worker.job` (`detail` = job type or cron job name) | background jobs and every cron job (indexer, reconciler, quests, backups, …) | `worker` |
 
 HTTP-level latency and status are covered separately by
@@ -66,6 +67,40 @@ reduced to their stable code. This is asserted in `tests/telemetry.spec.ts`.
 | `vaultquest_operation_failures_total` | counter | `operation`, `error_code` |
 
 Scraped from `GET /metrics` (see `PROMETHEUS_SETUP.md`).
+
+## High-cardinality protection (#925)
+
+Request-derived labels and log lines are bounded in
+`src/services/telemetryGuard.ts`, so abusive input cannot create unbounded
+time series or flood the log. Every guard fails closed to a fixed placeholder
+and never echoes the offending text.
+
+| Protection | Behaviour |
+|---|---|
+| Label sanitizing | Only `A-Z a-z 0-9 _ . : / * -` is accepted, capped at 64 characters. Anything else becomes `invalid`; a value containing a wallet address or a 64-hex transaction hash becomes `redacted`. |
+| Distinct-value budget | At most 100 distinct values per guarded label (`http` `route`; `operation` `operation`, `actor_type`, `error_code`). Later new values collapse into `other`; values already admitted keep their own series. |
+| HTTP route label | The matched route pattern (`/api/actions/:id`), or `unmatched`, never the raw URL or query string. |
+| HTTP method label | Standard methods only; anything else is `OTHER`. |
+| Failure log sampling | The first 10 failure lines per (operation, error code) per minute are logged. The next line that gets through carries `suppressed_since_last_log`. Success lines are never sampled. |
+
+Metrics and `subscribeTelemetry` listeners still see every event; only log
+lines are sampled. `getPrometheusMetrics().getLabelCardinalityReport()` returns
+distinct, overflowed and rejected counts per guarded label.
+
+Operational notes:
+
+- **A sustained `other` series is the abuse signal.** A rising `other` route or
+  `error_code` means new values are being refused. Check the report for which
+  label is overflowing, then look at the raw access log.
+- **Legitimate growth looks the same.** If real routes or error codes exceed 100,
+  raise `DEFAULT_MAX_VALUES_PER_LABEL` deliberately rather than letting the
+  series grow.
+- **Budgets and sampler windows reset on restart.** Each process enforces its own
+  limits, so the cap applies per replica.
+- **Rollback:** the change only narrows labels. Reverting `telemetryGuard.ts` and
+  the three call sites restores the previous labels; existing dashboards keyed
+  on raw URL routes will need the pattern form (`/api/actions/:id`) after the
+  upgrade.
 
 ## Dashboard queries (PromQL)
 

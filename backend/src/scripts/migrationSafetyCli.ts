@@ -3,15 +3,20 @@
  *
  *   tsx src/scripts/migrationSafety.ts --preview <migration-id>
  *   tsx src/scripts/migrationSafety.ts --check <migration-id> --post-checks
+ *   tsx src/scripts/migrationSafety.ts --verify-rollback <migration-id> [--expect reverted|applied]
  *   tsx src/scripts/migrationSafety.ts --list
  *
  * `--preview` issues only SELECTs: it reports what a migration would create,
  * which statements are destructive, and how many records the data-changing
  * statements would touch — before anything is written.
  *
+ * `--verify-rollback` classifies the schema after a failed or reverted
+ * migration (reverted, applied or partial) and checks Prisma's migration
+ * ledger; it fails unless the state matches `--expect` (default reverted).
+ *
  * Exit codes:
- *   0 – preview produced, or all post-checks passed
- *   1 – a post-check failed, or the migration could not be read
+ *   0 – preview produced, all post-checks passed, or rollback verified
+ *   1 – a post-check or rollback verification failed, or the migration could not be read
  */
 
 import * as path from "path";
@@ -22,6 +27,8 @@ import {
   parseMigrationSql,
   previewMigration,
   runPostChecks,
+  verifyRollback,
+  formatRollbackReport,
   formatPreview,
   formatPostChecks,
   listMigrationIds,
@@ -201,11 +208,12 @@ async function main(): Promise<void> {
     return;
   }
 
-  const migrationId = argValue("--preview") ?? argValue("--check");
+  const migrationId = argValue("--preview") ?? argValue("--check") ?? argValue("--verify-rollback");
   if (!migrationId) {
     console.error(
       "Usage: tsx src/scripts/migrationSafety.ts --preview <migration-id>\n" +
         "       tsx src/scripts/migrationSafety.ts --check <migration-id> --post-checks\n" +
+        "       tsx src/scripts/migrationSafety.ts --verify-rollback <migration-id> [--expect reverted|applied]\n" +
         "       tsx src/scripts/migrationSafety.ts --list\n" +
         "       tsx src/scripts/migrationSafety.ts --checklist [--attest tests,docs,config,rollback] [--migration-verified]",
     );
@@ -223,6 +231,19 @@ async function main(): Promise<void> {
   const db = prisma as unknown as MigrationDatabase;
 
   try {
+    if (argValue("--verify-rollback")) {
+      const expected = argValue("--expect") ?? "reverted";
+      if (expected !== "reverted" && expected !== "applied") {
+        console.error('--expect must be "reverted" or "applied"');
+        process.exit(1);
+      }
+      const report = await verifyRollback(db, plan, expected);
+      console.log(formatRollbackReport(report));
+      console.log("");
+      if (!report.ok) process.exit(1);
+      return;
+    }
+
     const preview = await previewMigration(plan, db);
     console.log(formatPreview(preview));
     console.log("");

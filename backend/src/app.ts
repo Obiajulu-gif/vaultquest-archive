@@ -24,7 +24,13 @@ import { healthRoutes } from "./routes/health.js";
 import type { DegradedModeService } from "./services/degradedModeService.js";
 import { MetricsService } from "./services/metricsService.js";
 import { DrawProofService } from "./services/drawProofService.js";
-import { FeatureFlagService } from "./services/featureFlagService.js";
+import { FEATURE_FLAGS, FeatureFlagService } from "./services/featureFlagService.js";
+import {
+  FeatureFlagRolloutGuard,
+  PrismaFlagRolloutStore,
+  withdrawalSubmissionsHaltedCheck,
+} from "./services/featureFlagRollout.js";
+import { featureFlagRolloutRoutes } from "./routes/featureFlagRollouts.js";
 import { drawProofRoutes } from "./routes/drawProofs.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { csrfProtection } from "./middleware/csrfProtection.js";
@@ -147,6 +153,8 @@ declare module "fastify" {
     /** Present only when `jobStore` was provided; call `.start()` to begin polling. */
     jobWorker?: JobWorker;
     jobQueue?: JobQueue;
+    /** Guarded feature-flag rollouts; call `record()` from flag-gated code paths. */
+    flagRollouts: FeatureFlagRolloutGuard;
     searchIndexService?: SearchIndexService;
     searchIndexRepairService?: SearchIndexRepairService;
     webhookService?: WebhookService;
@@ -253,6 +261,24 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 
   // Feature flag service for runtime toggles
   const featureFlagSvc = new FeatureFlagService(deps.prisma);
+  // Guarded rollouts: scoped enablement, outcome monitoring, automatic
+  // rollback and rollback verification (docs/FEATURE_FLAGS.md).
+  const flagRollouts = new FeatureFlagRolloutGuard({
+    store: new PrismaFlagRolloutStore(deps.prisma),
+    flags: featureFlagSvc,
+    autoReverify: true,
+    checks: {
+      [FEATURE_FLAGS.WITHDRAWAL_SUBMISSION_ENABLED]: [
+        withdrawalSubmissionsHaltedCheck((since, wallet) =>
+          deps.prisma.actionLedger.count({
+            where: { actionType: "withdraw", submittedAt: { gte: since }, ...(wallet ? { walletAddress: wallet } : {}) },
+          }),
+        ),
+      ],
+    },
+  });
+  app.decorate("flagRollouts", flagRollouts);
+  app.addHook("onClose", async () => flagRollouts.close());
 
   const drawProofSvc = new DrawProofService(
     deps.prisma,
@@ -496,6 +522,12 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         requirePermission("admin.audit_trail.export", [walletPrincipal]),
         enforceOperationLimit(operationLimits, "audit.export"),
       ),
+    }),
+  );
+  app.register(
+    featureFlagRolloutRoutes(flagRollouts, {
+      read: requirePermission("admin.flags.read", [walletPrincipal]),
+      write: requirePermission("admin.flags.write", [walletPrincipal]),
     }),
   );
   app.register(

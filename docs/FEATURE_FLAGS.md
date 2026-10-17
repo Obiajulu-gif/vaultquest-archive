@@ -193,6 +193,128 @@ WHERE flag_key = 'prize-draw-execution'
 ORDER BY created_at DESC LIMIT 10;
 ```
 
+## Guarded Rollouts (Automatic Rollback + Verification)
+
+For risky changes, prefer a **guarded rollout** over flipping the flag by hand.
+The guard (`backend/src/services/featureFlagRollout.ts`) enables a flag in one
+scope, watches the outcomes reported by the flagged code path, rolls back on its
+own when the failure rate crosses the rollout's guardrails, and then **verifies**
+that the rollback took effect. Hand-edited flags get none of this.
+
+### Lifecycle
+
+```
+start ─▶ active ──complete──▶ completed              (flag stays on, guard stops watching)
+           │
+           └─ rollback / guardrail breach ─▶ rolling_back ─verify─▶ rolled_back
+                                                   │                   ▲
+                                                   └──▶ rollback_unverified ─verify─┘
+```
+
+The rollout record lives in `feature_flags.metadata.rollout` on the scoped row,
+including the value the flag had **before** the rollout. Rollback restores that
+value, not a blind `false`, and works after a restart or from another replica.
+No schema migration is required: the table, its `UNIQUE (key, scope)` constraint
+and the `metadata` column already exist (migration `20260927000001`).
+
+### API (maintainers; `admin.flags.read` / `admin.flags.write`)
+
+| Method | Path | Body | Notes |
+|---|---|---|---|
+| GET | `/admin/feature-flags/:key/rollout?scope=` | — | Stored value, rollout record, live health of this replica's window |
+| POST | `/admin/feature-flags/:key/rollout` | `{ scope, reason, guardrails? }` | `201`; `409` if the flag is already on or a rollout is still open |
+| POST | `/admin/feature-flags/:key/rollout/rollback` | `{ scope, reason }` | Idempotent; returns the record with its verification report |
+| POST | `/admin/feature-flags/:key/rollout/verify` | `{ scope }` | Re-runs verification and persists the report |
+| POST | `/admin/feature-flags/:key/rollout/complete` | `{ scope, reason }` | Promote: the flag stays on |
+
+`scope` is `global` (default), `vault:{id}` or `wallet:{address}`. `guardrails`
+accepts `max_error_rate` (0–1, default `0.05`), `min_samples` (default `20`) and
+`window_seconds` (default `300`).
+
+### Reporting outcomes from flagged code
+
+```ts
+if (await featureFlags.isEnabled(FEATURE_FLAGS.WITHDRAWAL_SUBMISSION_ENABLED, { wallet })) {
+  try {
+    await submitWithdrawal(action);
+    void app.flagRollouts.record(FEATURE_FLAGS.WITHDRAWAL_SUBMISSION_ENABLED, `wallet:${wallet}`, "success");
+  } catch (err) {
+    void app.flagRollouts.record(FEATURE_FLAGS.WITHDRAWAL_SUBMISSION_ENABLED, `wallet:${wallet}`, "failure");
+    throw err;
+  }
+}
+```
+
+`record()` never throws and is a cached no-op when no rollout is active, so it is
+safe on hot paths. Report the scope the rollout was started in. Only count
+failures caused by the new behaviour; user errors such as a bad signature or
+insufficient balance would make the guard roll back legitimate traffic.
+
+### What "verified" means
+
+A rollback is `rolled_back` only when every check passes (or is skipped):
+
+| Check | Passes when |
+|---|---|
+| `stored_value_restored` | The database row holds the pre-rollout value |
+| `local_cache_consistent` | This process serves the pre-rollout value after invalidating its cache |
+| `replica_caches_expired` | The flag cache TTL (30 s) has elapsed since the rollback, so no replica can still serve the old value |
+| Domain checks | Registered per flag. `withdrawal-submission-enabled` checks that no withdrawal was submitted in the scope after the rollback propagated (skipped for `vault:` scopes, which the ledger can't attribute) |
+
+Right after a rollback, `replica_caches_expired` is `pending`, so the rollout
+reports `rollback_unverified`. The app re-verifies on its own one TTL later
+(`autoReverify`), or you can call `/verify`. Any `fail` stays
+`rollback_unverified` and is logged at error level.
+
+### Runbook: a guarded rollout went wrong
+
+1. **Stop the bleeding.** `POST …/rollout/rollback` with a reason. This is safe to
+   repeat and safe to run from any replica; concurrent calls collapse into a
+   single write and one audit row.
+2. **Wait one cache TTL (30 s), then `POST …/rollout/verify`.**
+3. **Read the failing check:**
+   - `stored_value_restored: fail`: something re-enabled the flag (manual SQL, a
+     stale writer). Run rollback again; it re-asserts the stored value. Then find
+     the writer.
+   - `local_cache_consistent: fail`: the database read from this replica
+     disagrees with the stored value. Suspect a replica pointed at a lagging read
+     replica and check `DATABASE_URL`.
+   - `withdrawal_submissions_halted: fail`: a code path submits withdrawals
+     without checking the flag. The rollback is **not** real for that path.
+     Escalate per `docs/INCIDENT_RUNBOOK.md` and pause the worker
+     (`WORKER_ENABLED=false`) until it is fixed.
+   - A check `errored`: its dependency (DB/RPC) is down. Re-verify once it
+     recovers; the flag itself is already restored.
+4. **Before trying again**, the rollback must be `rolled_back`. A new rollout of
+   the same flag and scope is refused (`409`) while one is `active`,
+   `rolling_back` or `rollback_unverified`, so retries never stack on top of an
+   inconsistent state.
+
+### Failure modes and edge cases
+
+| Situation | Behaviour |
+|---|---|
+| Database down when a breach is detected | `record()` logs and returns `null`; the flag stays on and the next reported outcome retries the rollback. Use the manual SQL rollback below if the outage persists. |
+| Rollback restored the flag but verification threw | Record stays `rolling_back` with the flag **off** (safe). Run `/verify`. |
+| Process crashes mid-rollback | The state write is one transaction under a row lock, so either nothing changed or the flag is off and the record says `rolling_back`. Run `/rollback` or `/verify`. |
+| Two replicas breach at once | The row lock (`SELECT … FOR UPDATE`) serialises them; the second sees `rolling_back` and writes nothing. |
+| Low traffic | No decision until `min_samples` outcomes arrive in the window. Lower `min_samples` for rare operations, or watch the rollout manually. |
+| Multiple replicas | Each replica judges its own window (no shared counters). A breach on **any** replica rolls back globally. |
+| Rolling back a `completed` rollout | Refused (`409`). Treat it as a normal flag change via `FeatureFlagService.setFlag`. |
+| Vault-scoped rollout while the global row is on | `isEnabled({ vault })` reads only the vault row, so the rollout and rollback affect only callers that pass the vault scope. |
+| Someone edits the flag with SQL during a rollout | Rollback re-asserts the stored pre-rollout value and writes an audit row saying so. |
+
+### Manual fallback (guard unavailable)
+
+```sql
+UPDATE feature_flags
+SET enabled = (metadata->'rollout'->>'previousEnabled')::boolean,
+    metadata = jsonb_set(metadata, '{rollout,state}', '"rolling_back"')
+WHERE key = 'withdrawal-submission-enabled' AND scope = 'global';
+```
+
+Once the API is back, run `/verify`; the guard picks up the `rolling_back` record.
+
 ## Emergency Rollback Workflow
 
 If a flagged feature exhibits issues in production:
@@ -208,14 +330,10 @@ INSERT INTO feature_flag_audits (flag_key, previous_value, new_value, actor, rea
 VALUES ('prize-draw-execution', true, false, 'operator-123', 'Emergency rollback: draw logic causing invalid proofs');
 ```
 
-Or via API:
-```bash
-POST /admin/feature-flags/disable
-{
-  "key": "prize-draw-execution",
-  "reason": "Emergency rollback: draw logic causing invalid proofs"
-}
-```
+If the flag was enabled through a guarded rollout, use
+`POST /admin/feature-flags/:key/rollout/rollback` instead (see
+[Guarded Rollouts](#guarded-rollouts-automatic-rollback--verification)); it
+restores the pre-rollout value and verifies the rollback.
 
 **Effect**: Immediately, all new prize draw proof generation is **skipped**. No redeploy needed.
 

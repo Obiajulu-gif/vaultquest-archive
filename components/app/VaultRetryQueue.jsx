@@ -12,6 +12,7 @@ import {
   Hourglass,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { usePrefersReducedMotion } from "@/lib/usePrefersReducedMotion";
 
 // ─── Retry policy ─────────────────────────────────────────────────────────────
 // Automatic retries back off exponentially (base * factor^(attempt-1), capped).
@@ -146,11 +147,11 @@ async function submitRetry(action) {
   return { ok: true };
 }
 
-function StatusBadge({ status, retryState }) {
+function StatusBadge({ status, retryState, reducedMotion }) {
   if (retryState === "retrying") {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-2.5 py-0.5 text-xs font-medium text-blue-600 dark:text-blue-400">
-        <RefreshCw className="h-3 w-3 animate-spin" aria-hidden="true" />
+        <RefreshCw className={`h-3 w-3 ${reducedMotion ? "" : "animate-spin"}`} aria-hidden="true" />
         Retrying
       </span>
     );
@@ -210,7 +211,7 @@ function ActionIcon({ type }) {
   );
 }
 
-function ErrorMessage({ errorCode, errorDetail }) {
+function ErrorMessage({ id, errorCode, errorDetail }) {
   const messages = {
     WALLET_REJECTED: "Transaction was rejected in your wallet. Click retry to try again.",
     NETWORK_ERROR: "A network error occurred. Check your connection and retry.",
@@ -220,7 +221,7 @@ function ErrorMessage({ errorCode, errorDetail }) {
   };
 
   return (
-    <p className="mt-1 text-xs text-red-500 dark:text-red-400">
+    <p id={id} className="mt-1 text-xs text-red-500 dark:text-red-400">
       {messages[errorCode] || errorDetail || "An unknown error occurred."}
     </p>
   );
@@ -236,7 +237,12 @@ function formatTimeAgo(dateStr) {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-function QueuedAction({ action, now, onRetry, onCancel, onDismiss }) {
+/** "deposit of 500 USDC in USDC Yield Pool" — distinguishes rows with the same action type. */
+function describeAction(action) {
+  return `${action.type} of ${action.amount} USDC in ${action.pool}`;
+}
+
+function QueuedAction({ action, now, onRetry, onCancel, onDismiss, onFocusRow, reducedMotion }) {
   const isPending = action.status === "pending";
   const isRetrying = action.retryState === "retrying";
   const isScheduled = action.retryState === "scheduled" && action.nextRetryAt != null;
@@ -251,15 +257,20 @@ function QueuedAction({ action, now, onRetry, onCancel, onDismiss }) {
       ? `Retrying in ${Math.max(1, Math.ceil((action.nextRetryAt - now) / 1000))}s`
       : "Retry";
 
+  const errorId = action.errorCode ? `retry-error-${action.id}` : undefined;
+  const description = describeAction(action);
+
   return (
     <motion.li
-      layout
-      initial={{ opacity: 0, y: -8 }}
+      layout={!reducedMotion}
+      initial={reducedMotion ? false : { opacity: 0, y: -8 }}
       animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, height: 0, marginBottom: 0 }}
-      transition={{ duration: 0.2 }}
+      exit={reducedMotion ? { opacity: 0, transition: { duration: 0 } } : { opacity: 0, height: 0, marginBottom: 0 }}
+      transition={{ duration: reducedMotion ? 0 : 0.2 }}
       className="flex items-start gap-4 rounded-xl border border-vault-border bg-vault-surface/50 p-4"
       data-testid={`retry-action-${action.id}`}
+      data-action-id={action.id}
+      onFocus={() => onFocusRow(action.id)}
     >
       <ActionIcon type={action.type} />
 
@@ -268,7 +279,7 @@ function QueuedAction({ action, now, onRetry, onCancel, onDismiss }) {
           <p className="font-medium capitalize text-vault-text">
             {action.type}
           </p>
-          <StatusBadge status={action.status} retryState={action.retryState} />
+          <StatusBadge status={action.status} retryState={action.retryState} reducedMotion={reducedMotion} />
           {action.retryCount > 0 && (
             <span className="text-xs text-vault-muted" data-testid={`retry-count-${action.id}`}>
               Retry #{action.retryCount}
@@ -282,7 +293,7 @@ function QueuedAction({ action, now, onRetry, onCancel, onDismiss }) {
           {formatTimeAgo(action.createdAt)}
         </p>
         {action.errorCode && (
-          <ErrorMessage errorCode={action.errorCode} errorDetail={action.errorDetail} />
+          <ErrorMessage id={errorId} errorCode={action.errorCode} errorDetail={action.errorDetail} />
         )}
       </div>
 
@@ -293,11 +304,13 @@ function QueuedAction({ action, now, onRetry, onCancel, onDismiss }) {
             onClick={() => onRetry(action)}
             disabled={retryDisabled}
             className="vq-btn-primary px-3 py-1.5 text-xs"
-            aria-label={`Retry ${action.type}`}
+            // Starts with the visible text (WCAG 2.5.3), then says which action.
+            aria-label={`${retryLabel} ${description}`}
+            aria-describedby={errorId}
             data-testid={`retry-button-${action.id}`}
           >
             {isRetrying ? (
-              <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              <RefreshCw className={`h-3.5 w-3.5 ${reducedMotion ? "" : "animate-spin"}`} aria-hidden="true" />
             ) : isScheduled ? (
               <Hourglass className="h-3.5 w-3.5" aria-hidden="true" />
             ) : (
@@ -311,7 +324,7 @@ function QueuedAction({ action, now, onRetry, onCancel, onDismiss }) {
           onClick={isPending ? () => onCancel(action) : () => onDismiss(action)}
           disabled={isRetrying}
           className="vq-btn-ghost px-2 py-1.5 text-xs"
-          aria-label={isPending ? "Cancel pending action" : "Dismiss"}
+          aria-label={isPending ? `Cancel pending ${description}` : `Dismiss ${description}`}
         >
           {isPending ? (
             <XCircle className="h-3.5 w-3.5" aria-hidden="true" />
@@ -329,6 +342,17 @@ export default function VaultRetryQueue() {
   const [actions, setActions] = useState(MOCK_FAILED_ACTIONS);
   const [collapsed, setCollapsed] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const reducedMotion = usePrefersReducedMotion();
+  // Screen-reader announcements for retry outcomes. Countdown ticks are
+  // deliberately not announced; only state transitions are.
+  const [announcement, setAnnouncement] = useState({ polite: "", assertive: "" });
+  const announce = useCallback((message, politeness = "polite") => {
+    setAnnouncement((prev) => ({ ...prev, [politeness]: message }));
+  }, []);
+  const sectionRef = useRef(null);
+  const toggleRef = useRef(null);
+  const lastFocusedRowRef = useRef(null);
+  const pendingFocusRef = useRef(null);
 
   // In-flight guard: prevents double-submit for the same action, even if the
   // user smashes the retry button before React re-renders the disabled state.
@@ -342,6 +366,21 @@ export default function VaultRetryQueue() {
   const failedCount = actions.filter((a) => a.status === "failed").length;
   const pendingCount = actions.filter((a) => a.status === "pending").length;
   const totalCount = actions.length;
+
+  // Keep focus inside the queue when the focused control disappears: a
+  // dismissed row hands focus to its neighbour; a row whose Retry button was
+  // replaced (submitted / resolved) hands focus to its remaining button.
+  useEffect(() => {
+    const target = pendingFocusRef.current;
+    pendingFocusRef.current = null;
+    const active = document.activeElement;
+    const focusLost = !active || active === document.body;
+    const rowId = target ?? (focusLost ? lastFocusedRowRef.current : null);
+    if (!rowId) return;
+    const row = sectionRef.current?.querySelector(`[data-action-id="${rowId}"]`);
+    const button = row?.querySelector("button:not([disabled])");
+    (button ?? toggleRef.current)?.focus();
+  }, [actions]);
 
   const updateAction = useCallback((actionId, patch) => {
     setActions((prev) =>
@@ -398,6 +437,7 @@ export default function VaultRetryQueue() {
         //    action may have been reconciled/confirmed since the UI last polled.
         const serverStatus = await fetchActionStatus(action);
         if (RESOLVED_SERVER_STATUSES.has(serverStatus)) {
+          announce(`${describeAction(action)} was already confirmed on-chain. No retry needed.`);
           updateAction(actionId, {
             retryState: "resolved",
             errorCode: null,
@@ -413,6 +453,7 @@ export default function VaultRetryQueue() {
 
         // 2) The action still needs a retry — submit it.
         await submitRetry(action);
+        announce(`Retry submitted for ${describeAction(action)}. It is now pending.`);
         updateAction(actionId, {
           status: "pending",
           errorCode: null,
@@ -427,6 +468,10 @@ export default function VaultRetryQueue() {
         //    we've exhausted the budget and need manual intervention.
         const attempt = action.retryCount + 1;
         if (attempt >= MAX_RETRY_ATTEMPTS) {
+          announce(
+            `Retry failed for ${describeAction(action)} after ${attempt} attempts. Manual intervention required.`,
+            "assertive",
+          );
           updateAction(actionId, {
             retryState: "exhausted",
             nextRetryAt: null,
@@ -435,6 +480,7 @@ export default function VaultRetryQueue() {
           });
         } else {
           const delay = getBackoffDelay(attempt);
+          announce(`Retry failed for ${describeAction(action)}. Retrying automatically in ${Math.round(delay / 1000)} seconds.`);
           updateAction(actionId, {
             retryState: "scheduled",
             nextRetryAt: Date.now() + delay,
@@ -450,7 +496,7 @@ export default function VaultRetryQueue() {
         inFlightRef.current.delete(actionId);
       }
     },
-    [clearScheduledTimer, updateAction],
+    [announce, clearScheduledTimer, updateAction],
   );
 
   const handleRetry = useCallback(
@@ -475,9 +521,15 @@ export default function VaultRetryQueue() {
     (action) => {
       clearScheduledTimer(action.id);
       inFlightRef.current.delete(action.id);
+      const list = actionsRef.current;
+      const index = list.findIndex((a) => a.id === action.id);
+      const neighbour = list[index + 1] ?? list[index - 1] ?? null;
+      pendingFocusRef.current = neighbour?.id ?? null;
+      lastFocusedRowRef.current = neighbour?.id ?? null;
+      announce(neighbour ? `Dismissed ${describeAction(action)}.` : "All pending actions cleared.");
       setActions((prev) => prev.filter((a) => a.id !== action.id));
     },
-    [clearScheduledTimer],
+    [announce, clearScheduledTimer],
   );
 
   const handleClearAll = useCallback(() => {
@@ -485,15 +537,31 @@ export default function VaultRetryQueue() {
       clearScheduledTimer(action.id);
     }
     inFlightRef.current.clear();
+    lastFocusedRowRef.current = null;
+    announce("All pending actions cleared.");
     setActions([]);
-  }, [clearScheduledTimer]);
+  }, [announce, clearScheduledTimer]);
 
-  if (totalCount === 0) return null;
+  const liveRegions = (
+    <>
+      <p role="status" aria-live="polite" className="sr-only" data-testid="retry-queue-status">
+        {announcement.polite}
+      </p>
+      <p role="alert" aria-live="assertive" className="sr-only" data-testid="retry-queue-alert">
+        {announcement.assertive}
+      </p>
+    </>
+  );
+
+  // Keep the live regions mounted so "cleared" is still announced.
+  if (totalCount === 0) return liveRegions;
 
   return (
-    <section className="vq-glass p-4 sm:p-6" role="region" aria-label="Transaction retry queue">
+    <section ref={sectionRef} className="vq-glass p-4 sm:p-6" role="region" aria-label="Transaction retry queue">
+      {liveRegions}
       <div className="flex items-center justify-between">
         <button
+          ref={toggleRef}
           type="button"
           onClick={() => setCollapsed((c) => !c)}
           className="flex items-center gap-2 text-left"
@@ -542,10 +610,10 @@ export default function VaultRetryQueue() {
         {!collapsed && (
           <motion.div
             id="retry-queue-content"
-            initial={{ height: 0, opacity: 0 }}
+            initial={reducedMotion ? false : { height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2 }}
+            transition={{ duration: reducedMotion ? 0 : 0.2 }}
           >
             <p className="mt-2 text-sm text-vault-muted">
               {failedCount > 0
@@ -563,6 +631,10 @@ export default function VaultRetryQueue() {
                     onRetry={handleRetry}
                     onCancel={handleCancel}
                     onDismiss={handleDismiss}
+                    onFocusRow={(id) => {
+                      lastFocusedRowRef.current = id;
+                    }}
+                    reducedMotion={reducedMotion}
                   />
                 ))}
               </AnimatePresence>

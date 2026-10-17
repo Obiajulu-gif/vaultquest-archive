@@ -62,6 +62,9 @@ import { impersonationRoutes } from "./routes/impersonation.js";
 import { createImpersonationHook } from "./middleware/impersonation.js";
 import { PartialFailureService } from "./services/partialFailureService.js";
 import { partialFailureRoutes } from "./routes/partialFailures.js";
+import { policyDryRunRoutes } from "./routes/policyDryRun.js";
+import { SecurityRevocationService } from "./services/securityRevocationService.js";
+import { securityRevocationRoutes } from "./routes/securityRevocation.js";
 
 import { configureTelemetry } from "./services/telemetry.js";
 import { type JobStore } from "./worker/jobStore.js";
@@ -525,6 +528,22 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       read: requirePermission("admin.recovery.read", [walletPrincipal]),
       write: requirePermission("admin.recovery.write", [walletPrincipal]),
     }),
+  );
+
+  // Issue #995: dry-run policy evaluator.
+  app.register(
+    policyDryRunRoutes(
+      requirePermission("admin.audit.write", [walletPrincipal])
+    )
+  );
+
+  // Issue #996: security session revocation.
+  const securityRevocationSvc = new SecurityRevocationService(deps.prisma, auditTrail);
+  app.register(
+    securityRevocationRoutes(
+      requirePermission("admin.recovery.write", [walletPrincipal]),
+      securityRevocationSvc
+    )
   );
 
   // #799: signed webhook verification and replay-window enforcement.

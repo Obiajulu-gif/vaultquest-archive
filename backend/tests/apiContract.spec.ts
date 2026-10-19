@@ -16,6 +16,9 @@ import {
 import { ERROR_CATALOG } from "../src/errorTaxonomy.js";
 import { InMemoryJobStore } from "../src/worker/jobStore.js";
 import { JobWorker } from "../src/worker/jobWorker.js";
+import { CacheService } from "../src/services/cacheService.js";
+import { createLogger } from "../src/logger.js";
+import type { PrismaClient } from "@prisma/client";
 
 const DOC_PATH = resolve(__dirname, "../../docs/API.md");
 const RESPONSES_DOC_PATH = resolve(__dirname, "../docs/API_RESPONSES.md");
@@ -60,7 +63,12 @@ describe("documented route index", () => {
   const registered = new Set<string>();
 
   beforeAll(async () => {
-    app = buildApp({ prisma: {} as any, internalSecret: SECRET, jobStore: new InMemoryJobStore() });
+    app = buildApp({
+      prisma: {} as PrismaClient,
+      internalSecret: SECRET,
+      jobStore: new InMemoryJobStore(),
+      cacheService: new CacheService({} as PrismaClient, createLogger("silent")),
+    });
     app.addHook("onRoute", (r) => {
       for (const m of ([] as string[]).concat(r.method as string | string[])) {
         if (m !== "HEAD" && m !== "OPTIONS") registered.add(`${m} ${r.url}`);

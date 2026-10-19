@@ -6,6 +6,7 @@ import {
   type RolePolicy,
   preparePolicyChange,
   PermissionConfirmationRequiredError,
+  renderPermissionDiffReport,
 } from "../lib/permission-diff";
 import { ROLE_PERMISSIONS } from "../lib/rbac";
 
@@ -165,5 +166,41 @@ describe("Permission change preparation", () => {
   it("rejects unknown permissions and invalid actor assignments", () => {
     expect(() => computePermissionDiff(options(JSON.parse('{"version":5,"roles":{"user":["made.up"]}}')))).toThrow("Unknown permission");
     expect(() => computePermissionDiff(options({ ...currentPolicy, version: 5, actors: { alice: ["missing"] } }))).toThrow("unknown role");
+  });
+});
+
+describe("Permission diff report (#1001)", () => {
+  const current: RolePolicy = { version: 1, roles: { user: ["own.data.read"] }, actors: { GUSER: ["user"] } };
+  const diff = (proposed: RolePolicy) =>
+    computePermissionDiff({ actorRoles: ["maintainer"], currentPolicy: current, proposedPolicy: proposed });
+
+  it("reports a no-op without a rollback section", () => {
+    const report = renderPermissionDiffReport(diff({ ...current, version: 2 }));
+    expect(report).toContain("Verdict: NO-OP");
+    expect(report).not.toContain("Rollback:");
+  });
+
+  it("reports a limited change with the affected actions and actors", () => {
+    const report = renderPermissionDiffReport(
+      diff({ version: 2, roles: { user: ["own.data.read", "own.data.export"] }, actors: { GUSER: ["user"] } }),
+    );
+    expect(report).toContain("Verdict: LIMITED CHANGE");
+    expect(report).toContain("+ own.data.export");
+    expect(report).toContain("Export personal records payload");
+    expect(report).toContain("GUSER");
+    expect(report).toContain("policy v3 with the v1 role matrix");
+  });
+
+  it("flags a broad change and states why confirmation is required", () => {
+    const report = renderPermissionDiffReport(
+      diff({ version: 2, roles: { user: ["own.data.read", "admin.audit.write"] }, actors: { GUSER: ["user"] } }),
+    );
+    expect(report).toContain("Verdict: BROAD CHANGE");
+    expect(report).toContain("Reason: Granting critical administrative permission(s) [admin.audit.write]");
+  });
+
+  it("is deterministic for the same change", () => {
+    const proposed: RolePolicy = { version: 2, roles: { user: ["own.data.export"] } };
+    expect(renderPermissionDiffReport(diff(proposed))).toBe(renderPermissionDiffReport(diff(proposed)));
   });
 });

@@ -201,6 +201,79 @@ describe("Search API Routes (/api/search)", () => {
     });
   });
 
+  describe("GET /api/search/repair/preview", () => {
+    it("requires maintainer permission and returns a bounded recommendation report", async () => {
+      activePrincipal = {
+        role: "user",
+        subject: "GUSER1",
+        walletAddress: "GUSER1",
+      };
+      const unauthorized = await app.inject({
+        method: "GET",
+        url: "/api/search/repair/preview?type=vault&limit=1",
+      });
+      expect(unauthorized.statusCode).toBe(403);
+
+      activePrincipal = {
+        role: "maintainer",
+        subject: "GADMIN",
+        walletAddress: "GADMIN",
+      };
+      const preview = await app.inject({
+        method: "GET",
+        url: "/api/search/repair/preview?type=vault&limit=1",
+      });
+
+      expect(preview.statusCode).toBe(200);
+      const report = JSON.parse(preview.payload).data;
+      expect(report.dryRun).toBe(true);
+      expect(report.complete).toBe(false);
+      expect(report.anomalies.length).toBeLessThanOrEqual(1);
+      expect(report.count).toBe(report.anomalies.length);
+      for (const anomaly of report.anomalies) {
+        expect(anomaly.recommendation).toBeTruthy();
+      }
+    });
+
+    it("identifies stale projection content and recommends a source rebuild", async () => {
+      activePrincipal = {
+        role: "maintainer",
+        subject: "GADMIN",
+        walletAddress: "GADMIN",
+      };
+      const staleVault = {
+        id: "vault:v1",
+        recordType: "vault" as const,
+        recordId: "v1",
+        title: "Old title",
+        asset: "USDC",
+        network: "Stellar",
+        status: "active",
+        visibility: "public" as const,
+        searchableText: "",
+        version: 0,
+        sourceUpdatedAt: new Date("2020-01-01T00:00:00.000Z"),
+        indexedAt: new Date(),
+      };
+      await searchService.indexDocument(staleVault);
+
+      const preview = await app.inject({
+        method: "GET",
+        url: "/api/search/repair/preview?type=vault",
+      });
+
+      expect(preview.statusCode).toBe(200);
+      const anomalies = JSON.parse(preview.payload).data.anomalies;
+      expect(anomalies).toContainEqual(
+        expect.objectContaining({
+          recordId: "v1",
+          anomalyType: "stale",
+          recommendation: "rebuild_from_source",
+        }),
+      );
+    });
+  });
+
   describe("GET /api/search/stats", () => {
     it("returns total indexed counts and breakdowns", async () => {
       const res = await app.inject({

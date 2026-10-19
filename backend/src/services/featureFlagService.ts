@@ -37,6 +37,21 @@ export interface FeatureFlagScope {
   wallet?: string;
 }
 
+/** Stored scope string for a {@link FeatureFlagScope}: "global", "vault:{id}" or "wallet:{address}". */
+export function toScopeString(scope?: FeatureFlagScope): string {
+  if (scope?.vault) return `vault:${scope.vault}`;
+  if (scope?.wallet) return `wallet:${scope.wallet}`;
+  return "global";
+}
+
+/** Inverse of {@link toScopeString}; returns null for a malformed scope string. */
+export function parseScopeString(scope: string): FeatureFlagScope | null {
+  if (scope === "global") return { global: true };
+  const match = /^(vault|wallet):(.+)$/.exec(scope);
+  if (!match) return null;
+  return match[1] === "vault" ? { vault: match[2] } : { wallet: match[2] };
+}
+
 /**
  * Service for runtime feature flag resolution with database caching.
  * Falls back to safe defaults (disabled) when configuration is missing.
@@ -44,6 +59,11 @@ export interface FeatureFlagScope {
 export class FeatureFlagService {
   private flagCache = new Map<string, { enabled: boolean; timestamp: number }>();
   private readonly CACHE_TTL_MS = 30_000; // 30s cache for runtime flags
+
+  /** How long another replica may keep serving a stale value after a change. */
+  get cacheTtlMs(): number {
+    return this.CACHE_TTL_MS;
+  }
 
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -56,11 +76,7 @@ export class FeatureFlagService {
    * @returns true if flag is explicitly enabled, false otherwise
    */
   async isEnabled(key: FeatureFlagKey, scope?: FeatureFlagScope): Promise<boolean> {
-    // Determine scope string
-    let scopeStr = "global";
-    if (scope?.vault) scopeStr = `vault:${scope.vault}`;
-    else if (scope?.wallet) scopeStr = `wallet:${scope.wallet}`;
-
+    const scopeStr = toScopeString(scope);
     const cacheKey = `${key}:${scopeStr}`;
     const cached = this.flagCache.get(cacheKey);
 
@@ -146,6 +162,11 @@ export class FeatureFlagService {
       logger.error({ err, key, enabled, scope }, "feature flag update failed");
       throw err;
     }
+  }
+
+  /** Drop the cached value for one flag + scope string so the next read hits the database. */
+  invalidate(key: FeatureFlagKey, scope: string): void {
+    this.flagCache.delete(`${key}:${scope}`);
   }
 
   /**

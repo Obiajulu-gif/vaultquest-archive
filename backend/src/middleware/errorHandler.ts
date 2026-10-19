@@ -6,6 +6,7 @@ import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { toUserSafeError } from "../errorTaxonomy.js";
 import { OperationLimitError } from "../services/operationLimits.js";
+import { formatProblemDetails, PROBLEM_DETAILS_CONTENT_TYPE } from "../problemDetails.js";
 
 export function errorHandler(
   err: FastifyError,
@@ -100,8 +101,37 @@ export function errorHandler(
   // #768: the taxonomy decides what a user may see (stable code, category,
   // retryability, recovery guidance); internal messages never reach clients
   // for 5xx or non-exposable codes.
+  // #946: Add RFC 7807 problem-details taxonomy with stable error codes and remediation hints.
   const safe = toUserSafeError(code, statusCode, message);
+  const problem = formatProblemDetails(code, statusCode, {
+    message,
+    instance: req.url,
+    errorId,
+    details,
+    issues
+  });
+
+  const acceptsProblem = req.headers.accept?.includes(PROBLEM_DETAILS_CONTENT_TYPE);
+  if (acceptsProblem) {
+    reply.header("content-type", `${PROBLEM_DETAILS_CONTENT_TYPE}; charset=utf-8`);
+  }
+
   const payload = {
+    // RFC 7807 / RFC 9457 top-level problem details
+    type: problem.type,
+    title: problem.title,
+    status: problem.status,
+    detail: problem.detail,
+    instance: problem.instance,
+    code: problem.code,
+    category: problem.category,
+    retryable: problem.retryable,
+    ...(problem.remediation ? { remediation: problem.remediation } : {}),
+    timestamp: problem.timestamp,
+    error_id: errorId,
+    ...(problem.invalid_params ? { invalid_params: problem.invalid_params } : {}),
+
+    // Backward-compatible envelope for existing clients and tests
     error: {
       code: safe.code,
       category: safe.category,

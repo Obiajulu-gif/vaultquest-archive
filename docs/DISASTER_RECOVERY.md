@@ -153,3 +153,68 @@ CronJob or CI job with access to the backup bucket and a throwaway database).
 |---|---|---|---|---|---|---|---|
 | 2026-09-24 | Automated rehearsal (`tests/replayEquivalence.spec.ts`, "disaster recovery" suite): fresh, empty PostgreSQL 17 databases; backup simulated by copying intents; RPC simulated with events spanning two 10,000-ledger scan windows | Simulated | 20,000 / 5,000 | PASS — 0 mismatched, 0 missing, 0 extra | 1 (post-backup intent case: reported as `missing`, its event rebuilt as parked) | < 1 s | Automated |
 | _next: staging, real backup + Soroban RPC via `pnpm dr:drill`_ | | | | | | | |
+
+## 6. Restore verification
+
+A restore is not trustworthy just because `pg_restore` exited zero. Two layers
+of verification run before the restored database serves traffic:
+
+1. **Read-only invariants** — `validateRestore.ts` checks critical tables
+   exist, wallet/position references resolve, ledger sequences are
+   contiguous, and summaries agree with detail rows.
+2. **Derived views** — derived state computed from restored rows (dashboard
+   aggregates, derived cache / search index) is rebuilt and then verified
+   against its source rows. Dashboards and search must never serve
+   projections that disagree with the data underneath them.
+
+Run the full pipeline after any restore, and after every `pg_restore` in
+§4 step 3:
+
+```bash
+cd backend
+pnpm db:validate-restore                  # read-only invariants only (fast probe)
+pnpm db:validate-restore --rebuild-derived # + rebuild & verify derived views
+```
+
+`--rebuild-derived` runs `verifyRestoredDatabase`
+(`src/services/restoreVerificationService.ts`) and prints a JSON report with:
+
+- `status`: `valid` (all checks pass), `repaired` (derived state was stale and
+  repaired in place), `needs_review` (mismatches remain — **do not cut over**),
+  or `failed` (verification itself errored),
+- `invariantFailures` and `missingTables` with the remediation per finding,
+- `derived`: rebuild scopes, stale derived-entry counts before/after, and
+  whether the rebuilt dashboard aggregate aligns with its source rows,
+- `repairSteps`: the exact operator actions to close every failure,
+- `phases`: per-phase pass/fail/skipped detail for the audit trail.
+
+Exit codes: `0` valid/repaired, `1` `needs_review` (findings printed),
+`2` database unavailable — check connectivity and migrations, then retry.
+
+### Edge cases and failure modes
+
+| Situation | Report behavior |
+| --- | --- |
+| Core table missing from the archive | `missingTables` lists it; a restore step is added. If a derived-view table (`dashboard_aggregates`, `derived_cache`, `action_ledger`) is missing, the rebuild is skipped (not silently passed) and a follow-up step is required. |
+| Aggregate rebuilt but behind its source rows | `derived.aggregateAligned: false` with the skew in ms and a step to re-run the rebuild and check concurrent writers. |
+| Stale derived-cache entries, repair hook available | Repaired in place; `staleAfter` must reach 0 for status `repaired`. |
+| Stale entries remain after repair, or no repair hook | Status `needs_review`; step names the repair job and requires re-running verification. |
+| Rebuild throws (connection loss, schema drift) | Status `failed`; derived views must not be served until the rebuild succeeds. |
+| Read-only probe (`--rebuild-derived` omitted) | Derived phases are `skipped`; status reflects invariants only — a quick integrity probe, not a cutover gate. |
+
+### Rollback
+
+Verification is safe to re-run any number of times: the invariant phase is
+strictly read-only, and the derived rebuild is idempotent (aggregates are
+upserted, stale cache entries are re-derived). If a rebuild must be abandoned,
+leave the database in its restored state and re-run later — partial rebuilds
+converge on the next pass. Never cut over (`§4` step 5) while the report is
+`needs_review` or `failed`.
+
+### Verification
+
+```bash
+cd backend
+pnpm exec vitest run tests/validateRestore.spec.ts tests/restoreVerification.spec.ts
+```
+

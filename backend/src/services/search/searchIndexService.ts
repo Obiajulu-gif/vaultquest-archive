@@ -24,6 +24,15 @@ export class SearchIndexService {
 
   public async indexDocument(doc: SearchIndexDocument): Promise<void> {
     const key = this.makeKey(doc.recordType, doc.recordId);
+    const existing = this.documents.get(key);
+    if (
+      existing &&
+      (existing.sourceUpdatedAt.getTime() > doc.sourceUpdatedAt.getTime() ||
+        (existing.sourceUpdatedAt.getTime() === doc.sourceUpdatedAt.getTime() &&
+          existing.version > doc.version))
+    ) {
+      return;
+    }
     const normalizedTokens = normalizeSearchText(
       [
         doc.title,
@@ -54,6 +63,24 @@ export class SearchIndexService {
     recordId: string,
   ): Promise<boolean> {
     const key = this.makeKey(recordType, recordId);
+    return this.documents.delete(key);
+  }
+
+  public async removeDocumentIfUnchanged(
+    recordType: RecordType,
+    recordId: string,
+    version: number,
+    sourceUpdatedAt: Date,
+  ): Promise<boolean> {
+    const key = this.makeKey(recordType, recordId);
+    const current = this.documents.get(key);
+    if (
+      !current ||
+      current.version !== version ||
+      current.sourceUpdatedAt.getTime() !== sourceUpdatedAt.getTime()
+    ) {
+      return false;
+    }
     return this.documents.delete(key);
   }
 

@@ -66,6 +66,7 @@ export const CRITICAL_PERMISSIONS: Permission[] = [
   "admin.recovery.write",
   "admin.impersonation.write",
   "admin.limits.write",
+  "admin.flags.write",
   "internal.reconciliation.execute",
   "internal.reconcile",
   "internal.checkpoint",
@@ -291,4 +292,60 @@ export function preparePolicyChange(options: ComputePermissionDiffOptions & {
     throw new PermissionConfirmationRequiredError();
   }
   return structuredClone(options.proposedPolicy);
+}
+
+const list = (items: readonly string[]) => (items.length ? items.join(", ") : "none");
+
+/**
+ * Renders a computed preview as a plain-text report for maintainers to read
+ * before approving a role or policy change (#1001). The output is a pure
+ * function of the preview, so identical changes always produce identical
+ * reports.
+ */
+export function renderPermissionDiffReport(preview: PermissionDiffPreview): string {
+  const lines: string[] = [];
+  lines.push(`Permission change report: policy v${preview.currentVersion} -> v${preview.proposedVersion}`);
+  lines.push("==========================================");
+  lines.push(
+    preview.isNoOp
+      ? "Verdict: NO-OP - no role or actor permissions change."
+      : preview.requiresConfirmation
+        ? "Verdict: BROAD CHANGE - explicit confirmation of this exact preview is required."
+        : "Verdict: LIMITED CHANGE - no confirmation required.",
+  );
+  if (preview.confirmationReason) lines.push(`Reason: ${preview.confirmationReason}`);
+  lines.push(
+    `Totals: +${preview.summary.totalAdded} / -${preview.summary.totalRemoved} permission(s) across ` +
+      `${preview.summary.rolesModified.length} role(s), ${preview.actorDiffs.length} actor(s) affected.`,
+  );
+
+  const changed = preview.diffs.filter((d) => d.addedPermissions.length || d.removedPermissions.length);
+  if (changed.length) {
+    lines.push("", "Roles:");
+    for (const diff of changed) {
+      lines.push(`  ${diff.role}`);
+      for (const p of diff.addedPermissions) lines.push(`    + ${p}`);
+      for (const p of diff.removedPermissions) lines.push(`    - ${p}`);
+      lines.push(`    scopes:  ${list(diff.affectedScopes)}`);
+      lines.push(`    actions: ${list(diff.affectedActions)}`);
+    }
+  }
+
+  if (preview.actorDiffs.length) {
+    lines.push("", "Actors:");
+    for (const actor of preview.actorDiffs) {
+      lines.push(`  ${actor.actor}`);
+      for (const p of actor.addedPermissions) lines.push(`    + ${p}`);
+      for (const p of actor.removedPermissions) lines.push(`    - ${p}`);
+    }
+  }
+
+  if (!preview.isNoOp) {
+    lines.push(
+      "",
+      "Rollback: this report does not activate anything. To revert after activation, prepare " +
+        `policy v${preview.proposedVersion + 1} with the v${preview.currentVersion} role matrix and review its report.`,
+    );
+  }
+  return lines.join("\n");
 }

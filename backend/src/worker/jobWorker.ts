@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
-import { withTelemetry } from "../services/telemetry.js";
+import { withTelemetry, runWithCorrelation } from "../services/telemetry.js";
 import type { JobStore } from "./jobStore.js";
 import { DEFAULT_RETRY_POLICY, nextDelayMs, toJobFailure, type RetryPolicy } from "./retryPolicy.js";
 import { NonRetryableJobError, type EnqueueInput, type JobHandler, type JobRecord, type ListJobsParams } from "./types.js";
@@ -125,6 +125,17 @@ export class JobWorker {
 
   private async process(job: JobRecord): Promise<"succeeded" | "retried" | "dead"> {
     const log = this.logger?.child({ job_id: job.id, job_type: job.type, correlation_id: job.correlationId });
+    // Issue #981: rebind the job's correlation ID into the async context so
+    // every log line and outbound call inside the handler carries the same ID
+    // as the originating HTTP request.
+    const runJob = () => this._processInner(job, log);
+    if (job.correlationId) {
+      return runWithCorrelation(job.correlationId, runJob);
+    }
+    return runJob();
+  }
+
+  private async _processInner(job: JobRecord, log: Logger | undefined): Promise<"succeeded" | "retried" | "dead"> {
     try {
       const handler = this.handlers[job.type];
       if (!handler) throw new NonRetryableJobError(`no handler registered for job type ${job.type}`);

@@ -52,6 +52,10 @@ curl -s -X POST -H x-internal-secret: $INTERNAL_SERVICE_SECRET \
 
 Endpoints are documented in [`docs/API.md`((____docs/API.md#internal-background-jobs)).
 
+Requeueing re-runs the whole handler. To keep that from repeating user-visible
+effects (emails, webhooks) that already succeeded, wrap them in the side-effect
+dispatcher; see [SIDE_EFFECT_DISPATCHER.md](SIDE_EFFECT_DISPATCHER.md).
+
 ## Crash safety
 
 A worker claims a job by compare-and-swap and stamps `locked_by` / `locked_at`.

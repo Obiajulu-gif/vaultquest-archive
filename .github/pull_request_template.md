@@ -14,7 +14,7 @@
 - [ ] New env vars / contract IDs documented in `docs/environment.md`
 - [ ] Rollback or forward-fix plan written below
 
-- [ ] Automated check passes: `node --exports-map tsx scripts/releaseReadiness.ts --base origin/main`
+- [ ] Release gate wiring check passes: `node scripts/check-release-readiness.js`
 
 ## Rollback / Forward-Fix Plan
 

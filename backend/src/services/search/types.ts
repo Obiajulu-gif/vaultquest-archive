@@ -66,8 +66,10 @@ export interface RepairAnomaly {
   recordId: string;
   anomalyType: AnomalyType;
   reason: string;
+  recommendation: "rebuild_from_source" | "restrict_visibility" | "refresh_visibility" | "purge_or_review";
   sourceVersion?: number;
   indexVersion?: number;
+  indexSourceUpdatedAt?: Date;
   expectedVisibility?: VisibilityLevel;
   actualVisibility?: VisibilityLevel;
 }
@@ -86,7 +88,8 @@ export interface RepairReport {
     recordType: RecordType;
     recordId: string;
     anomalyType: AnomalyType;
-    actionTaken: "inserted" | "updated" | "deleted";
+    recommendation: RepairAnomaly["recommendation"];
+    actionTaken: "inserted" | "updated" | "deleted" | "skipped_changed";
   }>;
   startedAt: Date;
   completedAt: Date;

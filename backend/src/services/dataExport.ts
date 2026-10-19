@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { AppError } from "../errors.js";
+import { ERROR_CODES } from "../constants.js";
 import { hasPermission } from "../../../lib/rbac.js";
 import type { Principal } from "../middleware/rbac.js";
 import type { ActionRecord } from "../types.js";
@@ -33,6 +34,8 @@ export type ExportRequest = {
   sections?: readonly ExportSection[];
   now?: Date;
   maxRecords?: number;
+  exportId?: string;
+  signal?: AbortSignal;
 };
 
 export type ExportBundle = {
@@ -96,12 +99,19 @@ async function collect<T, U>(
   project: (row: T) => U,
   filter: (row: T) => boolean,
   max: number,
+  signal?: AbortSignal,
 ): Promise<{ rows: U[]; truncated: boolean }> {
   const rows: U[] = [];
   let cursor: string | null = null;
   for (;;) {
+    if (signal?.aborted) {
+      throw AppError.conflict(ERROR_CODES.OPERATION_CANCELLED, "export operation was cancelled by client request");
+    }
     const page = await fetchPage(cursor, PAGE_SIZE);
     for (const item of page.items) {
+      if (signal?.aborted) {
+        throw AppError.conflict(ERROR_CODES.OPERATION_CANCELLED, "export operation was cancelled by client request");
+      }
       if (!filter(item)) continue;
       if (rows.length >= max) return { rows, truncated: true };
       rows.push(project(item));
@@ -112,7 +122,24 @@ async function collect<T, U>(
 }
 
 export class DataExportService {
+  private readonly activeExports = new Map<string, { controller: AbortController; wallet: string }>();
+
   constructor(private readonly source: ExportSource, private readonly accessLogger: SensitiveFieldAccessLogger = sensitiveAccessLogger) {}
+
+  registerActiveExport(exportId: string, wallet: string, controller: AbortController): void {
+    this.activeExports.set(exportId, { controller, wallet });
+  }
+
+  cancelExport(exportId: string, principal: Principal): { cancelled: boolean; exportId: string } {
+    const active = this.activeExports.get(exportId);
+    if (!active) {
+      return { cancelled: false, exportId };
+    }
+    this.authorize(principal, active.wallet);
+    active.controller.abort();
+    this.activeExports.delete(exportId);
+    return { cancelled: true, exportId };
+  }
 
   /** Callers may export their own wallet; `admin.export.any` is required for anyone else's. */
   authorize(principal: Principal, wallet: string): void {
@@ -140,6 +167,7 @@ export class DataExportService {
         projectAction,
         (row) => row.redactedAt === null || row.redactedAt === undefined, // scrubbed rows are never exported
         max,
+        req.signal,
       );
       data.actions = r.rows;
       truncated ||= r.truncated;
@@ -150,6 +178,7 @@ export class DataExportService {
         projectSavedPool,
         () => true,
         max,
+        req.signal,
       );
       data.saved_pools = r.rows;
       truncated ||= r.truncated;

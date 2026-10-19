@@ -2,15 +2,18 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { randomUUID } from "node:crypto";
 import { startTestDb, resetDb, type TestDb } from "./helpers/db.js";
 import { buildApp } from "../src/app.js";
+import { createRequester, type Requester } from "./helpers/request.js";
 import type { FastifyInstance } from "fastify";
 
 describe("public /actions routes", () => {
   let db: TestDb;
   let app: FastifyInstance;
+  let inject: Requester;
 
   beforeAll(async () => {
     db = await startTestDb();
     app = buildApp({ prisma: db.prisma, internalSecret: "test-secret" });
+    inject = createRequester(app);
   });
   afterAll(async () => {
     await app.close();
@@ -21,7 +24,7 @@ describe("public /actions routes", () => {
   });
 
   it("POST /actions requires Idempotency-Key", async () => {
-    const res = await app.inject({
+    const res = await inject({
       method: "POST", url: "/actions",
       payload: { wallet_address: "GABC", action_type: "deposit", action_payload: { vault_id: "1" } }
     });
@@ -31,7 +34,7 @@ describe("public /actions routes", () => {
 
   it("POST /actions creates a pending action", async () => {
     const key = randomUUID();
-    const res = await app.inject({
+    const res = await inject({
       method: "POST", url: "/actions",
       headers: { "idempotency-key": key, "content-type": "application/json" },
       payload: { wallet_address: "GABC", action_type: "deposit", action_payload: { vault_id: "1" } }
@@ -46,12 +49,12 @@ describe("public /actions routes", () => {
   it("POST /actions returns 200 on idempotent replay", async () => {
     const key = randomUUID();
     const payload = { wallet_address: "GABC", action_type: "deposit", action_payload: { vault_id: "1" } };
-    const first = await app.inject({
+    const first = await inject({
       method: "POST", url: "/actions",
       headers: { "idempotency-key": key, "content-type": "application/json" },
       payload
     });
-    const second = await app.inject({
+    const second = await inject({
       method: "POST", url: "/actions",
       headers: { "idempotency-key": key, "content-type": "application/json" },
       payload
@@ -63,12 +66,12 @@ describe("public /actions routes", () => {
 
   it("POST /actions returns 409 on key reuse with different payload", async () => {
     const key = randomUUID();
-    const first = await app.inject({
+    const first = await inject({
       method: "POST", url: "/actions",
       headers: { "idempotency-key": key, "content-type": "application/json" },
       payload: { wallet_address: "GABC", action_type: "deposit", action_payload: { vault_id: "1" } }
     });
-    const second = await app.inject({
+    const second = await inject({
       method: "POST", url: "/actions",
       headers: { "idempotency-key": key, "content-type": "application/json" },
       payload: { wallet_address: "GABC", action_type: "deposit", action_payload: { vault_id: "999" } }
@@ -80,13 +83,13 @@ describe("public /actions routes", () => {
 
   it("PATCH /actions/:id/submitted transitions to submitted", async () => {
     const key = randomUUID();
-    const create = await app.inject({
+    const create = await inject({
       method: "POST", url: "/actions",
       headers: { "idempotency-key": key, "content-type": "application/json" },
       payload: { wallet_address: "GABC", action_type: "deposit", action_payload: { vault_id: "1" } }
     });
     const id = create.json().data.id;
-    const patch = await app.inject({
+    const patch = await inject({
       method: "PATCH", url: `/actions/${id}/submitted`,
       headers: { "content-type": "application/json" },
       payload: { tx_hash: "tx_1" }
@@ -116,13 +119,13 @@ describe("public /actions routes", () => {
 
   it("POST /actions/:id/cancel transitions to failed", async () => {
     const key = randomUUID();
-    const create = await app.inject({
+    const create = await inject({
       method: "POST", url: "/actions",
       headers: { "idempotency-key": key, "content-type": "application/json" },
       payload: { wallet_address: "GABC", action_type: "deposit", action_payload: { vault_id: "1" } }
     });
     const id = create.json().data.id;
-    const cancel = await app.inject({
+    const cancel = await inject({
       method: "POST", url: `/actions/${id}/cancel`,
       headers: { "content-type": "application/json" },
       payload: { error_code: "WALLET_REJECTED", error_detail: "user denied" }
@@ -134,26 +137,26 @@ describe("public /actions routes", () => {
 
   it("GET /actions/:id returns record", async () => {
     const key = randomUUID();
-    const create = await app.inject({
+    const create = await inject({
       method: "POST", url: "/actions",
       headers: { "idempotency-key": key, "content-type": "application/json" },
       payload: { wallet_address: "GABC", action_type: "deposit", action_payload: { vault_id: "1" } }
     });
     const id = create.json().data.id;
-    const get = await app.inject({ method: "GET", url: `/actions/${id}` });
+    const get = await inject({ method: "GET", url: `/actions/${id}` });
     expect(get.statusCode).toBe(200);
     expect(get.json().data.id).toBe(id);
   });
 
   it("GET /actions lists by wallet", async () => {
     for (let i = 0; i < 2; i++) {
-      await app.inject({
+      await inject({
         method: "POST", url: "/actions",
         headers: { "idempotency-key": randomUUID(), "content-type": "application/json" },
         payload: { wallet_address: "GWALLET", action_type: "deposit", action_payload: { i } }
       });
     }
-    const list = await app.inject({ method: "GET", url: "/actions?wallet=GWALLET&limit=10" });
+    const list = await inject({ method: "GET", url: "/actions?wallet=GWALLET&limit=10" });
     expect(list.statusCode).toBe(200);
     expect(list.json().data).toHaveLength(2);
     expect(list.json().meta.pagination).toMatchObject({ limit: 10, has_more: false, next_cursor: null });
@@ -239,17 +242,17 @@ describe("public /actions routes", () => {
 
   it("DELETE /actions?wallet=G... scrubs payload", async () => {
     const key = randomUUID();
-    const create = await app.inject({
+    const create = await inject({
       method: "POST", url: "/actions",
       headers: { "idempotency-key": key, "content-type": "application/json" },
       payload: { wallet_address: "GSCRUB", action_type: "deposit", action_payload: { secret: "hidden" } }
     });
     const id = create.json().data.id;
-    const del = await app.inject({ method: "DELETE", url: "/actions?wallet=GSCRUB" });
+    const del = await inject({ method: "DELETE", url: "/actions?wallet=GSCRUB" });
     expect(del.statusCode).toBe(200);
     expect(del.json().data.scrubbed).toBe(1);
 
-    const get = await app.inject({ method: "GET", url: `/actions/${id}` });
+    const get = await inject({ method: "GET", url: `/actions/${id}` });
     expect(get.json().data.action_payload).toBeNull();
     expect(get.json().data.redacted_at).not.toBeNull();
   });

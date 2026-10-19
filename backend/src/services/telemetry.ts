@@ -4,6 +4,7 @@ import { AppError } from "../errors.js";
 import { ERROR_CODES } from "../constants.js";
 import { describeError } from "../errorTaxonomy.js";
 import { getPrometheusMetrics } from "./prometheusMetrics.js";
+import { LogSampler } from "./telemetryGuard.js";
 
 /**
  * #770 — operation telemetry.
@@ -23,7 +24,8 @@ export const OPERATIONS = [
   "wallet.verify_challenge",
   "settlement.settle_vault",
   "draw_proof.generate",
-  "worker.job"
+  "worker.job",
+  "side_effect.dispatch"
 ] as const;
 export type OperationName = (typeof OPERATIONS)[number];
 
@@ -63,6 +65,8 @@ export function currentCorrelationId(): string | null {
 type Listener = (event: OperationEvent) => void;
 const listeners = new Set<Listener>();
 let sink: Logger | undefined;
+/** Failure log lines are sampled per (operation, error code) so abusive input cannot flood the log (#925). */
+const failureLogSampler = new LogSampler();
 
 /** Sets the logger operation events are written to (info on success, warn on failure). */
 export function configureTelemetry(opts: { logger?: Logger }): void {
@@ -90,8 +94,17 @@ export function recordOperation(event: OperationEvent): void {
       event.error_code
     );
     if (sink) {
-      const level = event.result === "success" ? "info" : "warn";
-      sink[level](event, `operation ${event.operation} ${event.result}`);
+      const message = `operation ${event.operation} ${event.result}`;
+      if (event.result === "success") {
+        sink.info(event, message);
+      } else {
+        // Metrics and subscribers still see every failure; only the log line is sampled.
+        const key = `${event.operation}:${event.error_code ?? "INTERNAL"}`;
+        if (failureLogSampler.shouldLog(key)) {
+          const suppressed = failureLogSampler.takeSuppressed(key);
+          sink.warn(suppressed > 0 ? { ...event, suppressed_since_last_log: suppressed } : event, message);
+        }
+      }
     }
     for (const l of listeners) l(event);
   } catch {

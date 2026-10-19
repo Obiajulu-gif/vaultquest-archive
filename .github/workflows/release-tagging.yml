@@ -3,6 +3,7 @@
 # label-grouped changelog lives on the rolling draft release maintained by
 # .github/workflows/release-drafter.yml (see .github/release-drafter.yml).
 #
+# Release readiness must pass before the workflow creates a draft release.
 # Maintainer steps before publishing a tagged release:
 #   1. Review this workflow's draft release (created below) for the build
 #      artifacts (contracts-wasm.zip, deployment-manifest.json).
@@ -17,11 +18,125 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  draft_release:
+  release_readiness:
+    name: Release readiness gate
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: release-test-only
+          POSTGRES_DB: vaultquest_release_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d vaultquest_release_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:release-test-only@localhost:5432/vaultquest_release_test
+      RELEASE_TEST_DATABASE_URL: postgresql://postgres:release-test-only@localhost:5432/vaultquest_release_test
+      RELEASE_ROLLBACK_DATABASE_URL: postgresql://postgres:release-test-only@localhost:5432/vaultquest_rollback_test
+      PGPASSWORD: release-test-only
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install PostgreSQL client tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y postgresql-client
+
+      - name: Generate Prisma client
+        run: pnpm --filter backend exec prisma generate --schema prisma/schema.prisma
+
+      - name: Verify security checks
+        run: pnpm audit --audit-level=critical
+
+      - name: Scan repository for verified secrets
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --only-verified
+
+      - name: Validate schema and apply migrations to disposable PostgreSQL
+        run: |
+          pnpm --filter backend exec prisma validate --schema prisma/schema.prisma
+          pnpm --filter backend exec prisma migrate deploy --schema prisma/schema.prisma
+          for migration_dir in backend/prisma/migrations/*/; do
+            migration_id="$(basename "$migration_dir")"
+            pnpm --filter backend exec tsx src/scripts/migrationSafetyCli.ts \
+              --check "$migration_id" --post-checks
+          done
+
+      - name: Run CSRF and service-auth security tests
+        run: >-
+          pnpm --filter backend exec vitest run tests/security.spec.ts
+          --testNamePattern='sets a CSRF token cookie|blocks POST requests without a valid CSRF token|skips CSRF check for internal routes'
+
+      - name: Run PostgreSQL-backed smoke and release gate tests
+        run: >-
+          pnpm --filter backend exec vitest run tests/smoke.spec.ts
+          tests/release-readiness-gate.spec.ts tests/migration-safety.spec.ts
+
+      - name: Prepare isolated database for rollback rehearsal
+        run: createdb --host=localhost --username=postgres --maintenance-db=postgres vaultquest_rollback_test
+
+      - name: Rehearse pre-release backup and rollback restore
+        run: node scripts/rehearse-release-rollback.cjs
+
+      - name: Write and validate release evidence
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          MIGRATION_CHECK_RESULT: passed
+          MIGRATION_CHECK_EVIDENCE: "Prisma validation, disposable migrate deploy, and post-checks for every migration"
+          SECURITY_CHECK_RESULT: passed
+          SECURITY_CHECK_EVIDENCE: "Critical dependency audit and verified-secret scan"
+          SMOKE_CHECK_RESULT: passed
+          SMOKE_CHECK_EVIDENCE: "Selected CSRF/service-auth tests, PostgreSQL-backed smoke tests, and migration/release-gate suites"
+          ROLLBACK_CHECK_RESULT: passed
+          ROLLBACK_CHECK_EVIDENCE: "Custom-format backup restored to an isolated database; migration history and table row counts compared"
+        run: |
+          node scripts/release-readiness.cjs --write-evidence release-readiness-evidence.json
+          node scripts/release-readiness.cjs --evidence release-readiness-evidence.json
+
+      - name: Upload release readiness evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-readiness-evidence
+          path: release-readiness-evidence.json
+          if-no-files-found: error
+          retention-days: 90
+
+  draft_release:
+    needs: release_readiness
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7

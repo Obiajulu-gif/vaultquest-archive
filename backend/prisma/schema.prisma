@@ -430,14 +430,19 @@ model RepairQuarantine {
 // Defaults are always the safer behavior (disabled for new features, enabled for safeguards)
 model FeatureFlag {
   id          String   @id @default(uuid()) @db.Uuid
-  key         String   @unique
+  key         String
   enabled     Boolean  @default(false)
   description String?
   scope       String   @default("global") // "global", "vault:{id}", "wallet:{address}"
+  /// Holds `rollout` (see services/featureFlagRollout.ts) alongside any other keys.
   metadata    Json?
   updatedAt   DateTime @updatedAt @map("updated_at")
   createdAt   DateTime @default(now()) @map("created_at")
 
+  // Matches the "feature_flags_key_scope_key" constraint that migration
+  // 20260927000001 already creates; the schema used to declare `key @unique`,
+  // which the database never had.
+  @@unique([key, scope])
   @@index([key, scope])
   @@index([scope])
   @@map("feature_flags")
@@ -501,6 +506,7 @@ model OutboundAction {
   @@index([status, updatedAt])
   @@map("outbound_actions")
 }
+
 // #750 — dashboard aggregates for transactionally-consistent dashboard views
 model DashboardAggregate {
   id                String   @id @default(uuid()) @db.Uuid
@@ -538,11 +544,6 @@ model TrendAggregate {
 
 // #VaultQuest — derived/cached records that mirror source-of-truth data
 // (vault accounting, prize draws, wallet flows, dashboards, reporting).
-// `sourceVersion` is a monotonic counter bumped whenever the source record
-// changes; `sourceUpdatedAt` is the source row's updatedAt at cache time.
-// A cache entry is stale when either drifts from the current source, or
-// when `expiresAt` has passed. `repairJobId` links to the repair job that
-// last rebuilt this entry, so a repair job can be re-run idempotently.
 model DerivedCache {
   id              String    @id @default(uuid()) @db.Uuid
   cacheKey        String    @unique @map("cache_key")
@@ -569,8 +570,6 @@ model DerivedCache {
 }
 
 // #VaultQuest — append-only log of stale-cache detection and repair runs.
-// `dryRun` distinguishes detection-only scans from applied repairs so the
-// repair job's dry-run output is auditable without mutating DerivedCache.
 model CacheRepairRun {
   id             String    @id @default(uuid()) @db.Uuid
   jobName        String    @map("job_name")
@@ -587,4 +586,83 @@ model CacheRepairRun {
   @@index([jobName, startedAt(sort: Desc)])
   @@index([dryRun, startedAt(sort: Desc)])
   @@map("cache_repair_runs")
+}
+
+/// Time-bounded, audited maintainer support access (issue #support-access).
+/// Grants are scoped to one resource and expire automatically; every use (or
+/// denied use) is recorded in the append-only `support_access_audit` chain.
+model SupportAccessGrant {
+  id          String    @id @default(uuid()) @db.Uuid
+  requesterId String    @map("requester_id")
+  reason      String
+  ticketRef   String    @map("ticket_ref")
+  scopeType   String    @map("scope_type")
+  scope       String
+  expiresAt   DateTime  @map("expires_at")
+  revokedAt   DateTime? @map("revoked_at")
+  revokedBy   String?   @map("revoked_by")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([scopeType, scope, expiresAt])
+  @@map("support_access_grants")
+}
+
+/// Append-only, hash-chained audit trail. Immutability is enforced by a
+/// database trigger (migration `20261016000000_support_access_and_imports`),
+/// so application bugs or ad-hoc SQL cannot rewrite history.
+model SupportAccessAuditEntry {
+  id        String   @id @default(uuid()) @db.Uuid
+  grantId   String?  @map("grant_id")
+  actor     String
+  action    String
+  scope     String
+  detail    Json?
+  prevHash  String?  @map("prev_hash")
+  entryHash String   @map("entry_hash")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([grantId, createdAt])
+  @@map("support_access_audit")
+}
+
+/// Secure import pipeline (issue #imports). A batch starts as a `preview`;
+/// committed actions are traceable through `import_rows.applied_ref`.
+model ImportBatch {
+  id              String      @id @default(uuid()) @db.Uuid
+  kind            String
+  status          String      @default("preview")
+  sourceName      String?     @map("source_name")
+  contentHash     String      @map("content_hash")
+  idempotencyKey  String      @unique @map("idempotency_key")
+  createdBy       String      @map("created_by")
+  totalRows       Int         @map("total_rows")
+  acceptedRows    Int         @map("accepted_rows")
+  quarantinedRows Int         @map("quarantined_rows")
+  appliedRows     Int         @default(0) @map("applied_rows")
+  rolledBackRows  Int         @default(0) @map("rolled_back_rows")
+  createdAt       DateTime    @default(now()) @map("created_at")
+  committedAt     DateTime?   @map("committed_at")
+  rolledBackAt    DateTime?   @map("rolled_back_at")
+  rows            ImportRow[]
+
+  @@index([kind, createdAt(sort: Desc)])
+  @@map("import_batches")
+}
+
+model ImportRow {
+  id               String      @id @default(uuid()) @db.Uuid
+  batchId          String      @map("batch_id")
+  rowNumber        Int         @map("row_number")
+  status           String
+  quarantineReason String?     @map("quarantine_reason")
+  quarantineDetail String?     @map("quarantine_detail")
+  payload          Json?
+  appliedRef       String?     @map("applied_ref")
+  createdAt        DateTime    @default(now()) @map("created_at")
+  updatedAt        DateTime    @updatedAt @map("updated_at")
+  batch            ImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@unique([batchId, rowNumber])
+  @@index([batchId, status])
+  @@map("import_rows")
 }

@@ -60,6 +60,8 @@ If you are building a separate indexer service, keep its environment aligned wit
 | Preview / staging | Set real `NEXT_PUBLIC_*` values in the preview host. Use separate WalletConnect and contract IDs from production if needed. | Use staging database and a staging `INTERNAL_SERVICE_SECRET`. | Use the same staging `INTERNAL_SERVICE_SECRET` and backend URL. |
 | Production | Set production `NEXT_PUBLIC_*` values, live contract IDs, and production Horizon/Soroban endpoints. | Use production database, secure secret, and TLS. | Use production secret and secure backend endpoint. |
 
+For detailed rules, automated validation, and failure modes across tiers, see [**CONFIGURATION_CONTRACT.md**](./CONFIGURATION_CONTRACT.md) (#922).
+
 ## CI placeholder guard
 
 `.github/workflows/config-guard.yml` fails any pull request that commits the

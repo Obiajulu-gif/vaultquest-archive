@@ -213,6 +213,7 @@ export const ERROR_CATALOG: Record<ErrorCode, ErrorDescriptor> = {
     category: "validation",
     retryable: false,
     userMessage: "The request could not be processed.",
+    recovery: "Check the request syntax and parameters before retrying.",
     exposeMessage: true
   },
   // VaultQuest-specific rejection reasons
@@ -502,6 +503,314 @@ export const ERROR_CATALOG: Record<ErrorCode, ErrorDescriptor> = {
     retryable: false,
     userMessage: "The requested webhook provider is not supported.",
     recovery: "Use a supported webhook provider (e.g. stripe, internal, stellar, custom).",
+    exposeMessage: true
+  },
+  [ERROR_CODES.QUEUE_BACKPRESSURE]: {
+    category: "rate_limit",
+    retryable: true,
+    userMessage: "The background job queue is currently under heavy load.",
+    recovery: "Wait a moment (see the Retry-After header) before submitting further background jobs.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.INVARIANT_VIOLATION]: {
+    category: "conflict",
+    retryable: false,
+    userMessage: "A state transition invariant was violated.",
+    recovery: "Refresh the current state and verify account and pool status before retrying.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.BALANCE_INVARIANT_VIOLATION]: {
+    category: "conflict",
+    retryable: false,
+    userMessage: "A balance conservation or non-negative invariant was violated.",
+    recovery: "Ensure sufficient funds and that the operation preserves balance conservation.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.OWNERSHIP_INVARIANT_VIOLATION]: {
+    category: "authorization",
+    retryable: false,
+    userMessage: "An ownership transition invariant was violated.",
+    recovery: "Verify that only the current authorized owner can transfer ownership.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.ENTITLEMENT_INVARIANT_VIOLATION]: {
+    category: "conflict",
+    retryable: false,
+    userMessage: "An entitlement or claim invariant was violated.",
+    recovery: "Verify eligibility and ensure the reward or prize has not already been claimed.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.SERVICE_DEGRADED]: {
+    category: "dependency",
+    retryable: true,
+    userMessage: "The service is temporarily operating in degraded mode due to unavailable dependencies.",
+    recovery: "Read operations are serving cached data. Mutations will resume once upstream dependencies recover.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.DEPENDENCY_UNAVAILABLE]: {
+    category: "dependency",
+    retryable: true,
+    userMessage: "An upstream dependency is temporarily unavailable.",
+    recovery: "Try again in a few moments or wait for the system to recover.",
+    exposeMessage: true
+  },
+  // Problem Details Taxonomy descriptors (#946)
+  // Vault deposits
+  [ERROR_CODES.VAULT_DEPOSIT_BELOW_MIN]: {
+    category: "validation",
+    retryable: false,
+    userMessage: "The deposit amount is below the vault's minimum deposit requirement.",
+    recovery: "Increase the deposit amount to at least the vault's minimum threshold and submit again.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.VAULT_DEPOSIT_REVERTED]: {
+    category: "settlement",
+    retryable: false,
+    userMessage: "The deposit transaction reverted on the Stellar network.",
+    recovery: "Check your account balance and trustlines, then initiate a new deposit.",
+    exposeMessage: true
+  },
+  // Prize rounds
+  [ERROR_CODES.ROUND_NOT_OPEN]: {
+    category: "conflict",
+    retryable: false,
+    userMessage: "The prize round is not currently open for deposits.",
+    recovery: "Wait until the next prize round opens before depositing.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.ROUND_LOCKED]: {
+    category: "conflict",
+    retryable: false,
+    userMessage: "The prize round is locked and preparing for the draw.",
+    recovery: "Deposits are frozen for this round. Your deposit will be credited to the upcoming round.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.ROUND_RANDOMNESS_PENDING]: {
+    category: "settlement",
+    retryable: true,
+    userMessage: "The prize draw is awaiting verifiable randomness entropy.",
+    recovery: "Randomness is being generated or revealed. Check back shortly.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.ROUND_ALREADY_DRAWN]: {
+    category: "conflict",
+    retryable: false,
+    userMessage: "The winner for this prize round has already been drawn.",
+    recovery: "Inspect the round results or participate in the next round.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.ROUND_REVEAL_TIMEOUT]: {
+    category: "settlement",
+    retryable: true,
+    userMessage: "The randomness reveal window timed out for this round.",
+    recovery: "The permissionless fallback entropy path can now be triggered to finalize the round.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.DRAW_PROOF_INVALID]: {
+    category: "settlement",
+    retryable: false,
+    userMessage: "The cryptographic draw proof failed verification against on-chain evidence.",
+    recovery: "Verify your contract ID and round snapshot or re-run the standalone draw verifier.",
+    exposeMessage: false
+  },
+  // Quests
+  [ERROR_CODES.QUEST_NOT_FOUND]: {
+    category: "not_found",
+    retryable: false,
+    userMessage: "The specified quest or community challenge could not be found.",
+    recovery: "Check the quest ID or browse active challenges on the quests page.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.QUEST_NOT_JOINABLE]: {
+    category: "conflict",
+    retryable: false,
+    userMessage: "This quest is not currently joinable.",
+    recovery: "Verify that the challenge is active, funded, and open to participants.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.QUEST_UNFUNDED]: {
+    category: "conflict",
+    retryable: false,
+    userMessage: "The quest reward escrow has not been funded.",
+    recovery: "The quest creator must fund the reward escrow before participants can join.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.QUEST_ALREADY_COMPLETED]: {
+    category: "conflict",
+    retryable: false,
+    userMessage: "You have already completed this quest and earned its reward.",
+    recovery: "Explore other available quests in the catalog.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.QUEST_PROGRESS_INVALID]: {
+    category: "validation",
+    retryable: false,
+    userMessage: "The quest progress update is invalid or non-monotonic.",
+    recovery: "Ensure quest progress moves monotonically forward.",
+    exposeMessage: true
+  },
+  // Wallet flows
+  [ERROR_CODES.WALLET_UNSUPPORTED_NETWORK]: {
+    category: "wallet",
+    retryable: true,
+    userMessage: "Your connected wallet is on an unsupported Stellar network.",
+    recovery: "Switch your wallet network to match the application (Stellar Testnet or Mainnet).",
+    exposeMessage: true
+  },
+  [ERROR_CODES.WALLET_INSUFFICIENT_FUNDS]: {
+    category: "wallet",
+    retryable: false,
+    userMessage: "Your wallet does not have enough funds to complete this transaction.",
+    recovery: "Fund your Stellar account with sufficient XLM to cover the minimum reserve and fee.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.WALLET_SESSION_EXPIRED]: {
+    category: "authorization",
+    retryable: true,
+    userMessage: "Your authenticated wallet session has expired.",
+    recovery: "Re-authenticate by signing a fresh challenge in your wallet.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.WALLET_SIGNATURE_INVALID]: {
+    category: "authorization",
+    retryable: false,
+    userMessage: "The cryptographic signature could not be verified.",
+    recovery: "Sign the transaction or challenge payload with your active Stellar keypair.",
+    exposeMessage: true
+  },
+  // Indexer reconciliation
+  [ERROR_CODES.INDEXER_CURSOR_STALE]: {
+    category: "dependency",
+    retryable: true,
+    userMessage: "The event indexer cursor has fallen behind the canonical ledger.",
+    recovery: "The indexer is catching up with recent blocks. Retry in a few moments.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.INDEXER_REORG_DETECTED]: {
+    category: "settlement",
+    retryable: true,
+    userMessage: "A ledger reorganization or chain fork was detected during event ingestion.",
+    recovery: "Transactions in the affected ledgers are undergoing automated replay reconciliation.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.RECONCILIATION_MISMATCH]: {
+    category: "conflict",
+    retryable: false,
+    userMessage: "A discrepancy was detected between internal intent records and on-chain state.",
+    recovery: "A repair proposal has been quarantined for operator dual-control review.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.EVENT_QUARANTINED]: {
+    category: "settlement",
+    retryable: false,
+    userMessage: "The on-chain event was quarantined due to state contradiction or data integrity risk.",
+    recovery: "The event is held in quarantine awaiting maintainer inspection.",
+    exposeMessage: false
+  },
+  [ERROR_CODES.POISON_EVENT_DETECTED]: {
+    category: "dependency",
+    retryable: false,
+    userMessage: "A malformed or corrupt contract event was quarantined to prevent indexer stalling.",
+    recovery: "Review the poison event record in the maintainer dashboard.",
+    exposeMessage: false
+  },
+  // Capability tokens (#984)
+  [ERROR_CODES.CAPABILITY_TOKEN_REQUIRED]: {
+    category: "authorization",
+    retryable: false,
+    userMessage: "A valid expiring capability token is required for this sensitive action.",
+    recovery: "Request a short-lived capability token before executing this sensitive operation.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.CAPABILITY_TOKEN_EXPIRED]: {
+    category: "authorization",
+    retryable: true,
+    userMessage: "The capability token for this action has expired.",
+    recovery: "Request a fresh capability token and retry the operation immediately.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.CAPABILITY_TOKEN_INVALID]: {
+    category: "authorization",
+    retryable: false,
+    userMessage: "The capability token signature or payload is invalid.",
+    recovery: "Ensure the token was not altered or tampered with and re-issue if necessary.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.CAPABILITY_TOKEN_CONSUMED]: {
+    category: "conflict",
+    retryable: false,
+    userMessage: "The capability token has already been consumed (single-use).",
+    recovery: "Capability tokens can only be used once. Request a new token for another action.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.CAPABILITY_TOKEN_SCOPE_MISMATCH]: {
+    category: "authorization",
+    retryable: false,
+    userMessage: "The capability token does not grant permission for the requested action or target.",
+    recovery: "Request a capability token scoped specifically for this action and target resource.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.CAPABILITY_TOKEN_ACTOR_MISMATCH]: {
+    category: "authorization",
+    retryable: false,
+    userMessage: "The capability token was issued to a different actor.",
+    recovery: "Use the capability token issued to your authenticated identity.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.CAPABILITY_TOKEN_REVOKED]: {
+    category: "authorization",
+    retryable: false,
+    userMessage: "The capability token has been explicitly revoked.",
+    recovery: "Request a new capability token from an authorized maintainer or administrator.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.URL_NOT_ALLOWED]: {
+    category: "validation",
+    retryable: false,
+    userMessage: "The provided URL is not in the allowed destinations list or is unsafe.",
+    recovery: "Provide an approved HTTPS URL from an allowlisted domain.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.FILE_TYPE_NOT_ALLOWED]: {
+    category: "validation",
+    retryable: false,
+    userMessage: "The file type or extension is not allowed.",
+    recovery: "Upload an allowlisted file type (e.g. .csv or .json) without dangerous extensions.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.DESTINATION_NOT_ALLOWED]: {
+    category: "validation",
+    retryable: false,
+    userMessage: "The destination address or target is not allowed.",
+    recovery: "Specify a valid destination address or allowlisted webhook target.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.OPERATION_CANCELLED]: {
+    category: "conflict",
+    retryable: false,
+    userMessage: "The operation was cancelled by client request.",
+    recovery: "Start a new operation if you wish to re-run the process.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.CANCELLATION_NOT_ALLOWED]: {
+    category: "conflict",
+    retryable: false,
+    userMessage: "The operation cannot be cancelled in its current state.",
+    recovery: "Wait for the operation to complete or inspect its final state.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.INVALID_SORT_KEY]: {
+    category: "validation",
+    retryable: false,
+    userMessage: "The requested sort key or ordering specification is invalid.",
+    recovery: "Use a supported sort key and direction.",
+    exposeMessage: true
+  },
+  [ERROR_CODES.CURSOR_ORDER_MISMATCH]: {
+    category: "validation",
+    retryable: false,
+    userMessage: "The pagination cursor does not match the requested sort order or key.",
+    recovery: "Start pagination from the first page when changing sort order or filters.",
     exposeMessage: true
   }
 };

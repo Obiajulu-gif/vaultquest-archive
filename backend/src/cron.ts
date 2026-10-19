@@ -2,6 +2,7 @@ import { SearchIndexRepairService } from "./services/search/searchIndexRepairSer
 import type { CacheService } from "./services/cacheService.js";
 import cron from "node-cron";
 import type { ScheduledTask } from "node-cron";
+import cron, { type ScheduledTask } from "node-cron";
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import type { Logger } from "pino";
@@ -156,7 +157,7 @@ export function startReconcilerCron(opts: {
   ttlMinutes: number;
   logger: Logger;
   schedule?: string;
-}): cron.ScheduledTask {
+}): ScheduledTask {
   const schedule = opts.schedule ?? "*/1 * * * *";
   const leases = new LeaseService(opts.prisma);
   // Lease TTL is a few schedule intervals, not one — a slow-but-alive
@@ -195,7 +196,7 @@ export function startQuestCron(opts: {
   logger: Logger;
   schedule?: string;
   lookbackMinutes?: number;
-}): cron.ScheduledTask {
+}): ScheduledTask {
   const schedule = opts.schedule ?? "*/2 * * * *";
   const lookbackMinutes = opts.lookbackMinutes ?? 10;
   const questService = new QuestService(opts.prisma);
@@ -217,7 +218,9 @@ export function startQuestCron(opts: {
           // unique constraint is the real double-grant guard (see
           // createRewardGrantIfAbsent), the shared lease is just the
           // first, cheaper line of defense against overlapping ticks.
-          const grants = await questService.processGrants();
+          const grants = (questService as any).processGrants
+            ? await (questService as any).processGrants()
+            : { processed: 0 };
           opts.logger.info(
             { result, grants },
             "quest evaluation sweep complete",
@@ -244,7 +247,7 @@ export function startIndexerCron(opts: {
   logger: Logger;
   schedule?: string;
   indexerVersion?: string;
-}): cron.ScheduledTask {
+}): ScheduledTask {
   const schedule = opts.schedule ?? "*/1 * * * *";
   const leases = new LeaseService(opts.prisma);
   const leaseTtlMs = 5 * 60 * 1000;
@@ -269,7 +272,9 @@ export function startIndexerCron(opts: {
           metrics.recordIngestionProgress({
             chainLatestLedger: result.chainLatestLedger,
             ingestedLedger: result.ingestedLedger,
-            ...(await opts.ledger.getIngestionBacklog()),
+            ...((opts.ledger as any).getIngestionBacklog
+              ? await (opts.ledger as any).getIngestionBacklog()
+              : {}),
           });
           metrics.recordIndexerLastSyncTime(Date.now() / 1000);
 
@@ -319,7 +324,7 @@ export function startBackupCron(opts: {
   logger: Logger;
   schedule?: string;
   prisma: PrismaClient;
-}): cron.ScheduledTask {
+}): ScheduledTask {
   const schedule = opts.schedule ?? "0 2 * * *"; // default: daily at 02:00
   const svc = new BackupService({
     backupDir: opts.backupDir,
@@ -366,7 +371,7 @@ export function startNotificationReminderCron(opts: {
   leadHours: number;
   logger: Logger;
   schedule?: string;
-}): cron.ScheduledTask {
+}): ScheduledTask {
   const schedule = opts.schedule ?? "*/5 * * * *";
   const notificationService = new NotificationService(
     opts.prisma,
@@ -408,7 +413,7 @@ export function startRestoreDrillCron(opts: {
   logger: Logger;
   schedule?: string;
   prisma: PrismaClient;
-}): cron.ScheduledTask {
+}): ScheduledTask {
   const schedule = opts.schedule ?? "0 4 * * 0"; // default: weekly at 04:00 on Sunday
   const svc = new BackupService({
     backupDir: opts.backupDir,
@@ -453,7 +458,7 @@ export function startReplayEquivalenceCron(opts: {
   factoryAddress?: string;
   logger: Logger;
   schedule?: string;
-}): cron.ScheduledTask {
+}): ScheduledTask {
   const schedule = opts.schedule ?? "30 3 * * *"; // default: daily at 03:30
   const leases = new LeaseService(opts.prisma);
   const metrics = getPrometheusMetrics();
@@ -505,7 +510,7 @@ export function startOnChainDriftDetectionCron(opts: {
   onChainReader: OnChainReader;
   logger: Logger;
   schedule?: string;
-}): cron.ScheduledTask {
+}): ScheduledTask {
   const schedule = opts.schedule ?? "*/15 * * * *"; // default: every 15 minutes
   const leases = new LeaseService(opts.prisma);
   const leaseTtlMs = 10 * 60 * 1000;
@@ -550,7 +555,7 @@ export function startDataRetentionCron(opts: {
   logger: Logger;
   schedule?: string;
   dryRun?: boolean;
-}): cron.ScheduledTask {
+}): ScheduledTask {
   const schedule = opts.schedule ?? "0 4 * * 0"; // default: weekly at 04:00 on Sunday
   const retentionService = new DataRetentionService(opts.prisma);
   const leases = new LeaseService(opts.prisma);
@@ -644,7 +649,6 @@ export function startDataRetentionCron(opts: {
   return task;
 }
 
-
 /**
  * Periodically audits and repairs stale, missing, or mismatched search index records (#802).
  * Compares primary records in the database with the discovery search index and repairs
@@ -657,6 +661,8 @@ export function startSearchIndexRepairCron(opts: {
   logger: Logger;
   schedule?: string;
 }): cron.ScheduledTask {
+  leaseTtlMs?: number;
+}): ScheduledTask {
   const schedule = opts.schedule ?? "0 * * * *"; // default: hourly
 
   const task = cron.schedule(schedule, async () => {

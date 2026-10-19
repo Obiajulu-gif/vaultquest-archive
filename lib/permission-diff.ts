@@ -66,6 +66,7 @@ export const CRITICAL_PERMISSIONS: Permission[] = [
   "admin.recovery.write",
   "admin.impersonation.write",
   "admin.limits.write",
+  "admin.flags.write",
   "internal.reconciliation.execute",
   "internal.reconcile",
   "internal.checkpoint",

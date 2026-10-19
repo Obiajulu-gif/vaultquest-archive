@@ -14,6 +14,8 @@ import { receiptsRoutes } from "../src/routes/receipts.js";
 import { recoveryRoutes } from "../src/routes/recovery.js";
 import { auditTrailRoutes } from "../src/routes/auditTrail.js";
 import { operationLimitsRoutes } from "../src/routes/operationLimits.js";
+import { featureFlagRolloutRoutes } from "../src/routes/featureFlagRollouts.js";
+import { FeatureFlagRolloutGuard, InMemoryFlagRolloutStore } from "../src/services/featureFlagRollout.js";
 import { AuditTrailService, InMemoryAuditTrailStore } from "../src/services/auditTrail.js";
 import { InMemoryReceiptStore, ReceiptService, StellarReceiptSigner } from "../src/services/receipts.js";
 import { InMemoryRecoveryCaseStore, PendingRecoveryService } from "../src/services/pendingRecovery.js";
@@ -119,6 +121,18 @@ function buildApp(): FastifyInstance {
       },
     ),
   );
+  app.register(
+    featureFlagRolloutRoutes(
+      new FeatureFlagRolloutGuard({
+        store: new InMemoryFlagRolloutStore(),
+        flags: { isEnabled: async () => false, invalidate: () => {}, cacheTtlMs: 30_000 },
+      }),
+      {
+        read: requirePermission("admin.flags.read", [wallet]),
+        write: requirePermission("admin.flags.write", [wallet]),
+      },
+    ),
+  );
   return app;
 }
 
@@ -142,6 +156,13 @@ const ADMIN_ROUTES = [
     url: "/admin/limits/reset",
     permission: "admin.limits.write",
     payload: { operation: "action.create", scope_key: "wallet:gx", reason: "rbac test" },
+  },
+  { method: "GET", url: "/admin/feature-flags/prize-draw-execution/rollout", permission: "admin.flags.read" },
+  {
+    method: "POST",
+    url: "/admin/feature-flags/prize-draw-execution/rollout",
+    permission: "admin.flags.write",
+    payload: { scope: "global", reason: "rbac test" },
   },
 ] as const;
 const SERVICE_ROUTES = [

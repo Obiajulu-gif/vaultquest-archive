@@ -131,3 +131,33 @@ do {
   // process items...
 } while (cursor !== null);
 ```
+
+---
+
+## Contract Tests, Edge Cases & Recovery (#985)
+
+Contract test suite located at `backend/tests/paginationFilteringAuthContract.spec.ts` verifies:
+
+1. **Pagination Normal Paths & Determinism**:
+   - Monotonic traversal across arbitrary dataset sizes without duplicate items or skipped records.
+   - Exact limit boundary conditions: when `total % limit === 0`, final page cleanly returns `has_more = false` and `next_cursor = null`.
+   - Empty dataset responses conform strictly to the `{ data: [], meta: { pagination: { limit, has_more: false, next_cursor: null } } }` contract.
+   - Limit clamping: clamped to `[1, 100]` with default `25`. Values `< 1` are clamped to 1, values `> 100` are clamped to 100.
+
+2. **Filtering Boundaries**:
+   - Status filters (`ActionStatus`) and action type filters (`actionType`) isolate matching records.
+   - Soft-deleted / redacted records (`redactedAt IS NOT NULL`) are strictly filtered out of public queries.
+   - Invalid filter values produce standard RFC 7807/9457 `VALIDATION_ERROR` Problem Details with HTTP 400.
+
+3. **Multi-Tenant and Authorization Boundaries**:
+   - Strict multi-tenant wallet isolation: records belonging to `walletAddress = A` are inaccessible to `walletAddress = B`.
+   - Missing wallet parameter on wallet-scoped endpoints returns HTTP 400 Problem Details.
+   - Unauthenticated requests to privileged RBAC endpoints return HTTP 401 `UNAUTHORIZED` Problem Details.
+   - Internal service boundaries reject missing or incorrect `X-Internal-Secret` with HTTP 401.
+
+4. **Failure Modes & Operational Edge Cases**:
+   - **Invalid Cursor Format**: Non-UUID cursor strings return HTTP 400 `INVALID_CURSOR` / `VALIDATION_ERROR` with remediation hints.
+   - **Non-existent Cursor**: If a record pointed to by `cursor` has been pruned or purged, the query returns an empty page or falls back cleanly rather than 500 erroring.
+   - **Database Connection Flakiness**: Retries should preserve the identical `cursor` value; the deterministic sort order ensures idempotency.
+   - **Rollback / Recovery**: In the event of cursor corruption in client state, client drops `cursor` query param and restarts pagination from page 0.
+

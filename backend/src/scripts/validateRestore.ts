@@ -100,6 +100,17 @@ async function main() {
   const env = getEnv();
   const prisma = new PrismaClient({ datasources: { db: { url: env.DATABASE_URL } } });
   try {
+    // `--rebuild-derived` runs the full restore-verification pipeline: the
+    // read-only invariants below plus derived-view rebuild, staleness repair
+    // dispatch, and mismatch verification with explicit repair steps.
+    if (process.argv.includes("--rebuild-derived")) {
+      const { verifyRestoredDatabase } = await import("../services/restoreVerificationService.js");
+      const report = await verifyRestoredDatabase(prisma, { rebuildDerived: true });
+      console.log(JSON.stringify(report, null, 2));
+      if (report.failureCount) process.exitCode = 1;
+      return;
+    }
+
     const report = await validateRestoredDatabase(prisma);
     console.log(JSON.stringify(report, null, 2));
     if (report.failureCount) process.exitCode = 1;

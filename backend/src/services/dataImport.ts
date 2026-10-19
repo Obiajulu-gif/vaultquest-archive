@@ -21,7 +21,7 @@ export type ImportRowResult = {
   index: number;
   pool_id: string | null;
   action: ImportRowAction;
-  reason?: "unchanged" | "duplicate_in_file" | "invalid" | "write_failed";
+  reason?: "unchanged" | "duplicate_in_file" | "invalid" | "write_failed" | "cancelled";
   errors?: string[];
 };
 
@@ -30,6 +30,8 @@ export type ImportReport = {
   format_version: string;
   dry_run: boolean;
   wallet: string;
+  cancelled?: boolean;
+  cancellation_reason?: string;
   summary: { total: number; create: number; update: number; skip: number; error: number };
   rows: ImportRowResult[];
   /** Present after a committed run: exactly how to undo it. */
@@ -110,11 +112,33 @@ function projectRecord(r: SavedPoolRecord) {
  *   on-chain events and imported rows could forge history.
  */
 export class DataImportService {
+  private readonly activeControllers = new Map<string, AbortController>();
+
   constructor(private readonly target: ImportTarget) {}
 
-  async run(input: { wallet: string; records: unknown[]; dryRun: boolean }): Promise<ImportReport> {
-    const { wallet, records, dryRun } = input;
-    const importBatchId = randomUUID();
+  registerActiveController(batchId: string, controller: AbortController): void {
+    this.activeControllers.set(batchId, controller);
+  }
+
+  cancelActiveRun(batchId: string): boolean {
+    const controller = this.activeControllers.get(batchId);
+    if (controller) {
+      controller.abort();
+      this.activeControllers.delete(batchId);
+      return true;
+    }
+    return false;
+  }
+
+  async run(input: {
+    wallet: string;
+    records: unknown[];
+    dryRun: boolean;
+    signal?: AbortSignal;
+    importBatchId?: string;
+  }): Promise<ImportReport> {
+    const { wallet, records, dryRun, signal } = input;
+    const importBatchId = input.importBatchId ?? randomUUID();
     if (records.length > IMPORT_MAX_ROWS) {
       throw AppError.validation(`too many records (max ${IMPORT_MAX_ROWS})`);
     }
@@ -151,8 +175,28 @@ export class DataImportService {
 
     const created: string[] = [];
     const restore: unknown[] = [];
+    let isCancelled = false;
 
-    for (const { index, parsed } of valid) {
+    for (let i = 0; i < valid.length; i++) {
+      const { index, parsed } = valid[i];
+
+      // Safe cooperative cancellation check between row applications
+      if (signal?.aborted) {
+        isCancelled = true;
+        // Mark current and all remaining unapplied rows as cancelled
+        for (let j = i; j < valid.length; j++) {
+          const remIndex = valid[j].index;
+          rows[remIndex] = {
+            index: remIndex,
+            pool_id: valid[j].parsed.pool_id,
+            action: "skip",
+            reason: "cancelled",
+            errors: ["Import cancelled by user request"],
+          };
+        }
+        break;
+      }
+
       const prior = existing.get(parsed.pool_id);
       if (prior && unchanged(prior, parsed)) {
         rows[index] = { index, pool_id: parsed.pool_id, action: "skip", reason: "unchanged" };
@@ -184,13 +228,17 @@ export class DataImportService {
     }
 
     const summary = { total: records.length, create: 0, update: 0, skip: 0, error: 0 };
-    for (const r of rows) summary[r.action] += 1;
+    for (const r of rows) {
+      if (r) summary[r.action] += 1;
+    }
 
     return {
       import_batch_id: importBatchId,
       format_version: IMPORT_FORMAT_VERSION,
       dry_run: dryRun,
       wallet,
+      cancelled: isCancelled,
+      ...(isCancelled ? { cancellation_reason: "Import cancelled by client request" } : {}),
       summary,
       rows,
       ...(dryRun ? {} : { rollback: { delete_pool_ids: created, restore_records: restore } }),

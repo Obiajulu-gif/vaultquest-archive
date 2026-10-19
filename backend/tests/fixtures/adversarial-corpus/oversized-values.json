@@ -1,0 +1,65 @@
+{
+  "corpusVersion": "1.0.0",
+  "category": "oversized-values",
+  "description": "Golden fixtures for arithmetic bounds overflows, excessive string lengths, and payload depth bombs",
+  "fixtures": [
+    {
+      "id": "OVER-001-AMOUNT-UINT128-OVERFLOW",
+      "scenario": "Amount value exceeds Soroban uint128 maximum bound",
+      "target": "amountValidation",
+      "payload": {
+        "amount": "340282366920938463463374607431768211456",
+        "asset": "USDC"
+      },
+      "overflowType": "integer_overflow",
+      "maxBound": "340282366920938463463374607431768211455",
+      "expectedErrorCode": "AMOUNT_OVERFLOW"
+    },
+    {
+      "id": "OVER-002-AMOUNT-EXPONENT-NOTATION",
+      "scenario": "Amount value formatted with floating-point exponential notation instead of integer string",
+      "target": "amountValidation",
+      "payload": {
+        "amount": "1e30",
+        "asset": "USDC"
+      },
+      "overflowType": "non_integer_notation",
+      "expectedErrorCode": "INVALID_AMOUNT_FORMAT"
+    },
+    {
+      "id": "OVER-003-NEGATIVE-AMOUNT",
+      "scenario": "Negative amount string attempting underflow exploit",
+      "target": "amountValidation",
+      "payload": {
+        "amount": "-5000000",
+        "asset": "USDC"
+      },
+      "overflowType": "negative_value",
+      "expectedErrorCode": "NEGATIVE_AMOUNT"
+    },
+    {
+      "id": "OVER-004-STRING-LENGTH-DOS",
+      "scenario": "String field containing 200,000 characters to test memory and denial-of-service guards",
+      "target": "safeContent",
+      "field": "description",
+      "stringLength": 200000,
+      "maxAllowedLength": 2048,
+      "expectedErrorCode": "PAYLOAD_TOO_LARGE"
+    },
+    {
+      "id": "OVER-005-DEEP-NESTED-JSON",
+      "scenario": "Deeply nested JSON structure (150 levels deep) to exhaust recursive deserializer call stack",
+      "target": "jsonSanitization",
+      "nestingDepth": 150,
+      "maxAllowedDepth": 20,
+      "expectedErrorCode": "NESTING_DEPTH_EXCEEDED"
+    },
+    {
+      "id": "OVER-006-OVERSIZED-PUBLIC-KEY",
+      "scenario": "Public key with 10,000 characters instead of 56-character Stellar StrKey",
+      "target": "walletAddressValidation",
+      "publicKeyLength": 10000,
+      "expectedErrorCode": "INVALID_PUBLIC_KEY"
+    }
+  ]
+}

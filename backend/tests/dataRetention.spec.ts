@@ -7,7 +7,11 @@ describe("DataRetentionService", () => {
 
   beforeEach(() => {
     mockPrisma = {
-      actionLedger: { count: vi.fn(async () => 0), deleteMany: vi.fn(async () => ({ count: 0 })) },
+      actionLedger: {
+        count: vi.fn(async () => 0),
+        deleteMany: vi.fn(async () => ({ count: 0 })),
+        findMany: vi.fn(async () => []),
+      },
       chainEvent: { count: vi.fn(async () => 0), deleteMany: vi.fn(async () => ({ count: 0 })) },
       poisonEvent: {
         count: vi.fn(async () => 0),

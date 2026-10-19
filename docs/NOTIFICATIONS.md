@@ -5,6 +5,10 @@ The pure model in `lib/notification-dedup.ts` is the integration boundary for
 vault, prize-draw, action, and recovery flows. It is deliberately independent
 of React so producers can be tested without rendering a dashboard.
 
+> Preference-aware delivery (optional alerts can be muted; mandatory
+> security/lifecycle alerts always deliver, with an audit trail) is documented
+> in [`NOTIFICATION_ROUTING.md`](./NOTIFICATION_ROUTING.md).
+
 ## Dispatching a lifecycle event
 
 Create the input with the helper matching the lifecycle transition, then pass

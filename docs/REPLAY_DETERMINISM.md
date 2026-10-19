@@ -101,3 +101,27 @@ payload, and the pre-#751 wall-clock `confirmedAt`.
 
 `ReplayEquivalenceStale` (no completed run in 26 hours) means the job is
 failing or unscheduled; check the `replay-equivalence: failed` log line.
+
+## Concurrent Writes, Retries & Operational Edge Cases (#973)
+
+The action ledger and reconciliation pipelines are designed to maintain byte-for-byte replay determinism even when subjected to concurrent writes, network retries, and transient database failures:
+
+### 1. Invariants Under Concurrency & Retries
+
+- **Serialization Failure Retries (`P2034`)**: PostgreSQL `Serializable` transactions can abort under concurrent mutations. Handled via bounded retry with exponential backoff and jitter (`MAX_TX_RETRIES = 5`). Retries converge to a single committed record without side-effect duplication.
+- **Worker Lease Mutual Exclusion**: When multiple background workers or API callers race to attach a transaction hash (`attachTxHash`), conditional locking (`ActionLease`) guarantees that exactly one worker acquires the lease. Competing attempts fail authoritatively with `TX_HASH_ALREADY_ATTACHED` or `ILLEGAL_TRANSITION`.
+- **Idempotency Stability**: Concurrent duplicate requests bearing identical idempotency keys resolve to the exact same record without creating duplicate entries or mutating `correlation_id` / `created_at`.
+- **Poison Event Quarantine**: Malformed or unparseable events encountered during concurrent replay are logged into `PoisonEvent` without aborting concurrent valid events, enabling deterministic progression of the replay cursor.
+- **Snapshot Authorization Verification**: Replay of multi-signature or admin actions validates approvals strictly against the signer snapshot captured at proposal creation, discarding unapproved signers.
+
+### 2. Operational Edge Cases & Recovery / Rollback
+
+| Edge Case | Failure Mode | Mitigation / Recovery Procedure |
+| :--- | :--- | :--- |
+| **Simultaneous Confirmation Races** | Multiple workers or webhooks attempt to confirm the same action with conflicting transaction hashes. | Atomic conditional update (`WHERE status = 'pending'`). Exactly one succeeds; losers receive conflict errors and safe rollback. |
+| **Exhausted Database Retries** | Persistent lock contention or database partition exceeds `MAX_TX_RETRIES`. | Action transitions to `failed` / `recovery_required` with structured error code and checkpoint timestamp. |
+| **Replay Divergence on Unverified Payloads** | Client-supplied intent differs from on-chain event facts. | Replay equivalence compares `verified_payload` (derived strictly from chain events), ensuring divergences in client intent do not corrupt the replayed projection. |
+| **Session Revocation During In-Flight Submissions** | Wallet session revoked while concurrent actions are in-flight. | Requests arriving after revocation fail with `UNAUTHORIZED`, leaving the database clean and audit logs intact. |
+
+Automated test verification is implemented in `backend/tests/deterministic-replay-concurrency.spec.ts`.
+

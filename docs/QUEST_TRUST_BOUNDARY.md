@@ -41,3 +41,5 @@ A passing test must prove the final on-chain accounting is consistent and that r
 2. Treat service-layer pre-checks as advisory only.
 3. Add pre-signing and post-signing intent verification around wallet-connect calls.
 4. Build the multi-actor e2e harness after the contract-level rejection path exists.
+
+See [**CROSS_BOUNDARY_THREAT_MODEL.md**](./CROSS_BOUNDARY_THREAT_MODEL.md) for the comprehensive scenario-based threat model covering vault deposits, prize rounds, quests, wallet flows, and indexer reconciliation (#917).

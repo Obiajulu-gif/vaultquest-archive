@@ -1,4 +1,7 @@
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import {
+  PostgreSqlContainer,
+  type StartedPostgreSqlContainer,
+} from "@testcontainers/postgresql";
 import { PrismaClient } from "@prisma/client";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
@@ -12,8 +15,13 @@ export type TestDb = {
 
 export async function startTestDb(): Promise<TestDb> {
   const backendDir = fileURLToPath(new URL("../../", import.meta.url));
-  const prismaCliPath = resolve(backendDir, "node_modules/prisma/build/index.js");
-  const container: StartedPostgreSqlContainer = await new PostgreSqlContainer("postgres:16-alpine")
+  const prismaCliPath = resolve(
+    backendDir,
+    "node_modules/prisma/build/index.js",
+  );
+  const container: StartedPostgreSqlContainer = await new PostgreSqlContainer(
+    "postgres:16-alpine",
+  )
     .withDatabase("vaultquest_test")
     .withUsername("test")
     .withPassword("test")
@@ -24,10 +32,12 @@ export async function startTestDb(): Promise<TestDb> {
   execFileSync(process.execPath, [prismaCliPath, "migrate", "deploy"], {
     cwd: backendDir,
     env: { ...process.env, DATABASE_URL: databaseUrl },
-    stdio: "inherit"
+    stdio: "inherit",
   });
 
-  const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
 
   return {
     prisma,
@@ -35,7 +45,7 @@ export async function startTestDb(): Promise<TestDb> {
     stop: async () => {
       await prisma.$disconnect();
       await container.stop();
-    }
+    },
   };
 }
 
@@ -52,8 +62,17 @@ export async function resetDb(prisma: PrismaClient): Promise<void> {
   await prisma.userQuest.deleteMany({});
   await prisma.vaultSettlement.deleteMany({});
   await prisma.actionLedger.deleteMany({});
+  await prisma.importRow.deleteMany({});
+  await prisma.importBatch.deleteMany({});
+  await prisma.supportAccessGrant.deleteMany({});
+  // The support-access audit trail is append-only (UPDATE/DELETE are blocked
+  // by a trigger), so tests reset it with TRUNCATE, which bypasses row
+  // triggers while still going through table-level permissions.
+  await prisma.$executeRawUnsafe('TRUNCATE TABLE "support_access_audit"');
   // #750: clear dashboard aggregate snapshots between test runs
-  await prisma.$executeRawUnsafe(`DELETE FROM "dashboard_aggregates"`).catch(() => {
-    // Table may not exist yet on older test DBs — safe to ignore.
-  });
+  await prisma
+    .$executeRawUnsafe(`DELETE FROM "dashboard_aggregates"`)
+    .catch(() => {
+      // Table may not exist yet on older test DBs — safe to ignore.
+    });
 }

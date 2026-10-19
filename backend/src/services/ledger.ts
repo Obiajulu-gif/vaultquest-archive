@@ -683,6 +683,7 @@ export class LedgerService {
             checkpointed_at: (input.ledgerClosedAt ?? new Date()).toISOString()
           },
           sorobanEventId: input.sorobanEventId,
+          verifiedPayload: (input.eventPayload ?? undefined) as Prisma.InputJsonValue,
           confirmedAt: new Date(),
           errorCode: input.statusHint === "reverted" ? ERROR_CODES.REVERTED_ON_CHAIN : null,
           observedLedger: ledger ?? row.observedLedger,

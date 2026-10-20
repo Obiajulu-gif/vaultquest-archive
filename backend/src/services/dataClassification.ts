@@ -79,6 +79,12 @@ export const DATA_CLASSIFICATION: Record<Prisma.ModelName, TableClassification> 
   DashboardAggregate: { table: "dashboard_aggregates", kind: "off-chain", rationale: "Cached dashboard aggregates." },
   TrendAggregate: { table: "trend_aggregates", kind: "off-chain", rationale: "Historical trend rollups." },
   PartialFailure: { table: "partial_failures", kind: "off-chain", rationale: "Partial failure investigation records." },
+  MaintainerNote: { table: "maintainer_notes", kind: "off-chain", rationale: "Scoped support notes with bounded retention." },
+  MaintainerNoteAudit: { table: "maintainer_note_audit", kind: "off-chain", rationale: "Immutable note access references survive content redaction." },
+  AuditTrailRecord: { table: "audit_trail", kind: "off-chain", rationale: "Existing immutable recovery and projection rebuild audit trail." },
+  FailureEscalationPolicy: { table: "failure_escalation_policies", kind: "off-chain", rationale: "Configured failure escalation thresholds." },
+  FailureEscalationAttempt: { table: "failure_escalation_attempts", kind: "off-chain", rationale: "Durable maintainer inbox and acknowledgment history." },
+  ChainEventBatch: { table: "chain_event_batches", kind: "chain-derived", rationale: "Integrity manifests for the archived event log; recover with chain_events." },
   ActionLease: { table: "action_leases", kind: "ephemeral", rationale: "Worker leases; stale after restore." },
   JobLease: { table: "job_leases", kind: "ephemeral", rationale: "Cron leases; stale after restore." },
   ProjectionRebuild: {

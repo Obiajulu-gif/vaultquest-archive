@@ -273,6 +273,7 @@ function toReconcileInput(e: {
     sorobanEventId: e.raw.id,
     eventPayload: e.payload,
     statusHint: e.statusHint,
+    ledger: e.raw.ledger,
     ledgerClosedAt: e.raw.ledgerClosedAt ? new Date(e.raw.ledgerClosedAt) : undefined
   };
 }
@@ -389,214 +390,75 @@ export class StellarIndexer {
    */
   async processRawEvents(rawEvents: RawHorizonEvent[]): Promise<IndexResult> {
     const { ledger, decoder } = this.opts;
+    const ordered = [...rawEvents].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    // Persist the original bytes and their manifest before decoding or writing any projection.
+    await ledger.appendChainEvents(ordered);
     let imported = 0;
     let duplicates = 0;
     let quarantined = 0;
     let latestLedger: number | null = null;
-
-    // Log-first (#751): every fetched event is appended to the raw chain
-    // event log before any decoding or reconciliation, so no event can
-    // affect state without being replayable. Idempotent on event id.
-    await ledger.appendChainEvents(rawEvents);
-
-    // Track event IDs seen within this batch to detect intra-batch duplicates
-    // before they reach the DB (reconcileEvent uses upsert with update:{} so
-    // it would silently accept a second write of the same event id).
-    const seenInBatch = new Set<string>();
-
-    // ── Decode phase ─────────────────────────────────────────────────────
-    // Decode every event first, quarantining-and-halting at the first
-    // unresolvable one (so the cursor can never advance past a gap), and
-    // collect the decodable events for a single batched write below.
-    const batchEvents: Array<{
-      raw: RawHorizonEvent;
-      payload: Record<string, unknown>;
-      statusHint: "confirmed" | "reverted";
-    }> = [];
-    const poolRegistryEvents: Array<{
-      raw: RawHorizonEvent;
-      payload: Record<string, unknown>;
-    }> = [];
-
-    for (const raw of rawEvents) {
-      // Intra-batch duplicate: same Soroban event ID appeared earlier in this tick.
-      if (seenInBatch.has(raw.id)) {
-        duplicates += 1;
-        this.cursor = raw.id;
-        latestLedger = raw.ledger;
-        continue;
+    const seen = new Set<string>();
+    const seenTransactions = new Set<string>();
+    let pending: ReconcileEventInput[] = [];
+    let pendingTip: RawHorizonEvent | null = null;
+    const flush = async () => {
+      if (pending.length) {
+        const outcomes = await ledger.reconcileEvents(pending);
+        for (let i = 0; i < pending.length; i++) {
+          const input = pending[i]!;
+          this.opts.logger?.info({ txHash: input.txHash, eventId: input.sorobanEventId,
+            ledger: input.ledger, matched: outcomes[i]!.matched }, "indexer: event reconciled");
+        }
+        imported += pending.length;
       }
-      seenInBatch.add(raw.id);
-
+      if (pendingTip) { this.cursor = pendingTip.id; latestLedger = pendingTip.ledger; }
+      pending = [];
+      pendingTip = null;
+    };
+    for (const raw of ordered) {
+      if (seen.has(raw.id)) { duplicates++; pendingTip = raw; continue; }
+      seen.add(raw.id);
       let payload: Record<string, unknown>;
       try {
         payload = decoder.decode(raw);
-      } catch (err) {
-        // Malformed or unrecognized event: quarantine it and halt this batch
-        // *without* advancing the cursor past it, so a gap can't silently
-        // slip by. The next tick will re-fetch and retry the same event
-        // until it's resolved (fixed decoder/backfill) or manually cleared.
-        // Events decoded before the gap are still written by the write phase
-        // below — nothing after the gap is touched.
-        await ledger.quarantineEvent({
-          sorobanEventId: raw.id,
-          ledger: raw.ledger,
-          contractId: raw.contractId,
-          txHash: raw.txHash,
-          rawEvent: raw as unknown as Record<string, unknown>,
-          reason: err instanceof Error ? err.message : String(err)
-        });
-        quarantined += 1;
-        this.opts.logger?.warn(
-          { eventId: raw.id, txHash: raw.txHash, err },
-          "indexer: quarantined event, halting batch at gap"
-        );
+      } catch (error) {
+        await flush();
+        await ledger.quarantineEvent({ sorobanEventId: raw.id, ledger: raw.ledger,
+          contractId: raw.contractId, txHash: raw.txHash, rawEvent: raw as unknown as Record<string, unknown>,
+          reason: error instanceof Error ? error.message : String(error) });
+        this.opts.logger?.warn({ eventId: raw.id, txHash: raw.txHash }, "indexer: quarantined event; halted at gap");
+        quarantined++;
         break;
       }
-
-      const statusHint: "confirmed" | "reverted" = raw.successful ? "confirmed" : "reverted";
-
-      // vault-factory's registry event (#507) isn't an action confirmation
-      // against a pre-existing ActionLedger row — it announces a brand new
-      // pool. Route it to the registry upsert instead of reconcileEvent,
-      // which would otherwise park it as an orphaned pendingEvent forever.
+      const statusHint = raw.successful ? "confirmed" as const : "reverted" as const;
       if (payload.type === FACTORY_POOL_DEPLOYED_EVENT_TYPE && statusHint === "confirmed") {
-        // #507 "spoofed pools": only trust this event if it was emitted BY
-        // the configured, known vault-factory contract address. Without
-        // this check, ANY contract in the watched set emitting a
-        // topic-matching fpooldep event — including a malicious or
-        // unrelated contract — would get its (fully attacker-controlled)
-        // payload fields upserted into the registry as if it were a
-        // genuine factory deployment. Fails closed: if factoryAddress
-        // isn't configured, or doesn't match the emitting contract, the
-        // event is logged and skipped rather than trusted.
-        if (!this.opts.factoryAddress) {
-          this.opts.logger?.warn(
-            { txHash: raw.txHash, contractId: raw.contractId },
-            "indexer: received fpooldep event but no factoryAddress is configured — refusing to trust it, skipping"
-          );
-          this.cursor = raw.id;
-          latestLedger = raw.ledger;
-          continue;
+        // Flush before registry writes so mixed batches preserve chain order.
+        await flush();
+        if (this.opts.factoryAddress && raw.contractId === this.opts.factoryAddress) {
+          await ledger.upsertPoolRegistryEntry({ salt: bytesToHex(payload.salt),
+            poolAddress: String(payload.pool_address), factoryAddress: raw.contractId,
+            admin: String(payload.admin), asset: String(payload.asset), wasmHash: bytesToHex(payload.wasm_hash),
+            deployedLedger: raw.ledger });
+          imported++;
+        } else {
+          this.opts.logger?.warn({ eventId: raw.id, contractId: raw.contractId }, "indexer: refusing registry event from an untrusted factory");
         }
-        if (raw.contractId !== this.opts.factoryAddress) {
-          this.opts.logger?.warn(
-            { txHash: raw.txHash, contractId: raw.contractId, expectedFactoryAddress: this.opts.factoryAddress },
-            "indexer: received fpooldep event from a contract that is NOT the configured vault-factory — possible spoofed pool, skipping"
-          );
-          this.cursor = raw.id;
-          latestLedger = raw.ledger;
-          continue;
-        }
-
-        poolRegistryEvents.push({ raw, payload });
-        continue;
-      }
-
-      batchEvents.push({ raw, payload, statusHint });
-    }
-
-    // ── Write phase ───────────────────────────────────────────────────────
-    // Batch-reconcile the independent (non-conflicting) events in ONE
-    // transaction instead of one round-trip per event (#588). Outcomes align
-    // 1:1 with batchEvents (distinct tx hashes are guaranteed by
-    // seenInBatch), so each queued event advances the cursor exactly as the
-    // per-event path did — only the *timing* changes, never the outcomes.
-    if (batchEvents.length > 0) {
-      try {
-        const outcomes = await ledger.reconcileEvent(batchEvents.map(toReconcileInput));
-        for (let i = 0; i < outcomes.length; i++) {
-          imported += 1;
-          // outcomes is 1:1 with batchEvents (both built in the same loop).
-          const event = batchEvents[i]!;
-          this.cursor = event.raw.id;
-          latestLedger = event.raw.ledger;
-          // #753: one line per event keyed by txHash, the cross-layer correlation key.
-          this.opts.logger?.info(
-            { txHash: event.raw.txHash, eventId: event.raw.id, ledger: event.raw.ledger, matched: outcomes[i]!.matched },
-            "indexer: event reconciled"
-          );
-        }
-      } catch (err) {
-        // A batch-wide failure (lock timeout, connection loss) leaves the
-        // whole batch unwritten. Fall back to per-event reconciliation so a
-        // transient conflict can't silently drop events: the cursor only
-        // advances past events that were actually written.
-        this.opts.logger?.warn(
-          { err, count: batchEvents.length },
-          "indexer: batch reconcile failed, falling back to per-event writes"
-        );
-        for (const e of batchEvents) {
-          try {
-            const { matched } = await ledger.reconcileEvent(toReconcileInput(e));
-            imported += 1;
-            this.opts.logger?.info(
-              { txHash: e.raw.txHash, eventId: e.raw.id, ledger: e.raw.ledger, matched },
-              "indexer: event reconciled"
-            );
-          } catch (err2: unknown) {
-            // Unique constraint violation on pending_events.tx_hash means we
-            // already have this event from a previous tick — safe to skip.
-            const isDuplicate =
-              err2 instanceof Error &&
-              (err2.message.includes("Unique constraint") ||
-                err2.message.includes("P2002") ||
-                (err2 as any).code === "P2002");
-
-            if (isDuplicate) {
-              duplicates += 1;
-            } else {
-              this.opts.logger?.warn({ err: err2, txHash: e.raw.txHash }, "indexer: skipping event due to error");
-              this.cursor = e.raw.id;
-              latestLedger = e.raw.ledger;
-              continue;
-            }
-          }
-          this.cursor = e.raw.id;
-          latestLedger = e.raw.ledger;
-        }
+        this.cursor = raw.id;
+        latestLedger = raw.ledger;
+      } else {
+        if (seenTransactions.has(raw.txHash)) { duplicates++; pendingTip = raw; continue; }
+        seenTransactions.add(raw.txHash);
+        pending.push(toReconcileInput({ raw, payload, statusHint }));
+        pendingTip = raw;
       }
     }
-
-    // Pool registry upserts (rare — one per deployed pool) stay per-event:
-    // batching them would gain nothing and the registry is uncontended.
-    for (const { raw, payload } of poolRegistryEvents) {
-      try {
-        // `salt`/`wasm_hash` are BytesN<32> on-chain; scValToNative
-        // decodes those to Buffers, not strings — hex-encode them so the
-        // registry stores a stable, human-inspectable value instead of
-        // mangling raw bytes through String() coercion. Address fields
-        // (`pool_address`/`admin`/`asset`) already decode to their G...
-        // strkey strings.
-        await ledger.upsertPoolRegistryEntry({
-          salt: bytesToHex(payload.salt),
-          poolAddress: String(payload.pool_address),
-          factoryAddress: raw.contractId,
-          admin: String(payload.admin),
-          asset: String(payload.asset),
-          wasmHash: bytesToHex(payload.wasm_hash),
-          deployedLedger: raw.ledger
-        });
-        imported += 1;
-      } catch (err) {
-        this.opts.logger?.warn({ err, txHash: raw.txHash }, "indexer: failed to upsert pool registry entry");
-      }
-      this.cursor = raw.id;
-      latestLedger = raw.ledger;
-    }
-
-    return {
-      processed: rawEvents.length,
-      imported,
-      duplicates,
-      quarantined,
-      cursor: this.cursor,
-      latestLedger,
-      // Tip tracking needs the fetch context; tick() fills these in.
-      chainLatestLedger: null,
-      ingestedLedger: latestLedger
-    };
+    // Failed batches propagate without advancing the cursor. A retry repeats
+    // the already committed prefix, whose ledger writes are idempotent.
+    await flush();
+    return { processed: rawEvents.length, imported, duplicates, quarantined,
+      cursor: this.cursor, latestLedger, chainLatestLedger: null, ingestedLedger: latestLedger };
   }
+
 }
 
 // ─── SorobanRpcEventSource ────────────────────────────────────────────────────

@@ -22,6 +22,8 @@
     "diagnostics": "tsx src/scripts/diagnostics.ts",
     "diagnostics:json": "tsx src/scripts/diagnostics.ts --json",
     "db:validate-restore": "tsx src/scripts/validateRestore.ts",
+    "backup:snapshot": "tsx src/scripts/backupSnapshot.ts",
+    "projections:rebuild": "tsx src/scripts/rebuildProjections.ts",
     "drill": "tsx src/scripts/runDrill.ts",
     "drill:all": "tsx src/scripts/runDrill.ts --type all",
     "lint": "eslint \"src/**/*.ts\" \"tests/**/*.ts\"",

@@ -44,6 +44,7 @@ import type { LedgerService } from "./ledger.js";
 import type { JobLeaseHandle, LeaseService } from "./leaseService.js";
 import { StellarIndexer, ledgerOfEventId, type XdrDecoder } from "./stellarIndexer.js";
 import { ChainEventLogSource, resolvedPoisonEventIds } from "./replayEquivalence.js";
+import { EventLogIntegrityError, verifyEventLog } from "./eventLogIntegrity.js";
 
 /** Job lease the indexer cron runs under; holding it pauses live ingestion. */
 export const INDEXER_JOB_LEASE = "stellar-indexer";
@@ -117,6 +118,8 @@ export interface ProjectionReplayer {
 }
 
 export interface ProjectionTarget {
+  /** Detect gaps or changed bytes before reset and again before declaring success. */
+  validateLog?(): Promise<void>;
   /** Last event id in the stored log, or null when the log is empty. */
   logTip(): Promise<string | null>;
   /** Events in the log up to and including `toEventId`. */
@@ -241,6 +244,7 @@ export class ProjectionRebuildService {
     let run: ProjectionRebuildRun;
     let supersedes: string | null;
     try {
+      await this.deps.target.validateLog?.();
       // Re-read under the lease: only the lease holder creates or resumes runs.
       supersedes = (await this.deps.runs.findIncomplete())?.id ?? null;
       run = await this.deps.runs.create(
@@ -356,6 +360,7 @@ export class ProjectionRebuildService {
   private async execute(started: ProjectionRebuildRun, handle: JobLeaseHandle): Promise<ProjectionRebuildRun> {
     let run = started;
     try {
+      await this.deps.target.validateLog?.();
       if (run.toEventId !== null) {
         if (run.cursor === null) await this.deps.target.resetProjections();
         const replay = await this.deps.target.openReplay(run.cursor, run.toEventId);
@@ -384,6 +389,7 @@ export class ProjectionRebuildService {
       }
 
       await this.assertFenceHeld(handle);
+      await this.deps.target.validateLog?.();
       if (run.cursor !== null) await this.deps.target.commitCheckpoint(run.cursor, run.projectionVersion);
       const completedAt = this.now();
       run = await this.deps.runs.update(run.id, { status: "completed", completedAt, heartbeatAt: completedAt });
@@ -411,7 +417,7 @@ export class ProjectionRebuildService {
    * takeover shares. The failed run keeps the indexer fenced. Never throws.
    */
   private async fail(run: ProjectionRebuildRun, err: unknown, handle: JobLeaseHandle): Promise<ProjectionRebuildRun> {
-    const errorCode = err instanceof RebuildHalt ? err.code : "REPLAY_FAILED";
+    const errorCode = err instanceof RebuildHalt || err instanceof EventLogIntegrityError ? err.code : "REPLAY_FAILED";
     const lastError = errorMessage(err).slice(0, MAX_ERROR_LENGTH);
     this.deps.logger?.error({ event: "projection_rebuild.failed", runId: run.id, errorCode, err }, "projection rebuild failed");
     let failed: ProjectionRebuildRun = { ...run, status: "failed", errorCode, lastError };
@@ -536,6 +542,16 @@ export class PrismaProjectionTarget implements ProjectionTarget {
     private readonly ledger: LedgerService,
     private readonly options: PrismaProjectionTargetOptions
   ) {}
+
+  async validateLog(): Promise<void> {
+    try {
+      await this.prisma.$transaction(async (tx) => { await verifyEventLog(tx); },
+        { isolationLevel: "RepeatableRead", timeout: 120000 });
+    } catch (error) {
+      if (error instanceof EventLogIntegrityError) throw AppError.conflict("ILLEGAL_TRANSITION", error.message);
+      throw error;
+    }
+  }
 
   async logTip(): Promise<string | null> {
     const row = await this.prisma.chainEvent.findFirst({ orderBy: { id: "desc" }, select: { id: true } });

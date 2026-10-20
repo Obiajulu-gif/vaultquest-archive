@@ -115,6 +115,16 @@ model ChainEvent {
   @@map("chain_events")
 }
 
+/// Batch manifests detect gaps even when an event disappears before a rebuild starts.
+model ChainEventBatch {
+  id          String   @id
+  eventIds    String[] @map("event_ids")
+  contentHash String?  @map("content_hash")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@map("chain_event_batches")
+}
+
 model ActionLease {
   actionId   String    @id @map("action_id") @db.Uuid
   workerId   String    @map("worker_id")
@@ -755,4 +765,125 @@ model ImportRow {
   @@unique([batchId, rowNumber])
   @@index([batchId, status])
   @@map("import_rows")
+}
+
+model MaintainerNote {
+  id         String                @id @default(uuid()) @db.Uuid
+  scopeType  String                @map("scope_type")
+  scopeId    String                @map("scope_id")
+  kind       String
+  visibility String
+  body       String?
+  authorId   String                @map("author_id")
+  version    Int                   @default(1)
+  expiresAt  DateTime              @map("expires_at") @db.Timestamptz(3)
+  archivedAt DateTime?             @map("archived_at") @db.Timestamptz(3)
+  redactedAt DateTime?             @map("redacted_at") @db.Timestamptz(3)
+  createdAt  DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime              @updatedAt @map("updated_at") @db.Timestamptz(3)
+  audit      MaintainerNoteAudit[]
+
+  @@index([scopeType, scopeId, createdAt])
+  @@index([expiresAt])
+  @@map("maintainer_notes")
+}
+
+/// No note content is copied into the immutable audit trail.
+model MaintainerNoteAudit {
+  id        String          @id @default(uuid()) @db.Uuid
+  noteId    String?         @map("note_id") @db.Uuid
+  actor     String
+  action    String
+  allowed   Boolean
+  version   Int?
+  createdAt DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  note      MaintainerNote? @relation(fields: [noteId], references: [id], onDelete: Restrict)
+
+  @@index([noteId, createdAt])
+  @@map("maintainer_note_audit")
+}
+
+/// Maps the existing #793 table so escalation uses the live failure records.
+model PartialFailure {
+  id             String                     @id @default(uuid()) @db.Uuid
+  operationType  String                     @map("operation_type")
+  operationId    String                     @map("operation_id")
+  externalRef    String?                    @map("external_ref")
+  severity       String                     @default("medium")
+  state          String                     @default("unresolved")
+  retryable      Boolean                    @default(false)
+  description    String
+  metadata       Json?
+  detectedAt     DateTime                   @default(now()) @map("detected_at") @db.Timestamptz(3)
+  staleSinceAt   DateTime?                  @map("stale_since_at") @db.Timestamptz(3)
+  lastRetriedAt  DateTime?                  @map("last_retried_at") @db.Timestamptz(3)
+  resolvedAt     DateTime?                  @map("resolved_at") @db.Timestamptz(3)
+  resolvedBy     String?                    @map("resolved_by")
+  resolutionNote String?                    @map("resolution_note")
+  ignoredAt      DateTime?                  @map("ignored_at") @db.Timestamptz(3)
+  ignoredBy      String?                    @map("ignored_by")
+  updatedAt      DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(3)
+  escalations    FailureEscalationAttempt[]
+
+  @@index([state, detectedAt(sort: Desc)])
+  @@index([operationType, state])
+  @@index([severity, state])
+  @@map("partial_failures")
+}
+
+model FailureEscalationPolicy {
+  severity    String   @id
+  afterMs     Int      @map("after_ms")
+  repeatMs    Int      @map("repeat_ms")
+  maxAttempts Int      @map("max_attempts")
+  enabled     Boolean  @default(true)
+  version     Int      @default(1)
+  updatedBy   String   @map("updated_by")
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("failure_escalation_policies")
+}
+
+/// Maps the existing immutable audit_trail table used by recovery and rebuilds.
+model AuditTrailRecord {
+  id             String   @id @db.Uuid
+  sequence       Int      @unique
+  category       String
+  action         String
+  actorSubject   String   @map("actor_subject")
+  actorRole      String   @map("actor_role")
+  targetType     String   @map("target_type")
+  targetId       String   @map("target_id")
+  reason         String?
+  before         Json?
+  after          Json?
+  metadata       Json?
+  redactedFields String[] @map("redacted_fields")
+  occurredAt     DateTime @map("occurred_at") @db.Timestamptz(3)
+  prevHash       String   @map("prev_hash")
+  recordHash     String   @map("record_hash")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([category, sequence(sort: Desc)])
+  @@index([actorSubject, sequence(sort: Desc)])
+  @@index([targetType, targetId, sequence(sort: Desc)])
+  @@map("audit_trail")
+}
+
+/// Durable in-app maintainer notifications. Attempt identity is stable across retries.
+model FailureEscalationAttempt {
+  id             String         @id @default(uuid()) @db.Uuid
+  failureId      String         @map("failure_id") @db.Uuid
+  attempt        Int
+  policyVersion  Int            @map("policy_version")
+  severity       String
+  status         String         @default("pending")
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  acknowledgedAt DateTime?      @map("acknowledged_at") @db.Timestamptz(3)
+  acknowledgedBy String?        @map("acknowledged_by")
+  failure        PartialFailure @relation(fields: [failureId], references: [id], onDelete: Restrict)
+
+  @@unique([failureId, attempt])
+  @@index([status, createdAt])
+  @@map("failure_escalation_attempts")
 }

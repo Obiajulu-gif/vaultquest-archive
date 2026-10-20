@@ -82,6 +82,9 @@ Maintainers can preview bounded stale-index findings with `GET /api/search/repai
 
 ## Environment
 
+For structured maintainer notes, escalation policies/inbox, replay integrity,
+and read-only backup snapshots, see [Maintainer operations](../docs/MAINTAINER_OPERATIONS.md).
+
 See `.env.example`. All values are validated at boot via Zod. Background worker settings: `WORKER_ENABLED` (default `true`) and `WORKER_POLL_INTERVAL_MS` (default `2000`); see [`docs/BACKGROUND_JOBS.md`](docs/BACKGROUND_JOBS.md).
 
 ## Errors, telemetry, jobs and the API contract

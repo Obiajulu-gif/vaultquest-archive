@@ -147,6 +147,9 @@ import {
   ProjectionRebuildService,
 } from "./services/projectionRebuild.js";
 import { projectionRebuildRoutes } from "./routes/projectionRebuilds.js";
+import { MaintainerNotesService } from "./services/maintainerNotes.js";
+import { FailureEscalationService } from "./services/failureEscalation.js";
+import { maintainerOperationsRoutes, startMaintainerOperations } from "./routes/maintainerOperations.js";
 
 export type AppDeps = {
   prisma: PrismaClient;
@@ -657,6 +660,18 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   );
 
   // #793: partial failure dashboard.
+  const maintainerNotes = new MaintainerNotesService(deps.prisma);
+  const failureEscalations = new FailureEscalationService(deps.prisma);
+  app.register(maintainerOperationsRoutes(maintainerNotes, failureEscalations, {
+    read: requirePermission("admin.recovery.read", [walletPrincipal]),
+    write: requirePermission("admin.recovery.write", [walletPrincipal]),
+  }));
+  let stopMaintainerOperations: (() => Promise<void>) | undefined;
+  app.addHook("onReady", async () => {
+    stopMaintainerOperations = startMaintainerOperations(maintainerNotes, failureEscalations,
+      (err) => app.log.error({ err }, "maintainer operations tick failed"));
+  });
+  app.addHook("onClose", async () => { await stopMaintainerOperations?.(); });
   const partialFailureSvc = new PartialFailureService(deps.prisma, auditTrail);
   app.register(
     partialFailureRoutes(partialFailureSvc, {

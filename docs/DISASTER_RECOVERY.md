@@ -39,6 +39,12 @@ Keep this table in sync in the same PR as any schema change.
 | `dashboard_aggregates` | off-chain | Backup | Cached dashboard aggregates. |
 | `trend_aggregates` | off-chain | Backup | Historical trend rollups. |
 | `partial_failures` | off-chain | Backup | Partial failure investigation records. |
+| `maintainer_notes` | off-chain | Backup | Scoped note content; enforce expiry before serving a restore. |
+| `maintainer_note_audit` | off-chain | Backup | Immutable note access and redaction references. |
+| `audit_trail` | off-chain | Backup | Existing immutable recovery and projection rebuild audit history. |
+| `failure_escalation_policies` | off-chain | Backup | Maintainer escalation thresholds and revisions. |
+| `failure_escalation_attempts` | off-chain | Backup | Persistent maintainer inbox and acknowledgments. |
+| `chain_event_batches` | chain-derived | Archive with events | Event membership and byte hashes; restore with the same chain event log. |
 | `action_leases` | ephemeral | Dropped | Worker leases, stale after restore. |
 | `job_leases` | ephemeral | Dropped | Cron leases; stale ones would block jobs until expiry. |
 | `projection_rebuilds` | ephemeral | Dropped | Projection rebuild runs (#989); a restored `running`/`failed` run would fence the indexer of the recovered database. |

@@ -234,6 +234,41 @@ model ProtocolAudit {
   @@map("protocol_audits")
 }
 
+model RetentionHold {
+  id            String   @id @default(uuid()) @db.Uuid
+  recordType    String   @map("record_type")
+  recordId      String   @map("record_id")
+  reason        String
+  caseReference String?  @map("case_reference")
+  createdBy     String   @map("created_by")
+  createdAt     DateTime @default(now()) @map("created_at")
+  expiresAt     DateTime? @map("expires_at")
+  releasedAt    DateTime? @map("released_at")
+  releasedBy    String?  @map("released_by")
+  releaseReason String?  @map("release_reason")
+
+  @@index([recordType, recordId, releasedAt])
+  @@index([expiresAt])
+  @@map("retention_holds")
+}
+
+model ExternalIdentity {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  provider    String
+  subject     String
+  status      String   @default("linked")
+  verifiedAt  DateTime @map("verified_at")
+  linkedAt    DateTime @default(now()) @map("linked_at")
+  unlinkedAt  DateTime? @map("unlinked_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([provider, subject])
+  @@index([userId, status])
+  @@map("external_identities")
+}
+
 model RepairAudit {
   id          String   @id @default(uuid()) @db.Uuid
   planJson    Json     @map("plan_json")

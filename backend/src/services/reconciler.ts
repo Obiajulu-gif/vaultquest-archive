@@ -18,6 +18,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { ERROR_CODES } from "../constants.js";
 import type { LedgerService } from "./ledger.js";
+import { RetentionHoldService } from "./retentionHoldService.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -558,6 +559,7 @@ export async function sweepOrphans(
 ): Promise<SweepResult> {
   const cutoff = new Date(Date.now() - opts.ttlMinutes * 60 * 1000);
   const eventCutoff = new Date(Date.now() - 60 * 60 * 1000);
+  const holds = new RetentionHoldService(prisma);
 
   const staleActions = await prisma.actionLedger.findMany({
     where: {
@@ -568,10 +570,15 @@ export async function sweepOrphans(
   });
 
   let orphaned = 0;
-  if (staleActions.length > 0) {
+  const heldActionIds = new Set<string>();
+  for (const action of staleActions) {
+    if (await holds.isHeld("action_ledger", action.id)) heldActionIds.add(action.id);
+  }
+  const orphanableActionIds = staleActions.map((a) => a.id).filter((id) => !heldActionIds.has(id));
+  if (orphanableActionIds.length > 0) {
     const result = await prisma.actionLedger.updateMany({
       where: {
-        id: { in: staleActions.map((a) => a.id) },
+        id: { in: orphanableActionIds },
         status: "submitted"
       },
       data: {
@@ -582,12 +589,10 @@ export async function sweepOrphans(
     orphaned = result.count;
   }
 
-  const pruned = await prisma.pendingEvent.deleteMany({
-    where: {
-      consumedAt: null,
-      receivedAt: { lt: eventCutoff }
-    }
-  });
+  const staleEvents = await prisma.pendingEvent.findMany({ where: { consumedAt: null, receivedAt: { lt: eventCutoff } }, select: { txHash: true } });
+  const heldEventIds = new Set<string>();
+  for (const event of staleEvents) if (await holds.isHeld("pending_event", event.txHash)) heldEventIds.add(event.txHash);
+  const pruned = await prisma.pendingEvent.deleteMany({ where: { txHash: { in: staleEvents.map((e) => e.txHash).filter((id) => !heldEventIds.has(id)) } } });
 
   return { orphaned, prunedEvents: pruned.count };
 }

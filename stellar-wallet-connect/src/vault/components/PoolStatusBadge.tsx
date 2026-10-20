@@ -1,5 +1,5 @@
 import type { FC } from "react";
-import { getPoolStatusClassName, getPoolStatusMeta } from "../../../../../lib/pool-status";
+import { getPoolStatusClassName, getPoolStatusMeta } from "../../../../lib/pool-status";
 
 export interface PoolStatusBadgeProps {
   status?: string | null;

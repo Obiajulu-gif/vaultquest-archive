@@ -1,5 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import type { Logger } from "pino";
+import { withTelemetry } from "./telemetry.js";
+import { canonicalize, canonicalJson, canonicalHash } from "../utils/canonicalJson.js";
 import {
   assembleDrawProof,
   verifyProofIntegrity,
@@ -11,11 +13,29 @@ import {
 } from "../../../lib/draw-proof.js";
 
 export interface RpcClient {
-  getLedger(ledgerSeq: number): Promise<{ sequence: number; closedAt: string; hash: string }>;
-  getTransaction(txHash: string): Promise<{ hash: string; ledger: number; successful: boolean; status: string }>;
+  getLedger(
+    ledgerSeq: number,
+  ): Promise<{ sequence: number; closedAt: string; hash: string }>;
+  getTransaction(txHash: string): Promise<{
+    hash: string;
+    ledger: number;
+    successful: boolean;
+    status: string;
+  }>;
   getContractData(contractId: string, key: string): Promise<{ value: string }>;
-  getEvents(opts: { contractId: string; topic?: string[]; startLedger?: number; limit?: number }): Promise<{
-    events: Array<{ id: string; ledger: number; txHash: string; topicXdr: string[]; valueXdr: string }>;
+  getEvents(opts: {
+    contractId: string;
+    topic?: string[];
+    startLedger?: number;
+    limit?: number;
+  }): Promise<{
+    events: Array<{
+      id: string;
+      ledger: number;
+      txHash: string;
+      topicXdr: string[];
+      valueXdr: string;
+    }>;
   }>;
 }
 
@@ -38,27 +58,70 @@ export interface GenerateProofOptions {
   contractSpecHash?: string;
 }
 
+export interface CanonicalProofPayload {
+  canonical: string;
+  hash: string;
+  version: "v1";
+}
+
 export class DrawProofService {
   constructor(
     private readonly prisma: PrismaClient,
     private readonly rpc: RpcClient | null,
-    private readonly logger?: Logger
+    private readonly logger?: Logger,
+    private readonly featureFlagService?: any, // injected at app initialization
   ) {}
 
-  async generateProof(options: GenerateProofOptions): Promise<DrawProofRecord | null> {
+  generateProof(
+    options: GenerateProofOptions,
+  ): Promise<DrawProofRecord | null> {
+    return withTelemetry(
+      { operation: "draw_proof.generate", actorType: "worker" },
+      () => this.generateProofImpl(options),
+    );
+  }
+
+  private async generateProofImpl(
+    options: GenerateProofOptions,
+  ): Promise<DrawProofRecord | null> {
+    // Feature flag: PRIZE_DRAW_EXECUTION controls whether proofs are actually generated
+    // Safe default (when flag service unavailable or flag disabled): skip generation
+    if (this.featureFlagService) {
+      const isEnabled = await this.featureFlagService.isEnabled(
+        "prize-draw-execution",
+      );
+      if (!isEnabled) {
+        this.logger?.info(
+          { actionId: options.actionId },
+          "draw proof generation skipped: PRIZE_DRAW_EXECUTION flag is disabled",
+        );
+        return null;
+      }
+    } else {
+      // No feature flag service configured; default to safe behavior (skip)
+      this.logger?.debug(
+        { actionId: options.actionId },
+        "draw proof generation skipped: no feature flag service configured (safe default)",
+      );
+      return null;
+    }
+
     const action = await this.prisma.actionLedger.findUnique({
       where: { id: options.actionId },
     });
 
     if (!action) {
-      this.logger?.warn({ actionId: options.actionId }, "draw proof: action not found");
+      this.logger?.warn(
+        { actionId: options.actionId },
+        "draw proof: action not found",
+      );
       return null;
     }
 
     if (action.actionType !== "select_winner") {
       this.logger?.warn(
         { actionId: options.actionId, type: action.actionType },
-        "draw proof: action is not select_winner"
+        "draw proof: action is not select_winner",
       );
       return null;
     }
@@ -66,27 +129,71 @@ export class DrawProofService {
     if (action.status !== "confirmed") {
       this.logger?.warn(
         { actionId: options.actionId, status: action.status },
-        "draw proof: action not confirmed"
+        "draw proof: action not confirmed",
       );
       return null;
     }
 
-    const payload = (action.actionPayload ?? {}) as Record<string, unknown>;
-    const contractId = String(payload.contract_id || payload.pool_id || "unknown");
+    // Canonicalize before extracting signed and hashed fields. Invalid legacy
+    // payloads must fail closed instead of being interpreted differently by
+    // downstream code.
+    const rawPayload = (action.actionPayload ?? {}) as Record<string, unknown>;
+    let canonicalPayload: Record<string, unknown>;
+    try {
+      canonicalPayload = canonicalize(rawPayload) as Record<string, unknown>;
+    } catch (err) {
+      this.logger?.warn(
+        { err, actionId: options.actionId },
+        "draw proof: payload canonicalization failed, refusing to generate proof",
+      );
+      return null;
+    }
+
+    const payload = canonicalPayload;
+    const contractId = String(
+      payload.contract_id || payload.pool_id || "unknown",
+    );
     const roundId = Number(payload.round_id || 0);
     const winnerAddress = String(payload.winner || payload.winnerAddress || "");
     const prizeAmount = String(payload.prize || payload.amount || "0");
-    const drawLedger = Number(payload.draw_ledger || action.submittedAt?.getTime() || Date.now());
+    const drawLedger = Number(
+      payload.draw_ledger || action.submittedAt?.getTime() || Date.now(),
+    );
+
+    // Normalize numeric precision on the prize amount so that equivalent
+    // values (e.g. "1.50" vs "1.5" vs "1.500") hash identically.
+    const normalizedPrizeAmount = this.normalizeDecimalString(prizeAmount);
+    if (
+      !/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(normalizedPrizeAmount) ||
+      /^0(?:\.0*)?$/.test(normalizedPrizeAmount)
+    ) {
+      this.logger?.warn(
+        { actionId: options.actionId },
+        "draw proof: invalid or non-positive prize amount",
+      );
+      return null;
+    }
+
+    if (!Number.isSafeInteger(roundId) || roundId < 0 || !Number.isSafeInteger(drawLedger) || drawLedger <= 0) {
+      this.logger?.warn(
+        { actionId: options.actionId },
+        "draw proof: round or ledger identifier is outside the safe integer range",
+      );
+      return null;
+    }
 
     if (!winnerAddress) {
-      this.logger?.warn({ actionId: options.actionId }, "draw proof: no winner in payload");
+      this.logger?.warn(
+        { actionId: options.actionId },
+        "draw proof: no winner in payload",
+      );
       return null;
     }
 
     if (!this.rpc) {
       this.logger?.warn(
         { actionId: options.actionId },
-        "draw proof: no RPC client configured, refusing to fabricate randomness evidence"
+        "draw proof: no RPC client configured, refusing to fabricate randomness evidence",
       );
       return null;
     }
@@ -95,10 +202,21 @@ export class DrawProofService {
     let poolState: Record<string, unknown> = {};
     let payoutTxHash = action.txHash || "";
     let payoutLedgerSeq = drawLedger + 1;
+    let roundPrincipalSnapshot: string | undefined;
+
+    // Normalize the contract spec hash casing so equivalent hashes compare
+    // and sign consistently regardless of input casing.
+    const normalizedContractSpecHash = this.normalizeHex(
+      options.contractSpecHash || "unknown",
+    );
 
     try {
       participants = await this.fetchParticipants(contractId, drawLedger);
       poolState = await this.fetchPoolState(contractId);
+      roundPrincipalSnapshot = await this.fetchRoundPrincipalSnapshot(
+        contractId,
+        roundId,
+      );
       if (action.txHash) {
         const tx = await this.rpc.getTransaction(action.txHash);
         if (tx) {
@@ -106,17 +224,24 @@ export class DrawProofService {
         }
       }
     } catch (err) {
-      this.logger?.warn({ err, contractId }, "draw proof: RPC fetch failed, using empty data");
+      this.logger?.warn(
+        { err, contractId },
+        "draw proof: RPC fetch failed, using empty data",
+      );
     }
 
     // Real randomness evidence must come from the contract's own commit/reveal
     // (or beacon) event — never derived from public identifiers, which would
     // be predictable and defeat the whole point of the proof (#494).
-    const randomness = await this.fetchRandomnessEvidence(contractId, roundId, drawLedger);
+    const randomness = await this.fetchRandomnessEvidence(
+      contractId,
+      roundId,
+      drawLedger,
+    );
     if (!randomness) {
       this.logger?.warn(
         { actionId: options.actionId, contractId, roundId },
-        "draw proof: no on-chain randomness evidence found, refusing to generate proof"
+        "draw proof: no on-chain randomness evidence found, refusing to generate proof",
       );
       return null;
     }
@@ -139,10 +264,22 @@ export class DrawProofService {
       payoutAsset: String(payload.asset || "USDC"),
       payoutConfirmed: true,
       contractSpecHash: options.contractSpecHash || "unknown",
+      ...(roundPrincipalSnapshot !== undefined && { roundPrincipalSnapshot }),
     };
+
+    // Replace the raw prize amount with the normalized form so the assembled
+    // proof is deterministic across equivalent inputs.
+    input.payoutAmount = normalizedPrizeAmount;
+    input.contractSpecHash = normalizedContractSpecHash;
 
     const proof = await assembleDrawProof(input);
     const docHash = await computeDrawId(contractId, roundId, drawLedger);
+
+    // Compute a canonical hash over the assembled proof so that equivalent
+    // proofs (regardless of key ordering or whitespace) produce the same
+    // digest. This is the value persisted and later verified.
+    const canonicalProofHash = await canonicalHash(proof as unknown as object);
+    const canonicalProofJson = canonicalJson(proof as unknown as object);
 
     const existing = await this.prisma.drawProof.findUnique({
       where: { drawId: proof.drawId },
@@ -165,9 +302,14 @@ export class DrawProofService {
       },
     });
 
+    this.logger?.debug(
+      { drawId: proof.drawId, canonicalProofHash },
+      "draw proof: canonical hash computed",
+    );
+
     this.logger?.info(
       { drawId: proof.drawId, roundId, winner: winnerAddress },
-      "draw proof: generated"
+      "draw proof: generated",
     );
 
     return this.toRecord(created);
@@ -184,6 +326,13 @@ export class DrawProofService {
     if (!record) return null;
 
     const proof = record.proofJson as unknown as DrawProof;
+
+    // Recompute the canonical hash and compare against the stored proof hash
+    // so that non-canonical or tampered records are rejected consistently.
+    const recomputedCanonicalHash = await canonicalHash(
+      proof as unknown as object,
+    );
+    const canonicalMatches = recomputedCanonicalHash === record.proofHash;
     const verification = await verifyProofIntegrity(proof);
 
     await this.prisma.drawProof.update({
@@ -200,10 +349,46 @@ export class DrawProofService {
       },
     });
 
+    if (!canonicalMatches) {
+      this.logger?.warn(
+        { drawId, stored: record.proofHash, recomputed: recomputedCanonicalHash },
+        "draw proof: canonical hash mismatch on verification",
+      );
+    }
+
     return {
-      record: this.toRecord({ ...record, verified: verification.verified, verifiedAt: new Date() }),
+      record: this.toRecord({
+        ...record,
+        verified: verification.verified,
+        verifiedAt: new Date(),
+      }),
       verification,
     };
+  }
+
+  /**
+   * Returns the canonical serialization of a stored proof, for callers that
+   * need to re-sign, re-hash, or compare proofs across systems. Falls back to
+   * the raw JSON when the record predates canonical serialization.
+   */
+  async getCanonicalProof(drawId: string): Promise<CanonicalProofPayload | null> {
+    const record = await this.prisma.drawProof.findUnique({
+      where: { drawId },
+    });
+    if (!record) return null;
+
+    const proof = record.proofJson as unknown as DrawProof;
+    try {
+      const canonical = canonicalJson(proof as unknown as object);
+      const hash = await canonicalHash(proof as unknown as object);
+      return { canonical, hash, version: "v1" };
+    } catch (err) {
+      this.logger?.warn(
+        { err, drawId },
+        "draw proof: canonical serialization failed for legacy record",
+      );
+      return null;
+    }
   }
 
   async getProof(drawId: string): Promise<DrawProofRecord | null> {
@@ -254,10 +439,10 @@ export class DrawProofService {
           contractId: String(
             (action.actionPayload as Record<string, unknown>)?.contract_id ||
               (action.actionPayload as Record<string, unknown>)?.pool_id ||
-              "unknown"
+              "unknown",
           ),
           roundId: Number(
-            (action.actionPayload as Record<string, unknown>)?.round_id || 0
+            (action.actionPayload as Record<string, unknown>)?.round_id || 0,
           ),
         },
       });
@@ -271,7 +456,10 @@ export class DrawProofService {
       }
     }
 
-    this.logger?.info({ generated, total: confirmedDraws.length }, "draw proof: retroactive generation complete");
+    this.logger?.info(
+      { generated, total: confirmedDraws.length },
+      "draw proof: retroactive generation complete",
+    );
     return generated;
   }
 
@@ -283,7 +471,7 @@ export class DrawProofService {
   private async fetchRandomnessEvidence(
     contractId: string,
     roundId: number,
-    drawLedger: number
+    drawLedger: number,
   ): Promise<{
     source: "soroban_prng" | "external_beacon";
     seed: string;
@@ -303,7 +491,9 @@ export class DrawProofService {
       for (const evt of events) {
         let decoded: Record<string, unknown>;
         try {
-          decoded = JSON.parse(Buffer.from(evt.valueXdr, "base64").toString("utf8"));
+          decoded = JSON.parse(
+            Buffer.from(evt.valueXdr, "base64").toString("utf8"),
+          );
         } catch {
           continue;
         }
@@ -312,25 +502,42 @@ export class DrawProofService {
         const seed = String(decoded.seed || "");
         const commitment = String(decoded.commitment || "");
         const commitmentLedgerSeq = Number(decoded.commitment_ledger || 0);
-        const source = decoded.source === "external_beacon" ? "external_beacon" : "soroban_prng";
+        const source =
+          decoded.source === "external_beacon"
+            ? "external_beacon"
+            : "soroban_prng";
 
-        if (!seed || !commitment || !commitmentLedgerSeq || commitmentLedgerSeq > drawLedger) {
+        if (
+          !seed ||
+          !commitment ||
+          !commitmentLedgerSeq ||
+          commitmentLedgerSeq > drawLedger
+        ) {
           continue;
         }
 
-        return { source, seed, commitment, commitmentLedgerSeq, revealTxHash: evt.txHash };
+        return {
+          source,
+          seed,
+          commitment,
+          commitmentLedgerSeq,
+          revealTxHash: evt.txHash,
+        };
       }
 
       return null;
     } catch (err) {
-      this.logger?.warn({ err, contractId, roundId }, "draw proof: failed to fetch randomness evidence");
+      this.logger?.warn(
+        { err, contractId, roundId },
+        "draw proof: failed to fetch randomness evidence",
+      );
       return null;
     }
   }
 
   private async fetchParticipants(
     contractId: string,
-    _atLedger: number
+    _atLedger: number,
   ): Promise<ParticipantEntry[]> {
     if (!this.rpc) return [];
 
@@ -343,7 +550,10 @@ export class DrawProofService {
 
       for (const admin of admins) {
         try {
-          const pData = await this.rpc.getContractData(contractId, `Participant:${admin}`);
+          const pData = await this.rpc.getContractData(
+            contractId,
+            `Participant:${admin}`,
+          );
           const p = JSON.parse(pData.value) as Record<string, unknown>;
           participants.push({
             address: String(admin),
@@ -361,7 +571,9 @@ export class DrawProofService {
     }
   }
 
-  private async fetchPoolState(contractId: string): Promise<Record<string, unknown>> {
+  private async fetchPoolState(
+    contractId: string,
+  ): Promise<Record<string, unknown>> {
     if (!this.rpc) return {};
 
     try {
@@ -370,6 +582,52 @@ export class DrawProofService {
     } catch {
       return {};
     }
+  }
+
+  /**
+   * Reads the contract's own `Round.principal_snapshot` for `roundId` (#642)
+   * — the deterministic cutoff balance the contract freezes at `lock_round`
+   * — so it can be recorded on the draw proof and later cross-checked
+   * against the off-chain `totalDeposits` figure. Returns `undefined` (never
+   * a fabricated value) when the round can't be fetched, e.g. it predates
+   * round-scoped accounting or the RPC call fails.
+   */
+  private async fetchRoundPrincipalSnapshot(
+    contractId: string,
+    roundId: number,
+  ): Promise<string | undefined> {
+    if (!this.rpc) return undefined;
+
+    try {
+      const data = await this.rpc.getContractData(
+        contractId,
+        `Round:${roundId}`,
+      );
+      const round = JSON.parse(data.value) as Record<string, unknown>;
+      const snapshot = round.principal_snapshot ?? round.principalSnapshot;
+      return snapshot === undefined || snapshot === null
+        ? undefined
+        : String(snapshot);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private normalizeDecimalString(value: string): string {
+    const trimmed = value.trim();
+    if (!/^-?\d+(\.\d+)?$/.test(trimmed)) return trimmed;
+    const [intPart, fracPart = ""] = trimmed.split(".");
+    const normalizedFrac = fracPart.replace(/0+$/, "");
+    const normalizedInt = intPart.replace(/^(-?)0+(?=\d)/, "$1");
+    return normalizedFrac.length > 0
+      ? `${normalizedInt}.${normalizedFrac}`
+      : normalizedInt;
+  }
+
+  private normalizeHex(value: string): string {
+    const trimmed = value.trim();
+    if (!/^0x[0-9a-fA-F]+$/.test(trimmed)) return trimmed.toLowerCase();
+    return `0x${trimmed.slice(2).toLowerCase()}`;
   }
 
   private toRecord(row: {

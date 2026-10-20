@@ -283,4 +283,40 @@ describe("QuestService", () => {
 
     expect(elapsed).toBeLessThan(100);
   });
+
+  it("calls computeMetrics exactly once per wallet in evaluateRecent cron ticks", async () => {
+    await seedAction(db.prisma, {
+      walletAddress: WALLET, status: "confirmed",
+      actionPayload: { vault_id: "p", amount: "100" }
+    });
+
+    const spy = vi.spyOn(svc, "computeMetrics");
+    await svc.evaluateRecent(new Date(Date.now() - 60_000));
+    // Must be called exactly 1 time total (in evaluateWallet), and NOT again in flagGrantsForReorgedActions
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
+
+  it("benchmark: computes metrics in under 200ms over a 50k-row ledger for a single wallet", async () => {
+    const chunkSize = 10000;
+    const totalRows = 50000;
+    for (let chunk = 0; chunk < totalRows; chunk += chunkSize) {
+      const rows = Array.from({ length: chunkSize }, (_, i) => ({
+        idempotencyKey: randomUUID(),
+        walletAddress: WALLET,
+        actionType: "deposit" as const,
+        actionPayload: { vault_id: `pool-${(chunk + i) % 7}`, amount: "1" },
+        status: "confirmed" as const
+      }));
+      await db.prisma.actionLedger.createMany({ data: rows });
+    }
+
+    await svc.computeMetrics(WALLET);
+    const start = performance.now();
+    await svc.computeMetrics(WALLET);
+    const elapsed = performance.now() - start;
+    console.log(`[Benchmark] computeMetrics over 50k rows took ${elapsed.toFixed(2)}ms`);
+
+    expect(elapsed).toBeLessThan(200);
+  });
 });

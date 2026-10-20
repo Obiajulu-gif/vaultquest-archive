@@ -9,8 +9,11 @@ const MIN_DEPOSIT = 1;
 const MAX_DEPOSIT = 100_000;
 const QUICK_AMOUNTS = [25, 50, 75] as const;
 
+import { formatAssetAmount } from "@/lib/formatting";
+import { calculateDepositPreview } from "../../stellar-wallet-connect/src/vault/lib/depositPreview";
+
 function formatToken(value, token) {
-  return `${Number(value || 0).toFixed(token === "XLM" ? 6 : 4)} ${token}`;
+  return formatAssetAmount(value, token);
 }
 
 export default function DepositModal({ isOpen, onClose }) {
@@ -22,6 +25,7 @@ export default function DepositModal({ isOpen, onClose }) {
   const [usdcBalance, setUsdcBalance] = useState(1000.00);
   const [refreshing, setRefreshing] = useState(false);
 
+
   const gasBudget = useMemo(() => feeState?.estimatedNative ?? 0, [feeState]);
   const amountNum = useMemo(() => parseFloat(amount) || 0, [amount]);
   const remainingUsdc = useMemo(() => usdcBalance - amountNum, [usdcBalance, amountNum]);
@@ -32,16 +36,37 @@ export default function DepositModal({ isOpen, onClose }) {
   const isInsufficientUsdc = amountNum > usdcBalance;
   const isInsufficientNative = gasBudget > 0 && walletBalance < gasBudget;
 
+  const mockPoolSummary = useMemo(() => ({
+    id: "usdc_pool",
+    name: "USDC Stable Pool",
+    status: "open",
+    tvl: "500000",
+    asset: "USDC",
+    participantCount: 142,
+    expectedYield: "5.2% APY",
+    opensAt: null,
+    locksAt: null,
+    drawsAt: null,
+    strategyExposureBps: 8000,
+    idleLiquidity: "100000",
+    queuedWithdrawals: "15000",
+    maxStrategyExposureBps: 8500,
+    minIdleRatioBps: 1500,
+  }), []);
+
+  const depositPreview = useMemo(() => calculateDepositPreview(mockPoolSummary, amountNum), [mockPoolSummary, amountNum]);
+
+
   const handleQuickAmount = useCallback((pct) => {
     const raw = usdcBalance * (pct / 100);
     const clamped = Math.min(raw, MAX_DEPOSIT);
-    setAmount(clamped.toFixed(2));
+    setAmount(formatAssetAmount(clamped, "USDC", { showSymbol: false }));
     setError(null);
   }, [usdcBalance]);
 
   const handleMaxAmount = useCallback(() => {
     const max = Math.min(usdcBalance, MAX_DEPOSIT);
-    setAmount(max.toFixed(2));
+    setAmount(formatAssetAmount(max, "USDC", { showSymbol: false }));
     setError(null);
   }, [usdcBalance]);
 
@@ -227,19 +252,18 @@ export default function DepositModal({ isOpen, onClose }) {
                   <div className="mt-3 rounded-2xl border border-vault-border/40 bg-vault-surface/50 p-4 space-y-2">
                     <p className="text-xs font-medium uppercase tracking-wide text-vault-muted">
                       Balance impact
-                    </p>
-                    <div className="flex justify-between text-sm">
+                    </p>                     <div className="flex justify-between text-sm">
                       <span className="text-vault-muted">Current USDC balance</span>
-                      <span className="font-medium text-vault-text">{usdcBalance.toFixed(2)} USDC</span>
+                      <span className="font-medium text-vault-text">{formatAssetAmount(usdcBalance, "USDC")}</span>
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-vault-muted">Deposit amount</span>
-                      <span className="font-medium text-red-500">-{amountNum > 0 ? amountNum.toFixed(2) : "0.00"} USDC</span>
+                      <span className="font-medium text-red-500">-{amountNum > 0 ? formatAssetAmount(amountNum, "USDC") : "0.00 USDC"}</span>
                     </div>
                     <div className="border-t border-vault-border/30 pt-2 flex justify-between text-sm">
                       <span className="font-semibold text-vault-text">Remaining after deposit</span>
                       <span className={`font-bold ${remainingUsdc < 0 ? "text-red-500" : "text-vault-text"}`}>
-                        {remainingUsdc >= 0 ? remainingUsdc.toFixed(2) : "0.00"} USDC
+                        {remainingUsdc >= 0 ? formatAssetAmount(remainingUsdc, "USDC") : "0.00 USDC"}
                       </span>
                     </div>
                   </div>
@@ -332,7 +356,7 @@ export default function DepositModal({ isOpen, onClose }) {
                 </div>
                 <div className="flex justify-between py-2.5">
                   <span className="text-vault-muted">Remaining USDC Balance</span>
-                  <span className="font-medium text-vault-text">{remainingUsdc.toFixed(2)} USDC</span>
+                  <span className="font-medium text-vault-text">{formatAssetAmount(remainingUsdc, "USDC")}</span>
                 </div>
                 <div className="flex justify-between py-2.5">
                   <span className="text-vault-muted">Remaining AVAX Balance</span>

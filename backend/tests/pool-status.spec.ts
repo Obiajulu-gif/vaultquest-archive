@@ -2,15 +2,18 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { randomUUID } from "node:crypto";
 import { startTestDb, resetDb, type TestDb } from "./helpers/db.js";
 import { buildApp } from "../src/app.js";
+import { createRequester, type Requester } from "./helpers/request.js";
 import type { FastifyInstance } from "fastify";
 
 describe("Pool status API endpoints", () => {
   let db: TestDb;
   let app: FastifyInstance;
+  let inject: Requester;
 
   beforeAll(async () => {
     db = await startTestDb();
     app = buildApp({ prisma: db.prisma, internalSecret: "test-secret" });
+    inject = createRequester(app);
   });
 
   afterAll(async () => {
@@ -22,10 +25,8 @@ describe("Pool status API endpoints", () => {
     await resetDb(db.prisma);
   });
 
-  const validStellarAddress = "GABCDEF1234567890123456789012345678901234567890123456789";
-
   async function createPoolAction(wallet: string, vaultId: string, status = "pending") {
-    const res = await app.inject({
+    const res = await inject({
       method: "POST",
       url: "/actions",
       headers: { "idempotency-key": randomUUID(), "content-type": "application/json" },
@@ -38,7 +39,7 @@ describe("Pool status API endpoints", () => {
     const id = res.json().data.id;
 
     if (status === "confirmed") {
-      await app.inject({
+      await inject({
         method: "PATCH",
         url: `/actions/${id}/submitted`,
         payload: { tx_hash: randomUUID() }
@@ -51,9 +52,9 @@ describe("Pool status API endpoints", () => {
   it("returns pool action history for a wallet", async () => {
     await createPoolAction("GPOOL1", "pool-1");
     await createPoolAction("GPOOL1", "pool-1");
-    const different = await createPoolAction("GPOOL2", "pool-2");
+    await createPoolAction("GPOOL2", "pool-2");
 
-    const res = await app.inject({
+    const res = await inject({
       method: "GET",
       url: "/actions?wallet=GPOOL1&limit=10"
     });
@@ -61,7 +62,7 @@ describe("Pool status API endpoints", () => {
 
     const { data, meta } = res.json();
     expect(data).toHaveLength(2);
-    data.forEach((action: any) => {
+    data.forEach((action: { wallet_address: string; action_type: string; action_payload: unknown; correlation_id: string }) => {
       expect(action.wallet_address).toBe("GPOOL1");
       expect(action.action_type).toBe("deposit");
       expect(action.action_payload).toMatchObject({ vault_id: "pool-1" });
@@ -71,7 +72,7 @@ describe("Pool status API endpoints", () => {
   });
 
   it("rejects pool action with invalid idempotency key", async () => {
-    const res = await app.inject({
+    const res = await inject({
       method: "POST",
       url: "/actions",
       headers: { "content-type": "application/json" },
@@ -82,7 +83,7 @@ describe("Pool status API endpoints", () => {
   });
 
   it("rejects pool action with invalid wallet address on portfolio", async () => {
-    const res = await app.inject({
+    const res = await inject({
       method: "GET",
       url: "/portfolio/summary?wallet=invalidAddress"
     });
@@ -93,16 +94,16 @@ describe("Pool status API endpoints", () => {
   it("returns pool dashboard summary with correct counts across statuses", async () => {
     const wallet = "GPOOLDASH";
     const a = await createPoolAction(wallet, "pool-1", "pending");
-    const b = await createPoolAction(wallet, "pool-2", "pending");
+    await createPoolAction(wallet, "pool-2", "pending");
 
-    await app.inject({
+    await inject({
       method: "PATCH",
       url: `/actions/${a}/submitted`,
       headers: { "content-type": "application/json" },
       payload: { tx_hash: "TX_POOL_A" }
     });
 
-    const res = await app.inject({
+    const res = await inject({
       method: "GET",
       url: `/dashboard/summary?wallet=${wallet}`
     });
@@ -116,7 +117,7 @@ describe("Pool status API endpoints", () => {
   });
 
   it("handles empty pool actions for unknown wallet", async () => {
-    const res = await app.inject({
+    const res = await inject({
       method: "GET",
       url: "/actions?wallet=GUNKNOWN&limit=5"
     });
@@ -125,7 +126,7 @@ describe("Pool status API endpoints", () => {
   });
 
   it("returns stable error shape for non-existent pool action", async () => {
-    const res = await app.inject({
+    const res = await inject({
       method: "GET",
       url: "/actions/00000000-0000-0000-0000-000000000000"
     });
@@ -144,7 +145,7 @@ describe("Pool status API endpoints", () => {
       await createPoolAction(wallet, `pool-${i}`);
     }
 
-    const page1 = await app.inject({
+    const page1 = await inject({
       method: "GET",
       url: `/actions?wallet=${wallet}&limit=2`
     });
@@ -153,7 +154,7 @@ describe("Pool status API endpoints", () => {
     expect(page1.json().meta.pagination.has_more).toBe(true);
 
     const cursor = page1.json().meta.pagination.next_cursor;
-    const page2 = await app.inject({
+    const page2 = await inject({
       method: "GET",
       url: `/actions?wallet=${wallet}&limit=2&cursor=${cursor}`
     });

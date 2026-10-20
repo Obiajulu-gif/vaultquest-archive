@@ -48,4 +48,78 @@ describe("RewardHistory", () => {
     const links = screen.getAllByRole("link");
     expect(links[0]).toHaveAttribute("href", expect.stringContaining("/tx/txhash123456789"));
   });
+
+  describe("uneconomical claim warning (#644)", () => {
+    it("shows a warning badge for a small XLM reward below the estimated claim fee", () => {
+      const smallReward: RewardHistoryEntry[] = [
+        {
+          id: "r-small",
+          poolId: "pool-1",
+          poolName: "XLM Drip",
+          cycleEndedAt: "2026-05-09T00:00:00Z",
+          rewardAmount: "0.001",
+          asset: "XLM",
+          status: "won",
+          winnerAddress: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+          txHash: null,
+        },
+      ];
+      render(<RewardHistory entries={smallReward} onClaim={() => {}} />);
+      expect(screen.getAllByText(/may cost more to claim/i).length).toBeGreaterThan(0);
+    });
+
+    it("shows no warning badge for a normal-sized XLM reward", () => {
+      const normalReward: RewardHistoryEntry[] = [
+        {
+          id: "r-normal",
+          poolId: "pool-1",
+          poolName: "XLM Drip",
+          cycleEndedAt: "2026-05-09T00:00:00Z",
+          rewardAmount: "42",
+          asset: "XLM",
+          status: "won",
+          winnerAddress: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+          txHash: null,
+        },
+      ];
+      render(<RewardHistory entries={normalReward} onClaim={() => {}} />);
+      expect(screen.queryByText(/may cost more to claim/i)).not.toBeInTheDocument();
+    });
+
+    it("does not warn on a small non-XLM reward (no cross-asset fee comparison)", () => {
+      const smallUsdcReward: RewardHistoryEntry[] = [
+        {
+          id: "r-small-usdc",
+          poolId: "pool-1",
+          poolName: "USDC Drip",
+          cycleEndedAt: "2026-05-09T00:00:00Z",
+          rewardAmount: "0.001",
+          asset: "USDC",
+          status: "won",
+          winnerAddress: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+          txHash: null,
+        },
+      ];
+      render(<RewardHistory entries={smallUsdcReward} onClaim={() => {}} />);
+      expect(screen.queryByText(/may cost more to claim/i)).not.toBeInTheDocument();
+    });
+
+    it("does not warn on a zero-amount reward", () => {
+      const zeroReward: RewardHistoryEntry[] = [
+        {
+          id: "r-zero",
+          poolId: "pool-1",
+          poolName: "XLM Drip",
+          cycleEndedAt: "2026-05-09T00:00:00Z",
+          rewardAmount: "0",
+          asset: "XLM",
+          status: "no_win",
+          winnerAddress: null,
+          txHash: null,
+        },
+      ];
+      render(<RewardHistory entries={zeroReward} />);
+      expect(screen.queryByText(/may cost more to claim/i)).not.toBeInTheDocument();
+    });
+  });
 });

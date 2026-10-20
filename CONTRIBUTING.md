@@ -46,7 +46,8 @@ vaultquest/
 ├── tests/                      # Cross-cutting test utilities
 └── docs/                       # Architecture, state model, testing notes
     ├── ARCHITECTURE.md        # Cross-stack architecture diagram
-    └── data-fetching.md       # Client-side data fetching and hooks conventions
+    ├── data-fetching.md       # Client-side data fetching and hooks conventions
+    └── REJECTION_REASONS.md   # VaultQuest rejection reason codes and user-facing explanations
 ```
 
 Each top-level package has its own `README.md` with stack details and a setup
@@ -94,7 +95,7 @@ break anything else. Run the relevant commands for your area:
 | Contracts | `cargo fmt --check && cargo clippy -- -D warnings` | Format + lint |
 | Security | `pnpm audit` | Dependency vulnerabilities |
 | Security | `trufflehog filesystem .` | Secret scanning |
-| Docs | manual preview | Markdown renders correctly on GitHub |
+| Docs | `pnpm docs:validate` | Local documentation validation |
 
 ### Auto-fixing lint errors locally
 
@@ -206,7 +207,7 @@ frontend change:
 See `stellar-wallet-connect/src/components/Modal.tsx` for a worked example
 of a focus-trapped, ARIA-compliant dialog.
 
-## 8. Code style
+## 9. Error handling and rejection reasons
 
 - **TypeScript**: prefer `interface` for public component props, `type` for
   unions and aliases. Avoid `any`; use `unknown` when the type is genuinely
@@ -217,6 +218,30 @@ of a focus-trapped, ARIA-compliant dialog.
 - **Comments**: explain *why*, not *what*. Code already says what.
 - **Rust**: run `cargo fmt` before committing; treat clippy warnings as
   errors.
+
+## 9. Error handling and rejection reasons
+
+VaultQuest uses a structured rejection reason system for vault operations (deposit, withdraw, claim, etc.). When implementing error handling:
+
+- Use VaultQuest-specific rejection reasons from `lib/rejectionReasons.ts` for vault operations
+- Map contract behavior errors to rejection reasons using `mapContractErrorToRejection`
+- Map wallet/transaction errors to rejection reasons using `mapWalletErrorToRejection`
+- User-facing messages should come from the rejection explanation catalog, not raw error messages
+- Backend error codes for VaultQuest operations are prefixed with `VAULT_` (e.g., `VAULT_LOCKUP_ACTIVE`)
+
+See `docs/REJECTION_REASONS.md` for the complete list of rejection reasons and integration examples.
+
+## 11. Getting help
+
+VaultQuest uses a structured rejection reason system for vault operations (deposit, withdraw, claim, etc.). When implementing error handling:
+
+- Use VaultQuest-specific rejection reasons from `lib/rejectionReasons.ts` for vault operations
+- Map contract behavior errors to rejection reasons using `mapContractErrorToRejection`
+- Map wallet/transaction errors to rejection reasons using `mapWalletErrorToRejection`
+- User-facing messages should come from the rejection explanation catalog, not raw error messages
+- Backend error codes for VaultQuest operations are prefixed with `VAULT_` (e.g., `VAULT_LOCKUP_ACTIVE`)
+
+See `docs/REJECTION_REASONS.md` for the complete list of rejection reasons and integration examples.
 
 ## 9. Getting help
 

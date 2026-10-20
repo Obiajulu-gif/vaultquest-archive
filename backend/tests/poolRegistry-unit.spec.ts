@@ -129,7 +129,7 @@ describe("StellarIndexer: factory_pool_deployed routing (#507)", () => {
   it("routes a decoded fpooldep event to upsertPoolRegistryEntry, not reconcileEvent", async () => {
     const upsertPoolRegistryEntry = vi.fn(async () => {});
     const reconcileEvent = vi.fn(async () => ({ matched: false }));
-    const ledger = { upsertPoolRegistryEntry, reconcileEvent } as any;
+    const ledger = { upsertPoolRegistryEntry, reconcileEvent, appendChainEvents: vi.fn(async () => {}) } as any;
 
     const payload = {
       type: "fpooldep",
@@ -165,7 +165,7 @@ describe("StellarIndexer: factory_pool_deployed routing (#507)", () => {
 
   it("does not upsert when the deploy event is reverted", async () => {
     const upsertPoolRegistryEntry = vi.fn(async () => {});
-    const ledger = { upsertPoolRegistryEntry, reconcileEvent: vi.fn() } as any;
+    const ledger = { upsertPoolRegistryEntry, reconcileEvent: vi.fn(), appendChainEvents: vi.fn(async () => {}) } as any;
 
     const indexer = new StellarIndexer({
       ledger,
@@ -180,7 +180,7 @@ describe("StellarIndexer: factory_pool_deployed routing (#507)", () => {
 
   it("logs and continues (does not throw) when the registry upsert fails", async () => {
     const upsertPoolRegistryEntry = vi.fn(async () => { throw new Error("db down"); });
-    const ledger = { upsertPoolRegistryEntry, reconcileEvent: vi.fn() } as any;
+    const ledger = { upsertPoolRegistryEntry, reconcileEvent: vi.fn(), appendChainEvents: vi.fn(async () => {}) } as any;
     const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any;
 
     const indexer = new StellarIndexer({
@@ -204,7 +204,7 @@ describe("StellarIndexer: factory_pool_deployed routing (#507)", () => {
   // event's topic string looks right.
   it("rejects (does not upsert) a fpooldep event emitted by a contract that is not the configured factory", async () => {
     const upsertPoolRegistryEntry = vi.fn(async () => {});
-    const ledger = { upsertPoolRegistryEntry, reconcileEvent: vi.fn() } as any;
+    const ledger = { upsertPoolRegistryEntry, reconcileEvent: vi.fn(), appendChainEvents: vi.fn(async () => {}) } as any;
     const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any;
 
     const indexer = new StellarIndexer({
@@ -238,7 +238,7 @@ describe("StellarIndexer: factory_pool_deployed routing (#507)", () => {
   // ever trusted, not "trust whatever shows up."
   it("rejects a fpooldep event when no factoryAddress is configured at all", async () => {
     const upsertPoolRegistryEntry = vi.fn(async () => {});
-    const ledger = { upsertPoolRegistryEntry, reconcileEvent: vi.fn() } as any;
+    const ledger = { upsertPoolRegistryEntry, reconcileEvent: vi.fn(), appendChainEvents: vi.fn(async () => {}) } as any;
     const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any;
 
     const indexer = new StellarIndexer({
@@ -264,7 +264,7 @@ describe("StellarIndexer: contract-id refresh hook (#507)", () => {
     const fetchEvents = vi.fn(async () => []);
     const source = { fetchEvents, setContractIds } as unknown as HorizonEventSource;
 
-    const ledger = { reconcileEvent: vi.fn(), upsertPoolRegistryEntry: vi.fn() } as any;
+    const ledger = { reconcileEvent: vi.fn(), upsertPoolRegistryEntry: vi.fn(), appendChainEvents: vi.fn(async () => {}) } as any;
     const resolveContractIds = vi.fn(async () => ["CFACTORY", "CPOOL1"]);
 
     const indexer = new StellarIndexer({
@@ -283,7 +283,7 @@ describe("StellarIndexer: contract-id refresh hook (#507)", () => {
   it("does not call setContractIds when the source doesn't expose it", async () => {
     const fetchEvents = vi.fn(async () => []);
     const source = { fetchEvents } as HorizonEventSource;
-    const ledger = { reconcileEvent: vi.fn(), upsertPoolRegistryEntry: vi.fn() } as any;
+    const ledger = { reconcileEvent: vi.fn(), upsertPoolRegistryEntry: vi.fn(), appendChainEvents: vi.fn(async () => {}) } as any;
     const resolveContractIds = vi.fn(async () => ["CFACTORY"]);
 
     const indexer = new StellarIndexer({
@@ -300,7 +300,7 @@ describe("StellarIndexer: contract-id refresh hook (#507)", () => {
     const setContractIds = vi.fn();
     const fetchEvents = vi.fn(async () => []);
     const source = { fetchEvents, setContractIds } as unknown as HorizonEventSource;
-    const ledger = { reconcileEvent: vi.fn(), upsertPoolRegistryEntry: vi.fn() } as any;
+    const ledger = { reconcileEvent: vi.fn(), upsertPoolRegistryEntry: vi.fn(), appendChainEvents: vi.fn(async () => {}) } as any;
     const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any;
 
     const indexer = new StellarIndexer({

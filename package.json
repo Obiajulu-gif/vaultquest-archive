@@ -8,20 +8,22 @@
     "build:backend": "pnpm --filter backend run build",
     "db:setup": "pnpm --filter backend run db:setup",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
     "check:terms": "node ./scripts/check-product-terms.js",
     "docs:validate": "node ./scripts/validate-docs.js",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "test:e2e:headed": "playwright test --headed"
     "test:e2e:headed": "playwright test --headed",
     "test:conformance": "cd contracts/drip-pool && npx vitest run",
-    "check:terms": "node ./scripts/check-product-terms.js",
-    "docs:validate": "node ./scripts/validate-docs.js",
     "generate:manifest": "npx tsx scripts/generate-manifest.ts",
-    "fixtures:regenerate": "node scripts/regenerate-fixtures.js"
+    "check:drift": "npx tsx scripts/check-config-drift.ts",
+    "fixtures:regenerate": "node scripts/regenerate-fixtures.js",
+    "check:mock-data": "node ./scripts/check-mock-data.js",
+    "check:mock-auth": "node ./scripts/check-mock-auth.js",
+    "check:package-json": "node ./scripts/check-package-json.js",
+    "diagnostics": "node ./scripts/contributor-diagnostics.mjs"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.12",
@@ -59,8 +61,17 @@
   },
   "pnpm": {
     "overrides": {
-      "undici": "^6.0.0",
-      "fast-uri": "^3.0.0"
+      "undici": "^6.28.1",
+      "fast-uri": "^3.1.8",
+      "protobufjs": "^7.6.5",
+      "fastify": "^5.12.5",
+      "ws": "^8.21.0",
+      "axios": "^1.20.0",
+      "brace-expansion": "^2.1.7",
+      "ip-address": "^10.7.1",
+      "qs": "^6.16.0",
+      "glob": "^10.5.0",
+      "js-yaml": "^4.3.2"
     }
   },
   "packageManager": "pnpm@10.28.2+sha512.41872f037ad22f7348e3b1debbaf7e867cfd448f2726d9cf74c08f19507c31d2c8e7a11525b983febc2df640b5438dee6023ebb1f84ed43cc2d654d2bc326264"

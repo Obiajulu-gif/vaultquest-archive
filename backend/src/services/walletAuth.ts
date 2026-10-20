@@ -9,12 +9,27 @@
  *
  * Sessions are scoped to (wallet_address, public_key, network). Object-level
  * authorization checks ensure users can only access their own resources.
+ *
+ * # single-use nonce (#566):
+ * - Nonces are single-use. The authoritative consume is a conditionally-
+ *   scoped `updateMany (WHERE challengeId AND consumedAt = null AND
+ *   expiresAt > now)`; a concurrent double-verify can only win the consume
+ *   once, so the loser is rejected and creates no session.
+ * - Nonces expire after `challengeTtlMs` (5 min).
+ * - Signatures are bound to the challenge nonce (payload.nonce) and the
+ *   challenge is domain-separated, so a signature for nonce A cannot be
+ *   replayed against a session expecting nonce B.
+ * - The signature is verified against `challenge.publicKey` (not a
+ *   client-supplied key), so a nonce issued for wallet X cannot
+ *   authenticate wallet Y.
  */
 
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { AppError } from "../errors.js";
+import { withTelemetry } from "./telemetry.js";
 import { ERROR_CODES } from "../constants.js";
+import type { AuditRecorder } from "./auditTrail.js";
 
 import { Keypair } from "@stellar/stellar-sdk";
 
@@ -56,7 +71,33 @@ export class WalletAuthService {
   private readonly sessionTtlMs = 24 * 60 * 60 * 1000; // 24 hours
   private readonly refreshTtlMs = 7 * 24 * 60 * 60 * 1000; // 7 days
 
-  constructor(private readonly prisma: PrismaClient) {}
+  /**
+   * @param audit #814 — session issue/refresh/revoke are access changes and
+   *   are written to the audit trail. Records reference the session row id;
+   *   tokens never leave this service.
+   */
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly audit?: AuditRecorder
+  ) {}
+
+  private async auditSession(
+    action: "session.issue" | "session.refresh" | "session.revoke" | "session.revoke_all",
+    walletAddress: string,
+    targetId: string,
+    before: Record<string, unknown> | null,
+    after: Record<string, unknown> | null
+  ): Promise<void> {
+    if (!this.audit) return;
+    await this.audit.record({
+      category: "access",
+      action,
+      actor: { subject: walletAddress, role: "user" },
+      target: { type: action === "session.revoke_all" ? "wallet" : "wallet_session", id: targetId },
+      before,
+      after
+    });
+  }
 
   /**
    * Creates a domain-separated challenge for wallet signature.
@@ -91,7 +132,13 @@ export class WalletAuthService {
   /**
    * Verifies a signed challenge and issues a session token.
    */
-  async verifyChallenge(input: VerifyInput): Promise<SessionOutput> {
+  verifyChallenge(input: VerifyInput): Promise<SessionOutput> {
+    return withTelemetry({ operation: "wallet.verify_challenge", actorType: "user" }, () =>
+      this.verifyChallengeImpl(input)
+    );
+  }
+
+  private async verifyChallengeImpl(input: VerifyInput): Promise<SessionOutput> {
     const challenge = await this.prisma.walletChallenge.findUnique({
       where: { challengeId: input.challengeId }
     });
@@ -149,11 +196,29 @@ export class WalletAuthService {
       throw AppError.unauthorized();
     }
 
-    // Mark challenge as consumed
-    await this.prisma.walletChallenge.update({
-      where: { challengeId: input.challengeId },
+    // Mark challenge as consumed — ATOMICALLY. The earlier `consumedAt !==
+    // null` read is only a cheap pre-check; the authoritative single-use
+    // enforcement happens here via a conditionally-scoped updateMany. Two
+    // concurrent verify requests for the same challenge can both pass the
+    // read check and even both verify cryptographically, but only ONE will
+    // match `WHERE consumedAt = null` at update time, so only one can
+    // consume the nonce and proceed to create a session (#566). The
+    // `expiresAt > now` clause also re-validates expiry at consume time,
+    // closing the read-then-expire TOCTOU as well.
+    const consumed = await this.prisma.walletChallenge.updateMany({
+      where: {
+        challengeId: input.challengeId,
+        consumedAt: null,
+        expiresAt: { gt: new Date() }
+      },
       data: { consumedAt: new Date() }
     });
+
+    // If this request didn't win the consume, the nonce was either already
+    // used (concurrent replay) or expired between the read and the update.
+    if (consumed.count !== 1) {
+      throw AppError.unauthorized();
+    }
 
     // Create session
     const token = randomUUID();
@@ -169,6 +234,12 @@ export class WalletAuthService {
         refreshToken,
         expiresAt
       }
+    });
+
+    await this.auditSession("session.issue", session.walletAddress, String(session.id), null, {
+      network: session.network,
+      publicKey: session.publicKey,
+      expiresAt: session.expiresAt
     });
 
     return {
@@ -209,6 +280,12 @@ export class WalletAuthService {
       }
     });
 
+    await this.auditSession("session.refresh", updated.walletAddress, String(updated.id), {
+      expiresAt: session.expiresAt
+    }, {
+      expiresAt: updated.expiresAt
+    });
+
     return {
       token: updated.token,
       refreshToken: updated.refreshToken,
@@ -231,10 +308,12 @@ export class WalletAuthService {
       return; // Already revoked or doesn't exist
     }
 
+    const revokedAt = new Date();
     await this.prisma.walletSession.update({
       where: { id: session.id },
-      data: { revokedAt: new Date() }
+      data: { revokedAt }
     });
+    await this.auditSession("session.revoke", session.walletAddress, String(session.id), { revokedAt: null }, { revokedAt });
   }
 
   /**
@@ -270,6 +349,9 @@ export class WalletAuthService {
       data: { revokedAt: new Date() }
     });
 
+    if (result.count > 0) {
+      await this.auditSession("session.revoke_all", walletAddress, walletAddress, { activeSessions: result.count }, { activeSessions: 0 });
+    }
     return result.count;
   }
 }

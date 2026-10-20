@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "next-i18next";
 import { X } from "lucide-react";
 import { formatDateTime } from "@/lib/formatting";
@@ -14,12 +14,11 @@ export default function TransactionHistoryModal({ open, onClose, walletAddress }
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [items, setItems] = useState([]);
-  const [totalCount, setTotalCount] = useState(0);
+  const [nextCursor, setNextCursor] = useState(null);
+  const [cursorByPage, setCursorByPage] = useState({});
 
-  const totalPages = useMemo(
-    () => Math.max(1, Math.ceil(totalCount / PAGE_SIZE)),
-    [totalCount]
-  );
+  const totalPages = Math.max(1, page + (nextCursor ? 1 : 0));
+  const pageCursor = cursorByPage[page] || "";
 
   useEffect(() => {
     if (!open || !walletAddress) return;
@@ -27,7 +26,9 @@ export default function TransactionHistoryModal({ open, onClose, walletAddress }
     setLoading(true);
     setError(null);
 
-    fetch(`/api/actions/${encodeURIComponent(walletAddress)}?page=${page}&limit=${PAGE_SIZE}`)
+    const query = new URLSearchParams({ limit: String(PAGE_SIZE) });
+    if (pageCursor) query.set("cursor", pageCursor);
+    fetch(`/api/actions/${encodeURIComponent(walletAddress)}/history?${query.toString()}`)
       .then(async (res) => {
         if (!res.ok) throw new Error("Failed to load");
         return res.json();
@@ -35,7 +36,10 @@ export default function TransactionHistoryModal({ open, onClose, walletAddress }
       .then((data) => {
         if (!cancelled) {
           setItems(data.data || []);
-          setTotalCount(data.totalCount || 0);
+          setNextCursor(data.meta?.pagination?.next_cursor || null);
+          if (data.meta?.pagination?.next_cursor) {
+            setCursorByPage((previous) => ({ ...previous, [page + 1]: data.meta.pagination.next_cursor }));
+          }
         }
       })
       .catch((err) => {
@@ -48,10 +52,14 @@ export default function TransactionHistoryModal({ open, onClose, walletAddress }
     return () => {
       cancelled = true;
     };
-  }, [open, walletAddress, page]);
+  }, [open, walletAddress, page, pageCursor]);
 
   useEffect(() => {
-    if (open) setPage(1);
+    if (open) {
+      setPage(1);
+      setCursorByPage({});
+      setNextCursor(null);
+    }
   }, [open, walletAddress]);
 
   if (!open) return null;
@@ -161,7 +169,7 @@ export default function TransactionHistoryModal({ open, onClose, walletAddress }
 
         <div className="flex items-center justify-between border-t border-vault-border/70 px-5 py-4">
           <p className="text-xs text-vault-muted">
-            {t("modals.history.empty", { count: totalCount })}
+            {items.length ? `${items.length} records on this page` : t("modals.history.empty")}
           </p>
           <div className="flex items-center gap-2">
             <button

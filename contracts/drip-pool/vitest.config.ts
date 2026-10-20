@@ -11,7 +11,11 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["tests/**/*.test.ts"],
+    include: [
+      path.resolve(__dirname, "tests/**/*.test.ts"),
+      "contracts/drip-pool/tests/**/*.test.ts",
+      "tests/**/*.test.ts"
+    ],
     globals: true,
     environment: "node",
   },

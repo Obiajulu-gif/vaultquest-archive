@@ -27,7 +27,6 @@ function serializeValue(v) {
 
 export default function AdminAuditPage() {
   const { address, isConnected } = useAccount();
-  const [isMockConnected, setIsMockConnected] = useState(false);
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -35,16 +34,14 @@ export default function AdminAuditPage() {
   const [filterParam, setFilterParam] = useState("");
   const [filterActor, setFilterActor] = useState("");
 
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search);
-      if (params.get("mockConnected") === "true") setIsMockConnected(true);
-    }
-  }, []);
-
   const isAdmin =
-    (isConnected && ADMIN_ADDRESSES.some(a => a.toLowerCase() === address?.toLowerCase())) ||
-    isMockConnected;
+    isConnected && ADMIN_ADDRESSES.some(a => a.toLowerCase() === address?.toLowerCase());
+
+  function adminAuthHeaders() {
+    if (typeof window === "undefined") return {};
+    const token = window.sessionStorage.getItem("vaultquest.walletSessionToken");
+    return token ? { authorization: `Bearer ${token}` } : {};
+  }
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -55,9 +52,7 @@ export default function AdminAuditPage() {
     if (filterParam) params.set("parameter_name", filterParam);
     if (filterActor) params.set("actor", filterActor);
 
-    fetch(`/admin/audit?${params.toString()}`, {
-      headers: { authorization: "Bearer mock-admin-token" }
-    })
+    fetch(`/admin/audit?${params.toString()}`, { headers: adminAuthHeaders() })
       .then(async r => {
         if (!r.ok) throw new Error("Failed to load audit records");
         return r.json();
@@ -78,9 +73,7 @@ export default function AdminAuditPage() {
       if (filterParam) params.set("parameter_name", filterParam);
       if (filterActor) params.set("actor", filterActor);
 
-      const res = await fetch(`/admin/audit/export?${params.toString()}`, {
-        headers: { authorization: "Bearer mock-admin-token" }
-      });
+      const res = await fetch(`/admin/audit/export?${params.toString()}`, { headers: adminAuthHeaders() });
       if (!res.ok) throw new Error("Export failed");
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);

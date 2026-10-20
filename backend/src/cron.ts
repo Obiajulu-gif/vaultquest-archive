@@ -1,4 +1,8 @@
+import { SearchIndexRepairService } from "./services/search/searchIndexRepairService.js";
+import type { CacheService } from "./services/cacheService.js";
 import cron from "node-cron";
+import type { ScheduledTask } from "node-cron";
+import cron, { type ScheduledTask } from "node-cron";
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import type { Logger } from "pino";
@@ -6,10 +10,22 @@ import { sweepOrphans } from "./services/reconciler.js";
 import { QuestService } from "./services/questService.js";
 import { BackupService } from "./services/backupService.js";
 import { NotificationService } from "./services/notificationService.js";
-import type { StellarIndexer } from "./services/stellarIndexer.js";
+import type { StellarIndexer, XdrDecoder } from "./services/stellarIndexer.js";
 import { pingDatabase } from "./db.js";
 import type { LedgerService } from "./services/ledger.js";
 import { LeaseService } from "./services/leaseService.js";
+import { getPrometheusMetrics } from "./services/prometheusMetrics.js";
+import { runReplayEquivalence } from "./services/replayEquivalence.js";
+import { INDEXER_JOB_LEASE } from "./services/projectionRebuild.js";
+import {
+  OnChainDriftDetector,
+  type OnChainReader,
+} from "./services/onChainDriftDetector.js";
+import { withTelemetry } from "./services/telemetry.js";
+import {
+  DataRetentionService,
+  RETENTION_POLICIES,
+} from "./services/dataRetentionService.js";
 
 // #506 — one worker id per process, reused across every job lease this
 // process acquires, so ownership/takeover metrics can be attributed to a
@@ -44,43 +60,72 @@ const HEARTBEAT_FRACTION = 3;
  * stop renewing and surface it loudly in logs rather than silently
  * continuing as if nothing happened.
  */
-async function withJobLease(
+function withJobLease(
   leases: LeaseService,
   jobName: string,
   ttlMs: number,
   logger: Logger,
-  fn: () => Promise<void>
+  fn: () => Promise<void>,
 ): Promise<void> {
-  const handle = await leases.acquireJobLease({ jobName, workerId: WORKER_ID, ttlMs });
+  // #770 — every scheduled job reports latency and outcome through one path.
+  return withTelemetry(
+    { operation: "worker.job", actorType: "worker", detail: jobName },
+    () => withJobLeaseImpl(leases, jobName, ttlMs, logger, fn),
+  );
+}
+
+async function withJobLeaseImpl(
+  leases: LeaseService,
+  jobName: string,
+  ttlMs: number,
+  logger: Logger,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const handle = await leases.acquireJobLease({
+    jobName,
+    workerId: WORKER_ID,
+    ttlMs,
+  });
   if (!handle) {
-    logger.info({ jobName }, "job lease held by another worker, skipping this tick");
+    logger.info(
+      { jobName },
+      "job lease held by another worker, skipping this tick",
+    );
     return;
   }
 
   let fencingToken = handle.fencingToken;
   let lostLease = false;
-  const heartbeat = setInterval(() => {
-    void (async () => {
-      const renewed = await leases.renewJobLease(jobName, WORKER_ID, fencingToken, ttlMs).catch((err) => {
-        logger.warn({ jobName, err }, "job lease heartbeat renewal errored");
-        return false;
-      });
-      if (!renewed) {
-        if (!lostLease) {
-          lostLease = true;
-          logger.error(
-            { jobName },
-            "job lease heartbeat failed to renew — lease was taken over by another worker while this tick is still running"
-          );
+  const heartbeat = setInterval(
+    () => {
+      void (async () => {
+        const renewed = await leases
+          .renewJobLease(jobName, WORKER_ID, fencingToken, ttlMs)
+          .catch((err) => {
+            logger.warn(
+              { jobName, err },
+              "job lease heartbeat renewal errored",
+            );
+            return false;
+          });
+        if (!renewed) {
+          if (!lostLease) {
+            lostLease = true;
+            logger.error(
+              { jobName },
+              "job lease heartbeat failed to renew — lease was taken over by another worker while this tick is still running",
+            );
+          }
+          return;
         }
-        return;
-      }
-      // A successful renewal under the *same* fencing token confirms no
-      // takeover happened; the token itself doesn't change on renewal
-      // (only on acquisition/takeover), so it stays valid for the next
-      // heartbeat unchanged.
-    })();
-  }, Math.max(1000, Math.floor(ttlMs / HEARTBEAT_FRACTION)));
+        // A successful renewal under the *same* fencing token confirms no
+        // takeover happened; the token itself doesn't change on renewal
+        // (only on acquisition/takeover), so it stays valid for the next
+        // heartbeat unchanged.
+      })();
+    },
+    Math.max(1000, Math.floor(ttlMs / HEARTBEAT_FRACTION)),
+  );
   // Don't let the heartbeat timer keep the process alive on its own.
   heartbeat.unref?.();
 
@@ -93,7 +138,10 @@ async function withJobLease(
       // since releasing now could hand a "clean" lease straight to that
       // other worker while this tick's just-committed side effects are
       // still settling. Let expiry/normal takeover handle it.
-      logger.warn({ jobName }, "job tick completed after losing its lease mid-run; not releasing");
+      logger.warn(
+        { jobName },
+        "job tick completed after losing its lease mid-run; not releasing",
+      );
       return;
     }
     await leases.releaseJobLease(jobName, WORKER_ID);
@@ -110,7 +158,7 @@ export function startReconcilerCron(opts: {
   ttlMinutes: number;
   logger: Logger;
   schedule?: string;
-}): cron.ScheduledTask {
+}): ScheduledTask {
   const schedule = opts.schedule ?? "*/1 * * * *";
   const leases = new LeaseService(opts.prisma);
   // Lease TTL is a few schedule intervals, not one — a slow-but-alive
@@ -120,10 +168,18 @@ export function startReconcilerCron(opts: {
   const leaseTtlMs = 5 * 60 * 1000;
   const task = cron.schedule(schedule, async () => {
     try {
-      await withJobLease(leases, "reconciler-sweep", leaseTtlMs, opts.logger, async () => {
-        const result = await sweepOrphans(opts.prisma, { ttlMinutes: opts.ttlMinutes });
-        opts.logger.info({ result }, "reconciler sweep complete");
-      });
+      await withJobLease(
+        leases,
+        "reconciler-sweep",
+        leaseTtlMs,
+        opts.logger,
+        async () => {
+          const result = await sweepOrphans(opts.prisma, {
+            ttlMinutes: opts.ttlMinutes,
+          });
+          opts.logger.info({ result }, "reconciler sweep complete");
+        },
+      );
     } catch (err) {
       opts.logger.error({ err }, "reconciler sweep failed");
     }
@@ -141,7 +197,7 @@ export function startQuestCron(opts: {
   logger: Logger;
   schedule?: string;
   lookbackMinutes?: number;
-}): cron.ScheduledTask {
+}): ScheduledTask {
   const schedule = opts.schedule ?? "*/2 * * * *";
   const lookbackMinutes = opts.lookbackMinutes ?? 10;
   const questService = new QuestService(opts.prisma);
@@ -151,16 +207,27 @@ export function startQuestCron(opts: {
   const task = cron.schedule(schedule, async () => {
     const since = new Date(Date.now() - lookbackMinutes * 60 * 1000);
     try {
-      await withJobLease(leases, "quest-evaluation", leaseTtlMs, opts.logger, async () => {
-        const result = await questService.evaluateRecent(since);
-        // #505 — grant processing runs under the same lease as the sweep
-        // that creates grant intents; RewardGrant's own idempotencyKey
-        // unique constraint is the real double-grant guard (see
-        // createRewardGrantIfAbsent), the shared lease is just the
-        // first, cheaper line of defense against overlapping ticks.
-        const grants = await questService.processGrants();
-        opts.logger.info({ result, grants }, "quest evaluation sweep complete");
-      });
+      await withJobLease(
+        leases,
+        "quest-evaluation",
+        leaseTtlMs,
+        opts.logger,
+        async () => {
+          const result = await questService.evaluateRecent(since);
+          // #505 — grant processing runs under the same lease as the sweep
+          // that creates grant intents; RewardGrant's own idempotencyKey
+          // unique constraint is the real double-grant guard (see
+          // createRewardGrantIfAbsent), the shared lease is just the
+          // first, cheaper line of defense against overlapping ticks.
+          const grants = (questService as any).processGrants
+            ? await (questService as any).processGrants()
+            : { processed: 0 };
+          opts.logger.info(
+            { result, grants },
+            "quest evaluation sweep complete",
+          );
+        },
+      );
     } catch (err) {
       opts.logger.error({ err }, "quest evaluation sweep failed");
     }
@@ -180,38 +247,66 @@ export function startIndexerCron(opts: {
   ledger: LedgerService;
   logger: Logger;
   schedule?: string;
-}): cron.ScheduledTask {
+  indexerVersion?: string;
+  /** #989: true while a projection rebuild is incomplete; ingestion must not write on a half-built projection. */
+  isFenced?: () => Promise<boolean>;
+}): ScheduledTask {
   const schedule = opts.schedule ?? "*/1 * * * *";
   const leases = new LeaseService(opts.prisma);
   const leaseTtlMs = 5 * 60 * 1000;
+  const metrics = getPrometheusMetrics();
   const task = cron.schedule(schedule, async () => {
     try {
-      await withJobLease(leases, "stellar-indexer", leaseTtlMs, opts.logger, async () => {
-        if (!(await pingDatabase(opts.prisma))) {
-          opts.logger.warn({}, "indexer tick skipped: database unreachable");
-          return;
-        }
-        const result = await opts.indexer.tick();
-        opts.logger.info({ result }, "indexer tick complete");
+      await withJobLease(
+        leases,
+        INDEXER_JOB_LEASE,
+        leaseTtlMs,
+        opts.logger,
+        async () => {
+          if (await opts.isFenced?.()) {
+            opts.logger.warn({}, "indexer tick skipped: a projection rebuild is incomplete");
+            return;
+          }
+          if (!(await pingDatabase(opts.prisma))) {
+            opts.logger.warn({}, "indexer tick skipped: database unreachable");
+            return;
+          }
+          const result = await opts.indexer.tick();
+          opts.logger.info({ result }, "indexer tick complete");
 
-        // Persist cursor/ledger progress so a restart resumes exactly where the
-        // last successful tick left off instead of replaying or skipping events.
-        if (result.latestLedger !== null) {
-          await opts.ledger.updateIndexerCheckpoint({
-            latestLedger: result.latestLedger,
-            lastProcessedEventId: result.cursor,
-            success: true
+          // #752 leading indicators: lag, queue depth, and the success
+          // heartbeat whose age is the stall signal (see prometheus/alerts.yml).
+          metrics.recordIngestionProgress({
+            chainLatestLedger: result.chainLatestLedger,
+            ingestedLedger: result.ingestedLedger,
+            ...((opts.ledger as any).getIngestionBacklog
+              ? await (opts.ledger as any).getIngestionBacklog()
+              : {}),
           });
-        }
-      });
+          metrics.recordIndexerLastSyncTime(Date.now() / 1000);
+
+          // Persist cursor/ledger progress so a restart resumes exactly where the
+          // last successful tick left off instead of replaying or skipping events.
+          if (result.latestLedger !== null) {
+            await opts.ledger.updateIndexerCheckpoint({
+              latestLedger: result.latestLedger,
+              lastProcessedEventId: result.cursor,
+              success: true,
+              indexerVersion: opts.indexerVersion,
+            });
+          }
+        },
+      );
     } catch (err) {
       opts.logger.error({ err }, "indexer tick failed");
+      metrics.recordIndexerSyncError();
       try {
         const existing = await opts.ledger.getIndexerCheckpoint();
         await opts.ledger.updateIndexerCheckpoint({
           latestLedger: existing?.latestLedger ?? 0,
           success: false,
-          lastError: err instanceof Error ? err.message : String(err)
+          lastError: err instanceof Error ? err.message : String(err),
+          indexerVersion: opts.indexerVersion,
         });
       } catch {
         // best-effort; don't let checkpoint persistence mask the original error
@@ -236,14 +331,14 @@ export function startBackupCron(opts: {
   logger: Logger;
   schedule?: string;
   prisma: PrismaClient;
-}): cron.ScheduledTask {
+}): ScheduledTask {
   const schedule = opts.schedule ?? "0 2 * * *"; // default: daily at 02:00
   const svc = new BackupService({
     backupDir: opts.backupDir,
     databaseUrl: opts.databaseUrl,
     retainDays: opts.retainDays,
     pgDumpPath: opts.pgDumpPath,
-    logger: opts.logger
+    logger: opts.logger,
   });
   const leases = new LeaseService(opts.prisma);
   // Backups run once daily and pg_dump can legitimately take a while on a
@@ -255,10 +350,16 @@ export function startBackupCron(opts: {
 
   const task = cron.schedule(schedule, async () => {
     try {
-      await withJobLease(leases, "db-backup", leaseTtlMs, opts.logger, async () => {
-        const result = await svc.run();
-        opts.logger.info({ result }, "backup: completed");
-      });
+      await withJobLease(
+        leases,
+        "db-backup",
+        leaseTtlMs,
+        opts.logger,
+        async () => {
+          const result = await svc.run();
+          opts.logger.info({ result }, "backup: completed");
+        },
+      );
     } catch (err) {
       opts.logger.error({ err }, "backup: failed");
     }
@@ -277,21 +378,360 @@ export function startNotificationReminderCron(opts: {
   leadHours: number;
   logger: Logger;
   schedule?: string;
-}): cron.ScheduledTask {
+}): ScheduledTask {
   const schedule = opts.schedule ?? "*/5 * * * *";
-  const notificationService = new NotificationService(opts.prisma, opts.leadHours);
+  const notificationService = new NotificationService(
+    opts.prisma,
+    opts.leadHours,
+  );
   const leases = new LeaseService(opts.prisma);
   const leaseTtlMs = 5 * 60 * 1000;
 
   const task = cron.schedule(schedule, async () => {
     try {
-      await withJobLease(leases, "notification-reminders", leaseTtlMs, opts.logger, async () => {
-        const created = await notificationService.generateReminders();
-        opts.logger.info({ created }, "notification reminder sweep complete");
-      });
+      await withJobLease(
+        leases,
+        "notification-reminders",
+        leaseTtlMs,
+        opts.logger,
+        async () => {
+          const created = await notificationService.generateReminders();
+          opts.logger.info({ created }, "notification reminder sweep complete");
+        },
+      );
     } catch (err) {
       opts.logger.error({ err }, "notification reminder sweep failed");
     }
   });
   return task;
+}
+
+/**
+ * Periodically executes a disaster recovery restore drill (issue #565).
+ * Verifies the latest database backup and restores it into a scratch database.
+ */
+export function startRestoreDrillCron(opts: {
+  backupDir: string;
+  databaseUrl: string;
+  scratchDatabaseUrl: string;
+  retainDays?: number;
+  pgDumpPath?: string;
+  pgRestorePath?: string;
+  logger: Logger;
+  schedule?: string;
+  prisma: PrismaClient;
+}): ScheduledTask {
+  const schedule = opts.schedule ?? "0 4 * * 0"; // default: weekly at 04:00 on Sunday
+  const svc = new BackupService({
+    backupDir: opts.backupDir,
+    databaseUrl: opts.databaseUrl,
+    retainDays: opts.retainDays,
+    pgDumpPath: opts.pgDumpPath,
+    pgRestorePath: opts.pgRestorePath,
+    logger: opts.logger,
+  });
+  const leases = new LeaseService(opts.prisma);
+  const leaseTtlMs = 60 * 60 * 1000;
+
+  const task = cron.schedule(schedule, async () => {
+    try {
+      await withJobLease(
+        leases,
+        "db-restore-drill",
+        leaseTtlMs,
+        opts.logger,
+        async () => {
+          const result = await svc.runRestoreDrill(opts.scratchDatabaseUrl);
+          opts.logger.info({ result }, "restore-drill: completed");
+        },
+      );
+    } catch (err) {
+      opts.logger.error({ err }, "restore-drill: failed");
+    }
+  });
+  return task;
+}
+
+/**
+ * Replays the chain event log into a scratch database and diffs it against
+ * live state (#751). Any divergence is logged as an error and exported as
+ * `replay_equivalence_divergences`, which pages via the ReplayDivergence
+ * alert; a run that stops completing trips ReplayEquivalenceStale.
+ */
+export function startReplayEquivalenceCron(opts: {
+  prisma: PrismaClient;
+  replayPrisma: PrismaClient;
+  decoder: XdrDecoder;
+  factoryAddress?: string;
+  logger: Logger;
+  schedule?: string;
+  /** #989: a partially rebuilt projection would page as a false divergence. */
+  isFenced?: () => Promise<boolean>;
+}): ScheduledTask {
+  const schedule = opts.schedule ?? "30 3 * * *"; // default: daily at 03:30
+  const leases = new LeaseService(opts.prisma);
+  const metrics = getPrometheusMetrics();
+  const leaseTtlMs = 60 * 60 * 1000;
+
+  const task = cron.schedule(schedule, async () => {
+    try {
+      await withJobLease(
+        leases,
+        "replay-equivalence",
+        leaseTtlMs,
+        opts.logger,
+        async () => {
+          if (await opts.isFenced?.()) {
+            opts.logger.warn({}, "replay-equivalence skipped: a projection rebuild is incomplete");
+            return;
+          }
+          const report = await runReplayEquivalence(
+            opts.prisma,
+            opts.replayPrisma,
+            {
+              decoder: opts.decoder,
+              factoryAddress: opts.factoryAddress,
+            },
+          );
+          metrics.recordReplayEquivalence(report.divergences, Date.now());
+          if (report.divergences > 0) {
+            opts.logger.error(
+              { event: "replay_equivalence.divergence", report },
+              "replay-equivalence: live state diverges from replay",
+            );
+          } else {
+            opts.logger.info(
+              { event: "replay_equivalence.ok", report },
+              "replay-equivalence: live state matches replay",
+            );
+          }
+        },
+      );
+    } catch (err) {
+      opts.logger.error({ err }, "replay-equivalence: failed");
+    }
+  });
+  return task;
+}
+
+/**
+ * Periodically detects drift between on-chain contract state and ledger state (#727).
+ * Runs under a distributed lease to prevent overlapping ticks across worker replicas.
+ */
+export function startOnChainDriftDetectionCron(opts: {
+  prisma: PrismaClient;
+  onChainReader: OnChainReader;
+  logger: Logger;
+  schedule?: string;
+}): ScheduledTask {
+  const schedule = opts.schedule ?? "*/15 * * * *"; // default: every 15 minutes
+  const leases = new LeaseService(opts.prisma);
+  const leaseTtlMs = 10 * 60 * 1000;
+  const detector = new OnChainDriftDetector(
+    opts.prisma,
+    opts.onChainReader,
+    opts.logger,
+  );
+
+  const task = cron.schedule(schedule, async () => {
+    try {
+      await withJobLease(
+        leases,
+        "onchain-drift-detection",
+        leaseTtlMs,
+        opts.logger,
+        async () => {
+          const result = await detector.runDetection();
+          opts.logger.info(
+            { summary: result.summary, durationMs: result.durationMs },
+            "on-chain drift detection tick completed",
+          );
+        },
+      );
+    } catch (err) {
+      opts.logger.error({ err }, "on-chain drift detection tick failed");
+    }
+  });
+  return task;
+}
+
+/**
+ * Periodically executes data retention cleanup (#800).
+ * Removes old operational records (chain events, poison events, pending events, etc.)
+ * while protecting active records linked to disputes, audits, or financial settlements.
+ *
+ * Runs weekly by default. Each category is cleaned independently so a failure
+ * in one doesn't block others.
+ */
+export function startDataRetentionCron(opts: {
+  prisma: PrismaClient;
+  logger: Logger;
+  schedule?: string;
+  dryRun?: boolean;
+}): ScheduledTask {
+  const schedule = opts.schedule ?? "0 4 * * 0"; // default: weekly at 04:00 on Sunday
+  const retentionService = new DataRetentionService(opts.prisma);
+  const leases = new LeaseService(opts.prisma);
+  const leaseTtlMs = 30 * 60 * 1000; // 30 minutes
+  const dryRun = opts.dryRun ?? false;
+
+  // Categories to clean up (skip permanent ones like ACTION_LEDGER, USER, VAULT_SETTLEMENT)
+  const cleanupCategories = [
+    "CHAIN_EVENT",
+    "POISON_EVENT",
+    "PENDING_EVENT",
+    "BACKGROUND_JOB",
+    "WALLET_CHALLENGE",
+    "WALLET_SESSION",
+    "ACTION_LEASE",
+    "JOB_LEASE",
+  ];
+
+  const task = cron.schedule(schedule, async () => {
+    try {
+      await withJobLease(
+        leases,
+        "data-retention-cleanup",
+        leaseTtlMs,
+        opts.logger,
+        async () => {
+          opts.logger.info(
+            { categories: cleanupCategories, dryRun },
+            "data retention cleanup sweep starting",
+          );
+
+          const reports = [];
+          for (const category of cleanupCategories) {
+            try {
+              const report = await retentionService.generateCleanupReport(
+                category,
+                {
+                  dryRun,
+                  actor: "cron:data-retention",
+                },
+              );
+              reports.push(report);
+
+              opts.logger.info(
+                {
+                  category: report.category,
+                  table: RETENTION_POLICIES[category]?.table,
+                  eligible: report.eligibleForDeletion,
+                  protected: report.protected,
+                  deleted: report.deleted,
+                  dryRun: report.dryRun,
+                },
+                `data retention: ${report.category} cleanup complete`,
+              );
+            } catch (err) {
+              opts.logger.error(
+                { err, category },
+                `data retention cleanup failed for category`,
+              );
+            }
+          }
+
+          // Summary
+          const totalEligible = reports.reduce(
+            (sum, r) => sum + r.eligibleForDeletion,
+            0,
+          );
+          const totalProtected = reports.reduce(
+            (sum, r) => sum + r.protected,
+            0,
+          );
+          const totalDeleted = reports.reduce((sum, r) => sum + r.deleted, 0);
+
+          opts.logger.info(
+            {
+              event: "data_retention.sweep_complete",
+              categories: cleanupCategories.length,
+              totalEligible,
+              totalProtected,
+              totalDeleted,
+              dryRun,
+            },
+            "data retention sweep complete",
+          );
+        },
+      );
+    } catch (err) {
+      opts.logger.error({ err }, "data retention cleanup sweep failed");
+    }
+  });
+  return task;
+}
+
+/**
+ * Periodically audits and repairs stale, missing, or mismatched search index records (#802).
+ * Compares primary records in the database with the discovery search index and repairs
+ * missing, stale, orphaned, and visibility-mismatched entries.
+ *
+ * Runs hourly by default on each replica because the search index is process-local.
+ */
+export function startSearchIndexRepairCron(opts: {
+  repairService: SearchIndexRepairService;
+  logger: Logger;
+  schedule?: string;
+}): cron.ScheduledTask {
+  leaseTtlMs?: number;
+}): ScheduledTask {
+  const schedule = opts.schedule ?? "0 * * * *"; // default: hourly
+
+  const task = cron.schedule(schedule, async () => {
+    try {
+      // SearchIndexService is process-local memory. Every replica must refresh
+      // its own index; a distributed lease would leave non-holder replicas stale.
+      opts.logger.info("starting scheduled search index repair audit");
+      const report = await opts.repairService.runRepair();
+      opts.logger.info(
+        {
+          event: "search_index_repair.sweep_complete",
+          scannedSources: report.scannedSources,
+          scannedIndexEntries: report.scannedIndexEntries,
+          repairedCount: report.repairedCount,
+          anomalies: report.anomaliesDetected,
+          durationMs: report.durationMs,
+        },
+        `search index repair audit complete: repaired ${report.repairedCount} anomalies in ${report.durationMs}ms`,
+      );
+    } catch (err) {
+      opts.logger.error({ err }, "search index repair audit tick failed");
+    }
+  });
+  return task;
+}
+
+/**
+ * Repairs bounded cache pages on every process: local LRU entries are
+ * process-specific, while shared Redis invalidation is idempotent.
+ */
+export function startCacheRepairCron(opts: {
+  cacheService: CacheService;
+  logger: Logger;
+  schedule?: string;
+  limit?: number;
+}): ScheduledTask {
+  const schedule = opts.schedule ?? "*/5 * * * *";
+  const limit = opts.limit ?? 100;
+  return cron.schedule(schedule, async () => {
+    try {
+      const result = await opts.cacheService.repairStaleCache({
+        dryRun: false,
+        limit,
+        auditNoop: false,
+      });
+      opts.logger.info(
+        {
+          event: "cache_repair.sweep_complete",
+          scanned: result.scanned,
+          repaired: result.repaired.length,
+          failed: result.failed.length,
+        },
+        "cache repair sweep complete",
+      );
+    } catch (err) {
+      opts.logger.error({ err }, "cache repair sweep failed");
+    }
+  });
 }

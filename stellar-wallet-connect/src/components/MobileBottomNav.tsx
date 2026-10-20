@@ -11,9 +11,40 @@ const NAV_ITEMS = [
 export interface MobileBottomNavProps {
   currentPath: string;
   onNavigate: (href: string) => void;
+  /**
+   * When true, the user is mid-transaction (signing, submitting, confirming).
+   * Navigation taps show a warning dialog asking the user to confirm they want
+   * to leave — the transaction state will be persisted and can be recovered on
+   * return (#633).
+   */
+  txBusy?: boolean;
+  /**
+   * Human-readable label for the active transaction stage, shown in the
+   * navigation-guard prompt (e.g. "awaiting-signature").  Falls back to a
+   * generic message when absent.
+   */
+  txStageLabel?: string;
 }
 
-export const MobileBottomNav: FC<MobileBottomNavProps> = ({ currentPath, onNavigate }) => {
+export const MobileBottomNav: FC<MobileBottomNavProps> = ({
+  currentPath,
+  onNavigate,
+  txBusy = false,
+  txStageLabel,
+}) => {
+  function handleNavClick(href: string) {
+    if (txBusy) {
+      const stage = txStageLabel ? ` (${txStageLabel})` : "";
+      const confirmed = window.confirm(
+        `You have a transaction in progress${stage}.\n\n` +
+          "Navigating away will not cancel it — your progress will be saved and you can recover it when you return.\n\n" +
+          "Leave anyway?"
+      );
+      if (!confirmed) return;
+    }
+    onNavigate(href);
+  }
+
   return (
     <nav
       aria-label="Mobile navigation"
@@ -33,7 +64,7 @@ export const MobileBottomNav: FC<MobileBottomNavProps> = ({ currentPath, onNavig
             <button
               key={href}
               type="button"
-              onClick={() => onNavigate(href)}
+              onClick={() => handleNavClick(href)}
               className="group relative flex flex-col items-center gap-0.5 px-3 py-1 transition-all"
               aria-current={isActive ? "page" : undefined}
             >

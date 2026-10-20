@@ -1,3 +1,4 @@
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -26,6 +27,7 @@ enum ActionType {
   create_vault
   claim
   select_winner
+  compensating
 }
 
 enum ActionStatus {
@@ -43,6 +45,13 @@ model ActionLedger {
   walletAddress     String       @map("wallet_address")
   actionType        ActionType   @map("action_type")
   actionPayload     Json?        @map("action_payload")
+  /// The payload decoded from the finalized on-chain event that confirmed
+  /// this action (StellarIndexer -> LedgerService.reconcileEvent), distinct
+  /// from `actionPayload` (client-supplied intent, mutable by anyone with
+  /// database write access). Null until the action reaches `confirmed`.
+  /// See #509 / verifyPayoutIntegrity: nothing should treat a payout as
+  /// confirmed based on `actionPayload` alone.
+  verifiedPayload   Json?        @map("verified_payload")
   status            ActionStatus @default(pending)
   txHash            String?      @unique @map("tx_hash")
   sorobanEventId    String?      @map("soroban_event_id")
@@ -55,11 +64,16 @@ model ActionLedger {
   updatedAt         DateTime     @updatedAt @map("updated_at")
   submittedAt       DateTime?    @map("submitted_at")
   confirmedAt       DateTime?    @map("confirmed_at")
+  finalityStatus    String       @default("provisional") @map("finality_status")
+  observedLedger    Int?         @map("observed_ledger")
+  finalizedLedger   Int?         @map("finalized_ledger")
+  confirmationDepth Int?         @map("confirmation_depth")
+  compensatesId     String?      @map("compensates_id")
+  recoveryCheckpoint Json?       @map("recovery_checkpoint")
 
   @@index([walletAddress, createdAt(sort: Desc)])
   @@index([status, updatedAt])
-  @@index([walletAddress, actionType])
-  @@index([status, createdAt(sort: Desc)])
+  @@index([finalityStatus, observedLedger])
   @@map("action_ledger")
 }
 
@@ -68,11 +82,37 @@ model PendingEvent {
   sorobanEventId  String    @map("soroban_event_id")
   eventPayload    Json      @map("event_payload")
   statusHint      String    @map("status_hint")
+  /// Close time of the ledger that emitted the event (#751). Carried so an
+  /// action confirmed later via attachTxHash gets the same event-derived
+  /// confirmedAt as one confirmed directly by reconcileEvent.
+  ledgerClosedAt  DateTime? @map("ledger_closed_at")
   receivedAt      DateTime  @default(now()) @map("received_at")
   consumedAt      DateTime? @map("consumed_at")
 
   @@index([statusHint, receivedAt])
   @@map("pending_events")
+}
+
+// #751/#753/#754 — append-only log of every raw contract event the indexer
+// fetched, written before decoding. `id` is the Soroban RPC event id
+// (19-char TOID + "-" + 10-char event index), so ordering by id is chain
+// order. Replaying this log through StellarIndexer must reproduce the
+// chain-derived state (see services/replayEquivalence.ts), and tx_hash is
+// the cross-layer correlation key (services/transactionTrace.ts).
+model ChainEvent {
+  id             String    @id
+  ledger         Int
+  ledgerClosedAt DateTime? @map("ledger_closed_at")
+  txHash         String    @map("tx_hash")
+  contractId     String    @map("contract_id")
+  topicXdr       String[]  @map("topic_xdr")
+  valueXdr       String    @map("value_xdr")
+  successful     Boolean
+  ingestedAt     DateTime  @default(now()) @map("ingested_at")
+
+  @@index([txHash])
+  @@index([ledger])
+  @@map("chain_events")
 }
 
 model ActionLease {
@@ -103,6 +143,54 @@ model JobLease {
   @@map("job_leases")
 }
 
+// #771 — durable background jobs (delayed / retryable work). `idempotencyKey`
+// makes enqueue safe to repeat; `failures` keeps every attempt's error so a
+// dead-lettered job can be diagnosed without log archaeology.
+model BackgroundJob {
+  id             String    @id @default(uuid()) @db.Uuid
+  type           String
+  payload        Json
+  idempotencyKey String    @unique @map("idempotency_key")
+  status         String    @default("queued")
+  attempts       Int       @default(0)
+  maxAttempts    Int       @map("max_attempts")
+  runAt          DateTime  @default(now()) @map("run_at") @db.Timestamptz
+  lockedBy       String?   @map("locked_by")
+  lockedAt       DateTime? @map("locked_at") @db.Timestamptz
+  correlationId  String?   @map("correlation_id")
+  lastError      Json?     @map("last_error")
+  failures       Json      @default("[]")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  completedAt    DateTime? @map("completed_at") @db.Timestamptz
+
+  @@index([status, runAt])
+  @@index([type, status])
+  @@map("background_jobs")
+}
+
+// #923 — ledger of user-visible side effects (notifications, webhooks, emails).
+// One row per effect key so a replayed or dead-letter-requeued job skips effects
+// that already happened. `in_progress` rows are leased via `lockedAt`; a crashed
+// worker's claim becomes reclaimable once the lease expires.
+model SideEffectLedger {
+  effectKey   String    @id @map("effect_key")
+  effectType  String    @map("effect_type")
+  status      String    @default("in_progress")
+  attempts    Int       @default(0)
+  lockedBy    String?   @map("locked_by")
+  lockedAt    DateTime? @map("locked_at") @db.Timestamptz
+  lastError   String?   @map("last_error")
+  result      Json?
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  completedAt DateTime? @map("completed_at") @db.Timestamptz
+
+  @@index([effectType, status])
+  @@index([status, lockedAt])
+  @@map("side_effect_ledger")
+}
+
 model IndexerCheckpoint {
   id                  String   @id @default("singleton")
   latestLedger        Int      @map("latest_ledger")
@@ -111,6 +199,7 @@ model IndexerCheckpoint {
   lastSyncTime        DateTime @map("last_sync_time")
   lastError           String?  @map("last_error")
   lastSuccessSyncTime DateTime @default(now()) @map("last_success_sync_time")
+  indexerVersion      String?  @map("indexer_version")
 
   @@map("indexer_checkpoints")
 }
@@ -127,7 +216,36 @@ model PoisonEvent {
   resolvedAt     DateTime? @map("resolved_at")
 
   @@index([resolvedAt, detectedAt])
+  @@index([txHash])
   @@map("poison_events")
+}
+
+// #989 — versioned projection rebuild runs. Replays chain_events through the
+// production indexer at one projection version (SCHEMA_VERSIONS.INDEXER). A
+// run in `running` or `failed` leaves projections partially rebuilt, so it
+// fences the live indexer until it is resumed or superseded
+// (services/projectionRebuild.ts).
+model ProjectionRebuild {
+  id                String    @id @default(uuid()) @db.Uuid
+  projectionVersion String    @map("projection_version")
+  status            String
+  requestedBy       String    @map("requested_by")
+  reason            String
+  /// Last chain_events id at start; the replay never goes past it.
+  toEventId         String?   @map("to_event_id")
+  /// Last event id whose batch committed; resume continues after it.
+  cursor            String?
+  eventsReplayed    Int       @default(0) @map("events_replayed")
+  attempts          Int       @default(1)
+  errorCode         String?   @map("error_code")
+  lastError         String?   @map("last_error")
+  heartbeatAt       DateTime? @map("heartbeat_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+  completedAt       DateTime? @map("completed_at")
+
+  @@index([status, createdAt])
+  @@map("projection_rebuilds")
 }
 
 model VaultSettlement {
@@ -279,6 +397,46 @@ model RepairAudit {
   @@map("repair_audits")
 }
 
+// #597 — dual-controlled, bounded, auditable reconciliation repair.
+// Detection (reconciler.ts detectDrift/buildRepairPlan) produces a plan;
+// that plan must be proposed, approved (by a distinct identity once above
+// the configured step/value thresholds), and only then executed. Execution
+// delegates to the existing idempotent applyRepairPlan, so a proposal
+// interrupted mid-execution resumes safely instead of repeating transfers.
+model RepairProposal {
+  id                String           @id @default(uuid()) @db.Uuid
+  planJson          Json             @map("plan_json")
+  /// sha256 of the canonicalized plan steps. Approvals and execution are
+  /// bound to this exact hash — any drift in the plan invalidates them.
+  diffHash          String           @map("diff_hash")
+  status            String           @default("pending")
+  proposerId        String           @map("proposer_id")
+  stepCount         Int              @map("step_count")
+  valueTotal        Float            @default(0) @map("value_total")
+  requiredApprovals Int              @default(1) @map("required_approvals")
+  executedBy        String?          @map("executed_by")
+  executedAt        DateTime?        @map("executed_at")
+  createdAt         DateTime         @default(now()) @map("created_at")
+  expiresAt         DateTime         @map("expires_at")
+  approvals         RepairApproval[]
+
+  @@index([status, expiresAt])
+  @@index([diffHash])
+  @@map("repair_proposals")
+}
+
+model RepairApproval {
+  id         String         @id @default(uuid()) @db.Uuid
+  proposalId String         @map("proposal_id") @db.Uuid
+  approverId String         @map("approver_id")
+  createdAt  DateTime       @default(now()) @map("created_at")
+  proposal   RepairProposal @relation(fields: [proposalId], references: [id])
+
+  @@unique([proposalId, approverId])
+  @@map("repair_approvals")
+}
+
+
 model WalletChallenge {
   challengeId   String    @id @map("challenge_id") @db.Uuid
   walletAddress String    @map("wallet_address")
@@ -313,6 +471,32 @@ model WalletSession {
   @@map("wallet_sessions")
 }
 
+// #VaultQuest — privacy-safe user data export. One row per export request.
+// `walletAddress` is the authorization subject: only records whose
+// walletAddress matches the requester (or an admin acting on their behalf)
+// may be included. `schemaVersion` and `generatedAt` are surfaced in the
+// export payload so consumers can detect format drift. `expiresAt` drives
+// retention: exports past expiry are treated as gone and may be purged.
+model UserDataExport {
+  id            String    @id @default(uuid()) @db.Uuid
+  walletAddress String    @map("wallet_address")
+  schemaVersion String    @map("schema_version")
+  status        String    @default("pending")
+  recordCount   Int       @default(0) @map("record_count")
+  payload       Json?
+  errorCode     String?   @map("error_code")
+  errorDetail   String?   @map("error_detail")
+  generatedAt   DateTime? @map("generated_at")
+  expiresAt     DateTime  @map("expires_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@index([walletAddress, createdAt(sort: Desc)])
+  @@index([status, expiresAt])
+  @@index([expiresAt])
+  @@map("user_data_exports")
+}
+
 model RepairQuarantine {
   id          String   @id @default(uuid()) @db.Uuid
   recordType  String   @map("record_type")
@@ -327,6 +511,42 @@ model RepairQuarantine {
   @@map("repair_quarantine")
 }
 
+// Feature flags for staged rollout and emergency rollback
+// Defaults are always the safer behavior (disabled for new features, enabled for safeguards)
+model FeatureFlag {
+  id          String   @id @default(uuid()) @db.Uuid
+  key         String
+  enabled     Boolean  @default(false)
+  description String?
+  scope       String   @default("global") // "global", "vault:{id}", "wallet:{address}"
+  /// Holds `rollout` (see services/featureFlagRollout.ts) alongside any other keys.
+  metadata    Json?
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  // Matches the "feature_flags_key_scope_key" constraint that migration
+  // 20260927000001 already creates; the schema used to declare `key @unique`,
+  // which the database never had.
+  @@unique([key, scope])
+  @@index([key, scope])
+  @@index([scope])
+  @@map("feature_flags")
+}
+
+model FeatureFlagAudit {
+  id          String   @id @default(uuid()) @db.Uuid
+  flagKey     String   @map("flag_key")
+  previousValue Boolean @map("previous_value")
+  newValue    Boolean  @map("new_value")
+  actor       String?
+  reason      String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([flagKey, createdAt(sort: Desc)])
+  @@index([createdAt(sort: Desc)])
+  @@map("feature_flag_audits")
+}
+
 model SavedPool {
   id               String   @id @default(uuid()) @db.Uuid
   walletAddress    String   @map("wallet_address")
@@ -337,10 +557,16 @@ model SavedPool {
   asset            String
   participantCount Int      @map("participant_count")
   expectedYield    String   @map("expected_yield")
+  provenance       Json?
   prize            String?
   opensAt          DateTime? @map("opens_at")
   locksAt          DateTime? @map("locks_at")
   drawsAt          DateTime? @map("draws_at")
+  /// #983: increments on every write that changes a field; edits name the
+  /// version they were composed against (lib/conflict-resolver.ts).
+  version          Int      @default(0)
+  /// #983: per-field { version, stamp } of the edit that last wrote it.
+  fieldClocks      Json?    @map("field_clocks")
   createdAt        DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @updatedAt @map("updated_at")
 
@@ -350,94 +576,183 @@ model SavedPool {
   @@map("saved_pools")
 }
 
-model User {
-  id        String   @id @default(uuid()) @db.Uuid
-  email     String   @unique
-  googleId  String?  @unique
-  createdAt DateTime @default(now())
+model OutboundAction {
+  id              String   @id @default(uuid()) @db.Uuid
+  actionKey       String   @unique @map("action_key")
+  actionType      String   @map("action_type")
+  payload         Json     @map("payload")
+  status          String   @default("pending")
+  txHash          String?  @unique @map("tx_hash")
+  errorCode       String?  @map("error_code")
+  errorDetail     String?  @map("error_detail")
+  attempts        Int      @default(0)
+  maxAttempts     Int      @default(3) @map("max_attempts")
+  version         Int      @default(0)
+  lastAttemptAt   DateTime? @map("last_attempt_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  confirmedAt     DateTime? @map("confirmed_at")
+
+  @@index([status, updatedAt])
+  @@map("outbound_actions")
 }
 
-model Product {
-  id         String   @id @default(uuid()) @db.Uuid
-  name       String
-  categoryId String   @map("category_id")
-  price      Float
-  images     ProductImage[]
-  createdAt  DateTime @default(now())
+// #750 — dashboard aggregates for transactionally-consistent dashboard views
+model DashboardAggregate {
+  id                String   @id @default(uuid()) @db.Uuid
+  scope             String   @unique
+  watermark         DateTime @map("watermark")
+  totalValueLocked  String   @map("total_value_locked")
+  totalPrizePool    String   @map("total_prize_pool")
+  winDistribution   Json     @map("win_distribution")
+  depositCount      Int      @map("deposit_count")
+  depositTotal      String   @map("deposit_total")
+  computedAt        DateTime @map("computed_at")
 
-  @@index([categoryId])
-  @@index([price])
+  @@map("dashboard_aggregates")
 }
 
-model ProductImage {
-  id        String   @id @default(uuid()) @db.Uuid
-  url       String
-  productId String   @map("product_id") @db.Uuid
-  product   Product  @relation(fields: [productId], references: [id])
-model DrawProof {
-  id                String    @id @default(uuid()) @db.Uuid
-  drawId            String    @unique @map("draw_id")
-  roundId           Int       @map("round_id")
-  contractId        String    @map("contract_id")
-  proofJson         Json      @map("proof_json")
-  proofHash         String    @unique @map("proof_hash")
-  signature         String?
-  verified          Boolean   @default(false)
-  verifiedAt        DateTime? @map("verified_at")
-  verificationError String?   @map("verification_error")
-  createdAt         DateTime  @default(now()) @map("created_at")
+// Historical trend aggregation for maintainer analytics
+model TrendAggregate {
+  id                String   @id @default(uuid()) @db.Uuid
+  metricName        String   @map("metric_name")
+  window            String   // "hour", "day", "week", "month"
+  windowStart       DateTime @map("window_start")
+  windowEnd         DateTime @map("window_end")
+  value             Float
+  count             Int      @default(0)
+  metadata          Json?    @map("metadata")
+  schemaVersion     Int      @default(1) @map("schema_version")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
 
-  @@index([roundId])
-  @@index([contractId, createdAt(sort: Desc)])
-  @@map("draw_proofs")
+  @@unique([metricName, window, windowStart])
+  @@index([metricName, windowStart(sort: Desc)])
+  @@index([windowStart, windowEnd])
+  @@map("trend_aggregates")
 }
 
-model Category {
-  id          String   @id @default(uuid()) @db.Uuid
-  slug        String   @unique
-  name        String
-  description String?
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+// #VaultQuest — derived/cached records that mirror source-of-truth data
+// (vault accounting, prize draws, wallet flows, dashboards, reporting).
+model DerivedCache {
+  id              String    @id @default(uuid()) @db.Uuid
+  cacheKey        String    @unique @map("cache_key")
+  cacheType       String    @map("cache_type")
+  sourceType      String    @map("source_type")
+  sourceId        String    @map("source_id")
+  sourceVersion   BigInt    @map("source_version")
+  sourceUpdatedAt DateTime  @map("source_updated_at") @db.Timestamptz
+  payload         Json
+  computedAt      DateTime  @default(now()) @map("computed_at") @db.Timestamptz
+  expiresAt       DateTime? @map("expires_at") @db.Timestamptz
+  staleAt         DateTime? @map("stale_at") @db.Timestamptz
+  staleReason     String?   @map("stale_reason")
+  repairJobId     String?   @map("repair_job_id") @db.Uuid
+  repairAttempts  Int       @default(0) @map("repair_attempts")
+  lastRepairError String?   @map("last_repair_error")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
-  @@map("categories")
+  @@index([cacheType, staleAt])
+  @@index([sourceType, sourceId])
+  @@index([expiresAt])
+  @@map("derived_cache")
 }
 
-model Notification {
+// #VaultQuest — append-only log of stale-cache detection and repair runs.
+model CacheRepairRun {
   id             String    @id @default(uuid()) @db.Uuid
-  walletAddress  String    @map("wallet_address")
-  type           String
-  positionId     String    @map("position_id")
-  title          String
-  message        String
-  dismissedAt    DateTime? @map("dismissed_at")
-  createdAt      DateTime  @default(now()) @map("created_at")
+  jobName        String    @map("job_name")
+  dryRun         Boolean   @default(true) @map("dry_run")
+  detectedCount  Int       @default(0) @map("detected_count")
+  repairedCount  Int       @default(0) @map("repaired_count")
+  failedCount    Int       @default(0) @map("failed_count")
+  planJson       Json      @map("plan_json")
+  appliedJson    Json?     @map("applied_json")
+  errorDetail    String?   @map("error_detail")
+  startedAt      DateTime  @default(now()) @map("started_at") @db.Timestamptz
+  completedAt    DateTime? @map("completed_at") @db.Timestamptz
 
-  @@unique([walletAddress, positionId, type])
-  @@index([walletAddress, dismissedAt])
-  @@map("notifications")
+  @@index([jobName, startedAt(sort: Desc)])
+  @@index([dryRun, startedAt(sort: Desc)])
+  @@map("cache_repair_runs")
 }
 
-model NotificationPreference {
-  walletAddress String   @id @map("wallet_address")
-  disabledTypes String[] @default([]) @map("disabled_types")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+/// Time-bounded, audited maintainer support access (issue #support-access).
+/// Grants are scoped to one resource and expire automatically; every use (or
+/// denied use) is recorded in the append-only `support_access_audit` chain.
+model SupportAccessGrant {
+  id          String    @id @default(uuid()) @db.Uuid
+  requesterId String    @map("requester_id")
+  reason      String
+  ticketRef   String    @map("ticket_ref")
+  scopeType   String    @map("scope_type")
+  scope       String
+  expiresAt   DateTime  @map("expires_at")
+  revokedAt   DateTime? @map("revoked_at")
+  revokedBy   String?   @map("revoked_by")
+  createdAt   DateTime  @default(now()) @map("created_at")
 
-  @@map("notification_preferences")
+  @@index([scopeType, scope, expiresAt])
+  @@map("support_access_grants")
 }
 
-model TransactionMetric {
-  id            String    @id @default(uuid()) @db.Uuid
-  actionId      String    @unique @map("action_id")
-  actionType    String    @map("action_type")
-  network       String
-  walletAddress String    @map("wallet_address")
-  submittedAt   DateTime  @map("submitted_at")
-  confirmedAt   DateTime? @map("confirmed_at")
-  indexedAt     DateTime? @map("indexed_at")
-  createdAt     DateTime  @default(now()) @map("created_at")
+/// Append-only, hash-chained audit trail. Immutability is enforced by a
+/// database trigger (migration `20261016000000_support_access_and_imports`),
+/// so application bugs or ad-hoc SQL cannot rewrite history.
+model SupportAccessAuditEntry {
+  id        String   @id @default(uuid()) @db.Uuid
+  grantId   String?  @map("grant_id")
+  actor     String
+  action    String
+  scope     String
+  detail    Json?
+  prevHash  String?  @map("prev_hash")
+  entryHash String   @map("entry_hash")
+  createdAt DateTime @default(now()) @map("created_at")
 
-  @@index([actionType, network])
-  @@index([submittedAt])
-  @@map("transaction_metrics")
+  @@index([grantId, createdAt])
+  @@map("support_access_audit")
+}
+
+/// Secure import pipeline (issue #imports). A batch starts as a `preview`;
+/// committed actions are traceable through `import_rows.applied_ref`.
+model ImportBatch {
+  id              String      @id @default(uuid()) @db.Uuid
+  kind            String
+  status          String      @default("preview")
+  sourceName      String?     @map("source_name")
+  contentHash     String      @map("content_hash")
+  idempotencyKey  String      @unique @map("idempotency_key")
+  createdBy       String      @map("created_by")
+  totalRows       Int         @map("total_rows")
+  acceptedRows    Int         @map("accepted_rows")
+  quarantinedRows Int         @map("quarantined_rows")
+  appliedRows     Int         @default(0) @map("applied_rows")
+  rolledBackRows  Int         @default(0) @map("rolled_back_rows")
+  createdAt       DateTime    @default(now()) @map("created_at")
+  committedAt     DateTime?   @map("committed_at")
+  rolledBackAt    DateTime?   @map("rolled_back_at")
+  rows            ImportRow[]
+
+  @@index([kind, createdAt(sort: Desc)])
+  @@map("import_batches")
+}
+
+model ImportRow {
+  id               String      @id @default(uuid()) @db.Uuid
+  batchId          String      @map("batch_id")
+  rowNumber        Int         @map("row_number")
+  status           String
+  quarantineReason String?     @map("quarantine_reason")
+  quarantineDetail String?     @map("quarantine_detail")
+  payload          Json?
+  appliedRef       String?     @map("applied_ref")
+  createdAt        DateTime    @default(now()) @map("created_at")
+  updatedAt        DateTime    @updatedAt @map("updated_at")
+  batch            ImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@unique([batchId, rowNumber])
+  @@index([batchId, status])
+  @@map("import_rows")
 }

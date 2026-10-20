@@ -22,6 +22,10 @@ describe("state transitions", () => {
     expect(canTransition("submitted", "orphaned")).toBe(true);
   });
 
+  it("does not allow an orphaned transaction to be resubmitted", () => {
+    expect(canTransition("orphaned", "submitted")).toBe(false);
+  });
+
   it("rejects confirmed -> pending", () => {
     expect(canTransition("confirmed", "pending")).toBe(false);
   });

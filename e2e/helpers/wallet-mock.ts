@@ -4,10 +4,15 @@ import { Page } from '@playwright/test';
  * Injects a mock Ethereum wallet into the page for testing.
  * @param page - Playwright page object
  * @param address - Mock wallet address (default: 0x1234567890123456789012345678901234567890)
+ * @param options.connected - Start with eth_accounts already connected.
  */
-export async function injectMockWallet(page: Page, address: string = '0x1234567890123456789012345678901234567890') {
-  await page.addInitScript((mockAddress) => {
-    let isConnected = false;
+export async function injectMockWallet(
+  page: Page,
+  address: string = '0x1234567890123456789012345678901234567890',
+  options: { connected?: boolean } = {}
+) {
+  await page.addInitScript(({ mockAddress, connected }) => {
+    let isConnected = connected;
     const listeners: Record<string, Function[]> = {};
 
     (window as any).ethereum = {
@@ -53,7 +58,77 @@ export async function injectMockWallet(page: Page, address: string = '0x12345678
         }
       },
     };
-  }, address);
+  }, { mockAddress: address, connected: options.connected === true });
+}
+
+export async function injectConnectedMockWallet(
+  page: Page,
+  address: string = '0x1234567890123456789012345678901234567890'
+) {
+  await injectMockWallet(page, address, { connected: true });
+}
+
+export interface RejectingWalletOptions {
+  code?: number;
+  message?: string;
+  address?: string;
+  /** Reject eth_requestAccounts (connect denied) when true, else expose accounts. */
+  rejectAccounts?: boolean;
+}
+
+/**
+ * Injects a wallet that *denies* wallet requests — modeling a user clicking
+ * "Reject" in their wallet (wallet rejection path, #745). `eth_requestAccounts`
+ * and `eth_sendTransaction` throw `code 4001`; `eth_accounts` reports no
+ * accounts unless `rejectAccounts` is false, so the app can never observe a
+ * falsely-connected state.
+ */
+export async function injectRejectingWallet(
+  page: Page,
+  {
+    code = 4001,
+    message = 'MetaMask Tx Signature: User denied transaction signature.',
+    address = '0x1234567890123456789012345678901234567890',
+    rejectAccounts = true,
+  }: RejectingWalletOptions = {}
+) {
+  await page.addInitScript(({ rejectionCode, rejectionMessage, mockAddress, rejectAccounts }) => {
+    const listeners: Record<string, Function[]> = {};
+
+    (window as any).ethereum = {
+      isMetaMask: true,
+      request: async ({ method }: { method: string }) => {
+        if (method === 'eth_requestAccounts') {
+          const err = new Error(rejectionMessage);
+          (err as any).code = rejectionCode;
+          throw err;
+        }
+        if (method === 'eth_accounts') {
+          return rejectAccounts ? [] : [mockAddress];
+        }
+        if (method === 'eth_chainId') {
+          return '0xa869'; // Fuji testnet
+        }
+        if (method === 'eth_sendTransaction') {
+          const err = new Error(rejectionMessage);
+          (err as any).code = rejectionCode;
+          throw err;
+        }
+        return null;
+      },
+      on: (event: string, callback: Function) => {
+        if (!listeners[event]) {
+          listeners[event] = [];
+        }
+        listeners[event].push(callback);
+      },
+      removeListener: (event: string, callback: Function) => {
+        if (listeners[event]) {
+          listeners[event] = listeners[event].filter(cb => cb !== callback);
+        }
+      },
+    };
+  }, { rejectionCode: code, rejectionMessage: message, mockAddress: address, rejectAccounts: rejectAccounts === true });
 }
 
 /**

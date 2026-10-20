@@ -7,16 +7,17 @@ import { getPrometheusMetrics } from "../services/prometheusMetrics.js";
 const prometheusPlugin: FastifyPluginAsync = async (app) => {
   const metrics = getPrometheusMetrics(app.log);
 
-  // Record request start time and route
+  // Record request start time
   app.addHook("onRequest", async (req) => {
     (req as any).prometheusStartTime = performance.now();
-    (req as any).prometheusRoute = req.url.split("?")[0]; // Remove query params
   });
 
   // Record request metrics on response
   app.addHook("onResponse", async (req, reply) => {
     const startTime = (req as any).prometheusStartTime || performance.now();
-    const route = (req as any).prometheusRoute || req.url;
+    // Use the matched route pattern, never the raw URL: path segments are
+    // caller-controlled and would create one time series per distinct value (#925).
+    const route = req.routeOptions?.url ?? "unmatched";
     const duration = (performance.now() - startTime) / 1000; // Convert to seconds
 
     let method = req.method;

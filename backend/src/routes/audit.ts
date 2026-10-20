@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
+import type { preHandlerHookHandler } from "fastify";
 import { z } from "zod";
 import type { AuditService } from "../services/auditService.js";
-import { requireAuth } from "../middleware/auth.js";
 import { ok, page } from "../responses.js";
 
 function serialize(row: any) {
@@ -16,7 +16,14 @@ function serialize(row: any) {
   };
 }
 
-export const auditRoutes = (svc: AuditService): FastifyPluginAsync =>
+/** Per-action permission guards (#767); see `requirePermission`. */
+export type AuditGuards = {
+  read: preHandlerHookHandler;
+  write: preHandlerHookHandler;
+  export: preHandlerHookHandler;
+};
+
+export const auditRoutes = (svc: AuditService, guards: AuditGuards): FastifyPluginAsync =>
   async (app) => {
     const recordBody = z.object({
       parameter_name: z.string().min(1).max(128),
@@ -34,14 +41,14 @@ export const auditRoutes = (svc: AuditService): FastifyPluginAsync =>
     });
 
     app.post("/admin/audit", {
-      preHandler: [requireAuth],
+      preHandler: [guards.write],
     }, async (req, reply) => {
       const body = recordBody.parse(req.body);
       const record = await svc.record({
         parameterName: body.parameter_name,
         previousValue: body.previous_value,
         newValue: body.new_value,
-        actor: body.actor,
+        actor: req.principal?.walletAddress || body.actor,
         txHash: body.tx_hash,
       });
       reply.status(201);
@@ -49,7 +56,7 @@ export const auditRoutes = (svc: AuditService): FastifyPluginAsync =>
     });
 
     app.get("/admin/audit", {
-      preHandler: [requireAuth],
+      preHandler: [guards.read],
     }, async (req) => {
       const q = listQuery.parse(req.query);
       const result = await svc.list({
@@ -62,7 +69,7 @@ export const auditRoutes = (svc: AuditService): FastifyPluginAsync =>
     });
 
     app.get("/admin/audit/export", {
-      preHandler: [requireAuth],
+      preHandler: [guards.export],
     }, async (req, reply) => {
       const q = listQuery.parse(req.query);
       const result = await svc.list({

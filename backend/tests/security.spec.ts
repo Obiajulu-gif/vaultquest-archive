@@ -1,4 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
+
+vi.mock("@prisma/client", () => ({
+  PrismaClient: class {}
+}));
+
 import { buildApp } from "../src/app.js";
 import { randomUUID } from "node:crypto";
 

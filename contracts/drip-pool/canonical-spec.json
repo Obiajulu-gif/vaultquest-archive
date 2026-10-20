@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "contract": "drip-pool",
   "description": "Canonical contract specification for cross-stack conformance testing. Exported from Rust contract types in contracts/drip-pool/src/lib.rs.",
   "errors": {
@@ -104,6 +104,13 @@
         { "name": "expires_at", "type": "u32" },
         { "name": "approver_snapshot", "type": "vec" }
       ]
+    },
+    "RoundingRemainder": {
+      "fields": [
+        { "name": "whole_units", "type": "i128" },
+        { "name": "numerator", "type": "i128" },
+        { "name": "denominator", "type": "i128" }
+      ]
     }
   },
   "methods": {
@@ -206,6 +213,11 @@
       "params": [],
       "returns": "u32",
       "description": "View multisig threshold"
+    },
+    "round_rounding_remainder": {
+      "params": ["round_id"],
+      "returns": "RoundingRemainder",
+      "description": "View cumulative fractional payout remainder for a round"
     }
   },
   "type_mapping": {

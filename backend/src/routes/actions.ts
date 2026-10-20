@@ -1,21 +1,47 @@
+import { createHash } from "node:crypto";
+import { loadManifest } from "../../../lib/deployment-manifest.js";
 import type { FastifyPluginAsync, preHandlerHookHandler } from "fastify";
 import type { LedgerService } from "../services/ledger.js";
 import {
   createActionBody,
   attachTxBody,
+  actionCheckpointBody,
   cancelBody,
   listQuery,
   dashboardQuery,
   portfolioQuery,
   exportQuery,
   idempotencyKeySchema,
-  actionHistoryQuery
+  actionHistoryQuery,
+  publicActivityQuery,
 } from "../schemas/actions.js";
 import { AppError } from "../errors.js";
 import { ok, page } from "../responses.js";
+import type { ActionRecord } from "../types.js";
+
+/**
+ * #812: called after an action is created (or a duplicate request returns
+ * the existing one), submitted or cancelled — used to issue signed receipts.
+ * Hook failures are logged and never fail the committed operation; receipt
+ * lookups re-issue anything missing.
+ */
+export type ActionLifecycleHooks = {
+  onActionChanged?: (action: ActionRecord) => Promise<unknown>;
+};
 
 function serialize(row: Awaited<ReturnType<LedgerService["getAction"]>>) {
   if (!row) return null;
+  const checkpoint = row.recoveryCheckpoint as { stage?: string } | null;
+  const nextAction = row.status === "confirmed" || row.status === "failed" || row.status === "reverted"
+    ? "none"
+    : row.status === "pending" && checkpoint?.stage === "intent_recorded"
+      ? "continue_wallet_approval"
+      : "verify_wallet_or_chain_before_retry";
+  const recoveryMessage = nextAction === "continue_wallet_approval"
+    ? "Continue this action using its existing idempotency key."
+    : nextAction === "verify_wallet_or_chain_before_retry"
+      ? "Verify wallet or chain activity before starting another action. Do not resubmit this operation."
+      : "No recovery action is required.";
   return {
     id: row.id,
     idempotency_key: row.idempotencyKey,
@@ -29,6 +55,11 @@ function serialize(row: Awaited<ReturnType<LedgerService["getAction"]>>) {
     error_code: row.errorCode,
     error_detail: row.errorDetail,
     retry_count: row.retryCount,
+    recovery: {
+      checkpoint: row.recoveryCheckpoint,
+      next_action: nextAction,
+      message: recoveryMessage
+    },
     created_at: row.createdAt,
     updated_at: row.updatedAt,
     submitted_at: row.submittedAt,
@@ -37,23 +68,53 @@ function serialize(row: Awaited<ReturnType<LedgerService["getAction"]>>) {
   };
 }
 
+/**
+ * The account-facing history contract deliberately exposes an allow-list.
+ * Internal payloads can contain recipient, signer, retry, correlation, and
+ * error-detail data that is useful to operators but not to account holders.
+ */
+function serializePublicActivity(row: Awaited<ReturnType<LedgerService["getAction"]>>) {
+  if (!row || row.redactedAt) return null;
+  const payload = (row.actionPayload as Record<string, unknown> | null) ?? {};
+  return {
+    id: row.id,
+    date: row.createdAt,
+    action_type: row.actionType,
+    pool_id: String(payload.vault_id ?? payload.pool_id ?? ""),
+    asset: String(payload.token ?? payload.asset ?? ""),
+    amount: String(payload.amount ?? ""),
+    status: row.status,
+    tx_hash: row.txHash,
+    submitted_at: row.submittedAt,
+    confirmed_at: row.confirmedAt,
+  };
+}
+
 export const actionsRoutes = (
   svc: LedgerService,
-  apiKeyGuard: preHandlerHookHandler
+  apiKeyGuard: preHandlerHookHandler,
+  hooks: ActionLifecycleHooks = {}
 ): FastifyPluginAsync =>
   async (app) => {
+    const notify = async (action: ActionRecord, log: { error: (obj: object, msg: string) => void }) => {
+      if (!hooks.onActionChanged) return;
+      try {
+        await hooks.onActionChanged(action);
+      } catch (err) {
+        log.error({ err, actionId: action.id }, "action lifecycle hook failed");
+      }
+    };
+
     app.post("/actions", async (req, reply) => {
       const keyHeader = req.headers["idempotency-key"];
       const keyRaw = Array.isArray(keyHeader) ? keyHeader[0] : keyHeader;
       const keyParsed = idempotencyKeySchema.safeParse(keyRaw);
       if (!keyParsed.success) {
-        return reply.status(400).send({
-          error: {
-            code: "INVALID_PAYLOAD",
-            message: "Idempotency-Key header must be a UUID",
-            issues: keyParsed.error.issues
-          }
-        });
+        throw AppError.validation(
+          "Idempotency-Key header must be a UUID",
+          undefined,
+          keyParsed.error.issues
+        );
       }
       const body = createActionBody.parse(req.body);
 
@@ -64,6 +125,8 @@ export const actionsRoutes = (
         actionType: body.action_type,
         actionPayload: body.action_payload
       });
+      // Duplicate requests reach the same (idempotent) receipt.
+      await notify(result, req.log);
       reply.status(existing ? 200 : 201);
       return ok(serialize(result));
     });
@@ -72,12 +135,21 @@ export const actionsRoutes = (
       const body = attachTxBody.parse(req.body);
       const workerId = (req.headers["x-worker-id"] as string | undefined) ?? "anonymous";
       const result = await svc.attachTxHash(req.params.id, body.tx_hash, { workerId });
+      // #753: the signing layer's hand-off, logged under the correlation key.
+      req.log.info({ txHash: body.tx_hash, actionId: result.id, status: result.status }, "action tx_hash attached");
+      await notify(result, req.log);
       return ok(serialize(result));
+    });
+
+    app.post<{ Params: { id: string } }>("/actions/:id/checkpoint", async (req) => {
+      actionCheckpointBody.parse(req.body);
+      return ok(serialize(await svc.markExternalActionStarted(req.params.id)));
     });
 
     app.post<{ Params: { id: string } }>("/actions/:id/cancel", async (req) => {
       const body = cancelBody.parse(req.body);
       const result = await svc.cancelAction(req.params.id, body.error_code, body.error_detail);
+      await notify(result, req.log);
       return ok(serialize(result));
     });
 
@@ -92,10 +164,26 @@ export const actionsRoutes = (
       const result = await svc.listActions({
         walletAddress: q.wallet,
         status: q.status,
+        type: q.type,
         cursor: q.cursor,
         limit: q.limit
       });
-      return page(result.items.map(serialize), { nextCursor: result.nextCursor, limit: q.limit });
+      // #731: reports the ingestion point this list was read at, so a
+      // caller comparing it against another read (e.g. /dashboard/summary's
+      // own watermark) can tell whether the two came from the same
+      // ingestion generation or straddled a burst of new writes — see
+      // backend/docs/READ_CONSISTENCY.md.
+      const watermark = await svc.getIngestionWatermark();
+      return page(
+        result.items.map(serialize),
+        { nextCursor: result.nextCursor, limit: q.limit },
+        {
+          watermark: {
+            latest_ledger: watermark.latestLedger,
+            as_of: watermark.asOf
+          }
+        }
+      );
     });
 
     app.delete("/actions", async (req) => {
@@ -126,7 +214,14 @@ export const actionsRoutes = (
         pending_tx_hashes: summary.pendingTxHashes,
         is_stale: summary.isStale,
         latest_activity_at: summary.latestActivityAt,
-        latest_confirmed_at: summary.latestConfirmedAt
+        latest_confirmed_at: summary.latestConfirmedAt,
+        // #731: read from the same snapshot transaction as the fields
+        // above, so it exactly describes the ingestion point this summary
+        // was computed at (see getDashboardSummary / READ_CONSISTENCY.md).
+        watermark: {
+          latest_ledger: summary.watermark.latestLedger,
+          as_of: summary.watermark.asOf
+        }
       });
     });
 
@@ -138,7 +233,18 @@ export const actionsRoutes = (
     app.get("/portfolio/summary", async (req) => {
       const q = portfolioQuery.parse(req.query);
       const summary = await svc.getPortfolioSummary(q.wallet);
-      return ok(summary);
+      // #731: getPortfolioSummary's own read is a single query (one MVCC
+      // snapshot already), but the watermark is still fetched separately
+      // here, so a caller can compare it against a concurrently-fetched
+      // /dashboard/summary or /actions read to detect a straddled burst.
+      const watermark = await svc.getIngestionWatermark();
+      return ok({
+        ...summary,
+        watermark: {
+          latest_ledger: watermark.latestLedger,
+          as_of: watermark.asOf
+        }
+      });
     });
 
     /**
@@ -161,48 +267,99 @@ export const actionsRoutes = (
         limit: q.limit
       });
 
+      // Obtain network passphrase securely
+      let networkPassphrase = process.env.NETWORK_PASSPHRASE || process.env.NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE;
+      if (!networkPassphrase) {
+        try {
+          const manifest = loadManifest();
+          networkPassphrase = manifest.network.passphrase || manifest.network.name;
+        } catch {
+          networkPassphrase = "standalone";
+        }
+      }
+
+      // Filter and map only public/non-sensitive fields
+      const cleanRecords = rows.map((r) => {
+        const payload = (r.actionPayload as Record<string, unknown> | null) ?? {};
+        return {
+          id: r.id,
+          date: r.createdAt.toISOString(),
+          action_type: r.actionType,
+          pool_id: String(payload["vault_id"] ?? payload["pool_id"] ?? ""),
+          asset: String(payload["token"] ?? payload["asset"] ?? ""),
+          amount: String(payload["amount"] ?? ""),
+          status: r.status,
+          tx_hash: r.txHash ?? "",
+          error_code: r.errorCode ?? "",
+          submitted_at: r.submittedAt?.toISOString() ?? "",
+          confirmed_at: r.confirmedAt?.toISOString() ?? ""
+        };
+      });
+
+      const generatedAt = new Date().toISOString();
+      const range = {
+        from: q.from || null,
+        to: q.to || null
+      };
+
       if (q.format === "csv") {
         const CSV_HEADERS = [
           "id", "date", "action_type", "pool_id", "asset", "amount",
           "status", "tx_hash", "error_code", "submitted_at", "confirmed_at"
         ];
 
-        if (rows.length === 0) {
-          const csv = CSV_HEADERS.join(",") + "\n";
-          const filename = `vaultquest-activity-${q.wallet.slice(0, 8)}.csv`;
-          reply
-            .header("Content-Type", "text/csv; charset=utf-8")
-            .header("Content-Disposition", `attachment; filename="${filename}"`);
-          return reply.send(csv);
-        }
-
-        const csvRows = rows.map((r) => {
-          const payload = (r.actionPayload as Record<string, unknown> | null) ?? {};
+        const csvRows = cleanRecords.map((r) => {
           return [
             r.id,
-            r.createdAt.toISOString(),
-            r.actionType,
-            String(payload["vault_id"] ?? payload["pool_id"] ?? ""),
-            String(payload["token"] ?? payload["asset"] ?? ""),
-            String(payload["amount"] ?? ""),
+            r.date,
+            r.action_type,
+            r.pool_id,
+            r.asset,
+            r.amount,
             r.status,
-            r.txHash ?? "",
-            r.errorCode ?? "",
-            r.submittedAt?.toISOString() ?? "",
-            r.confirmedAt?.toISOString() ?? ""
+            r.tx_hash,
+            r.error_code,
+            r.submitted_at,
+            r.confirmed_at
           ].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",");
         });
 
-        const csv = [CSV_HEADERS.join(","), ...csvRows].join("\n");
-        const filename = `vaultquest-activity-${q.wallet.slice(0, 8)}.csv`;
+        const dataContent = [CSV_HEADERS.join(","), ...csvRows].join("\n");
+        const checksum = createHash("sha256").update(dataContent).digest("hex");
 
+        const csv = [
+          `# wallet: ${q.wallet}`,
+          `# network: ${networkPassphrase}`,
+          `# range: from=${range.from || "all"} to=${range.to || "all"}`,
+          `# generatedAt: ${generatedAt}`,
+          `# checksum: ${checksum}`,
+          dataContent
+        ].join("\n") + "\n";
+
+        const filename = `vaultquest-activity-${q.wallet.slice(0, 8)}.csv`;
         reply
           .header("Content-Type", "text/csv; charset=utf-8")
           .header("Content-Disposition", `attachment; filename="${filename}"`);
         return reply.send(csv);
       }
 
-      return ok(rows.map(serialize));
+      // Format is JSON
+      const recordsString = JSON.stringify(cleanRecords);
+      const checksum = createHash("sha256").update(recordsString).digest("hex");
+
+      const metadata = {
+        wallet: q.wallet,
+        network: networkPassphrase,
+        range,
+        generatedAt,
+        checksum
+      };
+
+      const filename = `vaultquest-activity-${q.wallet.slice(0, 8)}.json`;
+      reply
+        .header("Content-Type", "application/json; charset=utf-8")
+        .header("Content-Disposition", `attachment; filename="${filename}"`);
+      return reply.send(JSON.stringify({ metadata, data: cleanRecords }, null, 2) + "\n");
     });
 
     app.get<{ Params: { walletAddress: string } }>("/api/actions/:walletAddress", { preHandler: apiKeyGuard }, async (req) => {
@@ -215,5 +372,21 @@ export const actionsRoutes = (
         limit: q.limit
       });
       return page(result.items.map(serialize), { nextCursor: result.nextCursor, limit: q.limit });
+    });
+
+    /** Account-facing history: only safe, user-visible fields are returned. */
+    app.get<{ Params: { walletAddress: string } }>("/api/actions/:walletAddress/history", { preHandler: apiKeyGuard }, async (req) => {
+      const q = publicActivityQuery.parse(req.query);
+      const result = await svc.listActions({
+        walletAddress: req.params.walletAddress,
+        status: q.status,
+        type: q.type,
+        cursor: q.cursor ?? null,
+        limit: q.limit,
+      });
+      return page(
+        result.items.map(serializePublicActivity).filter((row): row is NonNullable<typeof row> => row !== null),
+        { nextCursor: result.nextCursor, limit: q.limit },
+      );
     });
   };

@@ -55,6 +55,27 @@ To see the test results UI:
 pnpm exec playwright test --ui
 ```
 
+## Release Readiness
+
+The tag-triggered release workflow blocks draft creation until migration deploy
+and post-checks, dependency and secret scans, backend smoke/security tests, and
+an isolated PostgreSQL backup/restore rehearsal all pass. See
+[`docs/release-readiness-checklist.md`](./release-readiness-checklist.md) for
+required evidence, operational failure handling, and recovery guidance.
+
+Run the gate's focused tests locally:
+
+```bash
+pnpm --filter backend exec vitest run \
+  tests/release-readiness-gate.spec.ts \
+  tests/migration-safety.spec.ts
+```
+
+The rollback rehearsal requires disposable local PostgreSQL databases named
+with `_test` and `_rollback_test` suffixes and the `pg_dump`, `pg_restore`,
+and `psql` client tools. It refuses remote hosts or a non-empty restore target.
+Never pass production database URLs to this script.
+
 ## Mocking Wallet States
 
 We use `wagmi` mocks in `tests/mocks/wagmi.ts`. You can override these in individual tests to simulate different states:
@@ -76,3 +97,9 @@ E2E tests include automated `axe-core` checks. Ensure all new pages or major UI 
 ## Responsive Design
 
 Playwright is configured to run tests across multiple viewports (Chromium, Webkit, Mobile Chrome, Mobile Safari). Use `isMobile` flag in Playwright tests to handle breakpoint-specific logic.
+
+## Maintainer-Safe Fixture Anonymization (#661)
+
+When generating shared bug reports or diagnostic dumps:
+- Use the **Anonymize** toggle in the System Diagnostics panel (`NetworkDiagnostics.tsx`).
+- Sensitive wallet addresses and private identifiers are redacted (e.g. `G...ANONYMIZED`) while maintaining relational structure needed to reproduce issues.

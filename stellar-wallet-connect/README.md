@@ -42,19 +42,33 @@ import ConnectWallet from "../stellar-wallet-connect/src/components/ConnectWalle
 </nav>
 ```
 
-### In React
+### In React & Astro Islands
 
-You can use the stores and services directly:
+Use the dedicated `useWalletState()` hook for seamless, SSR-safe cross-island state synchronization:
 
 ```tsx
-import { useStore } from '@nanostores/react';
-import { connectedPublicKey } from './stellar-wallet-connect/src/core/store';
+import { useWalletState } from '@vaultquest/stellar-wallet-connect';
 
-function Profile() {
-  const $publicKey = useStore(connectedPublicKey);
-  return <div>{$publicKey ? `Connected: ${$publicKey}` : 'Not connected'}</div>;
+function ProfileIsland() {
+  const { isConnected, publicKey, network, isNetworkMismatch, disconnect } = useWalletState();
+
+  if (!isConnected) {
+    return <div>Not connected</div>;
+  }
+
+  return (
+    <div>
+      <p>Connected: {publicKey}</p>
+      <p>Network: {network} {isNetworkMismatch && '(Mismatch!)'}</p>
+      <button onClick={() => disconnect()}>Disconnect</button>
+    </div>
+  );
 }
 ```
+
+### Cross-Island State Synchronization (#734)
+
+The wallet module uses a framework-agnostic singleton store (`nanostores`) coupled with `useWalletState()` and `subscribeWalletState()` to guarantee real-time synchronization between Astro page shells and isolated React island roots without flashes of incorrect state or context isolation issues. See [docs/CROSS_ISLAND_WALLET_SYNC.md](./docs/CROSS_ISLAND_WALLET_SYNC.md) for architecture details.
 
 ---
 

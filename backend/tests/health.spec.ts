@@ -1,6 +1,62 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { LedgerService } from "../src/services/ledger.js";
 import { buildApp } from "../src/app.js";
+import { checkDependencies } from "../src/routes/health.js";
+
+describe("dependency health diagnostics", () => {
+  const makeDeps = (overrides: Record<string, unknown> = {}) => ({
+    prisma: { $queryRaw: vi.fn(async () => [{ "?column?": 1 }]) } as any,
+    cacheService: { redisClient: { ping: vi.fn(async () => "PONG") } } as any,
+    rpcUrls: "https://rpc.example.test",
+    fetch: vi.fn(async () => new Response(JSON.stringify({ result: { status: "healthy" } }), { status: 200 })),
+    ...overrides,
+  });
+
+  it("reports all configured dependencies healthy without returning endpoint values", async () => {
+    const report = await checkDependencies(makeDeps());
+    expect(report.status).toBe("healthy");
+    expect(report.dependencies.map((item) => item.status)).toEqual(["healthy", "healthy", "healthy"]);
+    expect(JSON.stringify(report)).not.toContain("rpc.example.test");
+  });
+
+  it("reports optional Redis as degraded when it is not configured", async () => {
+    const report = await checkDependencies(makeDeps({ cacheService: undefined }));
+    expect(report.status).toBe("degraded");
+    expect(report.dependencies.find((item) => item.name === "redis_cache")?.status).toBe("degraded");
+  });
+
+  it("reports a required database failure as unavailable without leaking the error", async () => {
+    const report = await checkDependencies(makeDeps({
+      prisma: { $queryRaw: vi.fn(async () => { throw new Error("postgres://user:secret@host/db"); }) },
+    }));
+    expect(report.status).toBe("unavailable");
+    expect(JSON.stringify(report)).not.toContain("secret");
+  });
+
+  it("reports missing and malformed RPC configuration without exposing values", async () => {
+    for (const rpcUrls of [undefined, "https://user:password@bad.example"]) {
+      const report = await checkDependencies(makeDeps({ rpcUrls }));
+      expect(report.status).toBe("unavailable");
+      expect(report.dependencies.find((item) => item.name === "soroban_rpc")?.status).toBe("misconfigured");
+      expect(JSON.stringify(report)).not.toContain("password");
+    }
+  });
+
+  it("marks partial RPC failure degraded and total RPC failure unavailable", async () => {
+    const partial = await checkDependencies(makeDeps({
+      rpcUrls: "https://one.example,https://two.example",
+      fetch: vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ result: { status: "healthy" } }), { status: 200 }))
+        .mockRejectedValueOnce(new Error("provider down")),
+    }));
+    expect(partial.status).toBe("degraded");
+
+    const failed = await checkDependencies(makeDeps({
+      fetch: vi.fn(async () => new Response("failure", { status: 503 })),
+    }));
+    expect(failed.status).toBe("unavailable");
+  });
+});
 
 describe("Indexer Health & Sync-Lag Tests", () => {
   describe("LedgerService.updateIndexerCheckpoint (Unit)", () => {

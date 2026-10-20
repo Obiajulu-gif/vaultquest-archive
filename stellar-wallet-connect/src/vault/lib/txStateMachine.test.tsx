@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { createMockVaultClient, SAMPLE_ADDRESS } from "../contract/mockClient";
+import { BusinessPolicyEngine } from "../../../../lib/business-policy";
 import {
   ContractInterfaceError,
   type PoolActionInput,
@@ -83,6 +84,26 @@ describe("transitionTxState", () => {
 });
 
 describe("useTxFlow", () => {
+  it("rejects a configured deposit limit before requesting wallet submission", async () => {
+    const submitAction: VaultContractClient["submitAction"] = vi.fn(async () => ({
+      txHash: "must-not-submit",
+      status: "submitted"
+    }));
+    const client = clientWithSubmit(submitAction);
+    const { result } = renderHook(() => useTxFlow());
+
+    await act(async () => {
+      await result.current.run(client, "drip", input, {
+        businessPolicy: new BusinessPolicyEngine({ maximumDeposit: 20 }),
+        indexingDelayMs: 0
+      });
+    });
+
+    expect(submitAction).not.toHaveBeenCalled();
+    expect(result.current.state.stage).toBe("failed");
+    expect(result.current.state.stage === "failed" && result.current.state.message).toContain("Lower the amount");
+  });
+
   it("moves through confirmation and success with a mocked client", async () => {
     const client = createMockVaultClient({ txHashFactory: () => "tx-success" });
     const onConfirmed = vi.fn();
@@ -218,5 +239,76 @@ describe("useTxFlow", () => {
 
     expect(submitAction).toHaveBeenCalledTimes(2);
     expect(result.current.state).toEqual({ stage: "success", txHash: "tx-retry" });
+  });
+});
+
+// ─── usePersistentTxFlow (#631) ───────────────────────────────────────────────
+
+describe("usePersistentTxFlow – persistence and recovery", () => {
+  const scopeKey = "test-wallet:testnet";
+  const STORAGE_KEY = `vaultquest:pending_tx:${scopeKey}`;
+
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("clears storage on success", async () => {
+    const { usePersistentTxFlow } = await import("./txStateMachine");
+    const client = clientWithSubmit(async () => ({ txHash: "tx-ok", status: "submitted" }));
+    const { result } = renderHook(() => usePersistentTxFlow({ scopeKey }));
+
+    await act(async () => {
+      await result.current.run(client, "claim", input, { indexingDelayMs: 0 });
+    });
+
+    expect(result.current.state.stage).toBe("success");
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+
+  it("clears storage on failure", async () => {
+    const { usePersistentTxFlow } = await import("./txStateMachine");
+    const err = new Error("RPC fail");
+    (err as any).kind = "rpc_failure";
+    const client = clientWithSubmit(async () => { throw err; });
+    const { result } = renderHook(() => usePersistentTxFlow({ scopeKey }));
+
+    await act(async () => {
+      await result.current.run(client, "claim", input, { indexingDelayMs: 0 });
+    });
+
+    expect(result.current.state.stage).toBe("failed");
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+
+  it("surfaces a recovered interrupted transaction as failed with a descriptive message", async () => {
+    const { usePersistentTxFlow } = await import("./txStateMachine");
+    const record = { stage: "confirming", txHash: "tx-interrupted", savedAt: Date.now() };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(record));
+
+    const { result } = renderHook(() => usePersistentTxFlow({ scopeKey }));
+
+    await waitFor(() => expect(result.current.state.stage).toBe("failed"));
+    expect(result.current.recovered).toBe(true);
+    if (result.current.state.stage === "failed") {
+      expect(result.current.state.message).toMatch(/tx-interrupted/);
+    }
+  });
+
+  it("ignores stale persisted records older than 24 hours", async () => {
+    const { usePersistentTxFlow } = await import("./txStateMachine");
+    const staleRecord = {
+      stage: "confirming",
+      txHash: "tx-stale",
+      savedAt: Date.now() - 25 * 60 * 60 * 1000,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(staleRecord));
+
+    const { result } = renderHook(() => usePersistentTxFlow({ scopeKey }));
+
+    // Wait briefly; state should stay idle since record is expired.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(result.current.state.stage).toBe("idle");
+    expect(result.current.recovered).toBe(false);
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
   });
 });

@@ -7,7 +7,8 @@
  * `fetch` or raw Soroban bindings directly.
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { getFrontendEnv } from "../core/env.js";
 import type {
   PoolActionInput,
   PoolActionType,
@@ -17,11 +18,23 @@ import type {
   UserPosition,
   VaultContractClient,
 } from "./contract/types";
-import { VaultApiClient, isTerminalTransaction, type TransactionStatusView } from "./data/apiClient";
+import {
+  VaultApiClient,
+  isTerminalTransaction,
+  type PortfolioSummary,
+  type TransactionStatusView,
+} from "./data/apiClient";
 import { defaultVaultDataConfig } from "./data/config";
 import { useVaultQuery, vaultQueryClient, type QueryState } from "./data/queryClient";
 import { vaultQueryKeys } from "./data/queryKeys";
 import { useTxFlow, type TxFlowOptions, type TxFlowResult } from "./lib/txStateMachine";
+import type { TimelineStage } from "../components/TransactionTimeline";
+import {
+  createVersionToken,
+  executeWithVersionCheck,
+  extractVersionToken,
+  type VersionToken,
+} from "../../../lib/concurrencyControl";
 
 export interface AsyncResource<T> {
   data: T | null;
@@ -101,6 +114,38 @@ export function useRewardHistory(
 
   if (!walletAddress) {
     return { data: [], loading: false, stale: false, error: null, partialError: null, refetch: query.refetch };
+  }
+
+  return resourceFromQuery(query);
+}
+
+/**
+ * Real, backend-sourced portfolio state for a connected wallet — issue #628:
+ * `total_deposits`/`active_positions` come straight from
+ * GET /portfolio/summary's `ActionLedger` aggregation (deposits minus
+ * withdrawals, confirmed actions only), never a client-side placeholder
+ * boolean. Consumers that only need "has this wallet ever completed a
+ * deposit" should read `data.active_positions.length > 0` rather than
+ * re-deriving it, so the definition of "joined" lives in exactly one place.
+ */
+export function usePortfolioSummary(
+  walletAddress: string | null,
+  options: { apiBaseUrl?: string } = {},
+): AsyncResource<PortfolioSummary> {
+  const api = useMemo(() => createApiClient(options.apiBaseUrl), [options.apiBaseUrl]);
+
+  const query = useVaultQuery({
+    key: vaultQueryKeys.portfolio(walletAddress),
+    enabled: Boolean(walletAddress),
+    staleTimeMs: 30_000,
+    fetcher: async (opts) => {
+      if (!walletAddress) throw new Error("Connect a wallet to load portfolio data.");
+      return api.getPortfolioSummary(walletAddress, { signal: opts.signal });
+    },
+  });
+
+  if (!walletAddress) {
+    return { data: null, loading: false, stale: false, error: null, partialError: null, refetch: query.refetch };
   }
 
   return resourceFromQuery(query);
@@ -226,6 +271,8 @@ export function useAccountView(
 export interface SavedPoolsResource extends AsyncResource<SavedPoolEntry[]> {
   savePool: (pool: PoolSummary) => Promise<SavedPoolEntry>;
   unsavePool: (poolId: string) => Promise<number>;
+  /** Current version token for conflict detection */
+  versionToken: VersionToken | null;
 }
 
 export function useSavedPools(
@@ -233,38 +280,154 @@ export function useSavedPools(
   baseUrl = defaultVaultDataConfig.apiBaseUrl,
 ): SavedPoolsResource {
   const api = useMemo(() => createApiClient(baseUrl), [baseUrl]);
+
+  const env = useMemo(() => {
+    try {
+      return getFrontendEnv();
+    } catch {
+      return {
+        NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE: "standalone",
+        NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID: "unknown",
+      };
+    }
+  }, []);
+
+  const network = env.NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE || "standalone";
+  const contractId = env.NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID || "unknown";
+  const storageKey = `vaultquest_watchlist_${network}_${contractId}_${walletAddress}`;
+
+  // Safe migration of legacy configurations
+  useEffect(() => {
+    if (
+      typeof window === "undefined" ||
+      typeof localStorage === "undefined" ||
+      typeof localStorage.getItem !== "function" ||
+      !walletAddress
+    )
+      return;
+    const legacyKeys = ["vaultquest_watchlist", "vaultquest_saved_pools"];
+    for (const key of legacyKeys) {
+      const oldRaw = localStorage.getItem(key);
+      if (oldRaw) {
+        try {
+          const oldData = JSON.parse(oldRaw);
+          // Only migrate if we don't already have scoped cache
+          if (!localStorage.getItem(storageKey)) {
+            localStorage.setItem(storageKey, JSON.stringify(oldData));
+          }
+          localStorage.removeItem(key);
+        } catch {
+          localStorage.removeItem(key);
+        }
+      }
+    }
+  }, [walletAddress, storageKey]);
+
   const query = useVaultQuery({
-    key: vaultQueryKeys.savedPools(walletAddress),
+    key: vaultQueryKeys.savedPools(walletAddress, network, contractId),
     enabled: Boolean(walletAddress),
     staleTimeMs: 30_000,
-    fetcher: async (opts) => (walletAddress ? api.listSavedPools(walletAddress, { signal: opts.signal }) : []),
+    fetcher: async (opts) => {
+      if (!walletAddress) return [];
+      try {
+        const fetched = await api.listSavedPools(walletAddress, { signal: opts.signal });
+        if (
+          typeof window !== "undefined" &&
+          typeof localStorage !== "undefined" &&
+          typeof localStorage.setItem === "function"
+        ) {
+          localStorage.setItem(storageKey, JSON.stringify(fetched));
+        }
+        return fetched;
+      } catch (err) {
+        if (
+          typeof window !== "undefined" &&
+          typeof localStorage !== "undefined" &&
+          typeof localStorage.getItem === "function"
+        ) {
+          const cached = localStorage.getItem(storageKey);
+          if (cached) {
+            try {
+              return JSON.parse(cached) as SavedPoolEntry[];
+            } catch {
+              // ignore
+            }
+          }
+        }
+        throw err;
+      }
+    },
   });
 
   const invalidateSavedPools = useCallback(() => {
-    vaultQueryClient.invalidateQueries(vaultQueryKeys.savedPools(walletAddress));
+    vaultQueryClient.invalidateQueries(vaultQueryKeys.savedPools(walletAddress, network, contractId));
     vaultQueryClient.invalidateQueries(vaultQueryKeys.account(walletAddress));
-  }, [walletAddress]);
+  }, [walletAddress, network, contractId]);
+
+  // Extract version token from saved pools data
+  const versionToken = useMemo(() => {
+    if (!query.data || query.data.length === 0) return null;
+    // Use the most recent updated_at as the version
+    const mostRecent = query.data.reduce((latest, current) => {
+      const latestTime = new Date(latest.updatedAt).getTime();
+      const currentTime = new Date(current.updatedAt).getTime();
+      return currentTime > latestTime ? current : latest;
+    });
+    return extractVersionToken(
+      { updated_at: mostRecent.updatedAt },
+      walletAddress || "unknown",
+      "saved_pools",
+    );
+  }, [query.data, walletAddress]);
 
   const savePool = useCallback(
     async (pool: PoolSummary) => {
       if (!walletAddress) throw new Error("Connect a wallet to save pools.");
-      const saved = await api.savePool(walletAddress, pool);
-      invalidateSavedPools();
-      query.refetch();
-      return saved;
+
+      // Execute with version check for conflict detection
+      const result = await executeWithVersionCheck(
+        async () => {
+          const saved = await api.savePool(walletAddress, pool);
+          invalidateSavedPools();
+          query.refetch();
+          return saved;
+        },
+        versionToken,
+        versionToken, // Use current version as expected version
+      );
+
+      if (!result.success) {
+        throw new Error(result.conflict.userMessage);
+      }
+
+      return result.data;
     },
-    [api, invalidateSavedPools, query, walletAddress],
+    [api, invalidateSavedPools, query, walletAddress, versionToken],
   );
 
   const unsavePool = useCallback(
     async (poolId: string) => {
       if (!walletAddress) throw new Error("Connect a wallet to remove saved pools.");
-      const deleted = await api.unsavePool(walletAddress, poolId);
-      invalidateSavedPools();
-      query.refetch();
-      return deleted;
+
+      // Execute with version check for conflict detection
+      const result = await executeWithVersionCheck(
+        async () => {
+          const deleted = await api.unsavePool(walletAddress, poolId);
+          invalidateSavedPools();
+          query.refetch();
+          return deleted;
+        },
+        versionToken,
+        versionToken, // Use current version as expected version
+      );
+
+      if (!result.success) {
+        throw new Error(result.conflict.userMessage);
+      }
+
+      return result.data;
     },
-    [api, invalidateSavedPools, query, walletAddress],
+    [api, invalidateSavedPools, query, walletAddress, versionToken],
   );
 
   if (!walletAddress) {
@@ -277,10 +440,11 @@ export function useSavedPools(
       refetch: query.refetch,
       savePool,
       unsavePool,
+      versionToken: null,
     };
   }
 
-  return { ...resourceFromQuery(query), savePool, unsavePool };
+  return { ...resourceFromQuery(query), savePool, unsavePool, versionToken };
 }
 
 export interface TransactionStatusResource extends AsyncResource<TransactionStatusView> {

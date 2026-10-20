@@ -49,16 +49,20 @@ pub enum Error {
     AssetNotApproved = 5,    // asset not on the admin-managed allowlist
     WasmHashNotApproved = 6, // deploying with anything but the currently-approved drip-pool build
     PoolNotFound = 7,
+    MetadataStale = 8,
+    FeeBelowStringency = 9,    // fee_bps below the hard floor (#649)
+    FeeExceedsCap = 10,        // fee_bps above 100.00% (#649)
+    LockupDaysExceedsCap = 11, // lockup_days above the 10-year cap (#649)
 }
 
 #[derive(Clone)]
 #[contracttype]
 enum DataKey {
     Admin,
-    ApprovedWasmHash,          // BytesN<32> — the currently-approved drip-pool wasm hash
-    ApprovedAssets,            // Vec<Address>
-    PoolIds,                   // Vec<BytesN<32>> — every salt ever deployed, for pagination
-    PoolMeta(BytesN<32>),      // salt -> PoolMetadata
+    ApprovedWasmHash,     // BytesN<32> — the currently-approved drip-pool wasm hash
+    ApprovedAssets,       // Vec<Address>
+    PoolIds,              // Vec<BytesN<32>> — every salt ever deployed, for pagination
+    PoolMeta(BytesN<32>), // salt -> PoolMetadata
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -70,6 +74,26 @@ pub struct PoolMetadata {
     pub wasm_hash: BytesN<32>,
     pub deployed_at_ledger: u32,
     pub active: bool,
+    pub risk_tier: Symbol,
+    pub strategy: Symbol,
+    pub lockup_days: u32,
+    pub fee_bps: u32,
+    pub accepted_asset: Address,
+    pub operational_status: Symbol,
+    pub metadata_version: u32,
+    pub metadata_updated_at_ledger: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct PoolMetadataUpdate {
+    pub risk_tier: Symbol,
+    pub strategy: Symbol,
+    pub lockup_days: u32,
+    pub fee_bps: u32,
+    pub accepted_asset: Address,
+    pub operational_status: Symbol,
+    pub expected_version: u32,
 }
 
 /// Registry event payload (#507). Published as a single-symbol-topic event
@@ -87,9 +111,30 @@ pub struct PoolDeployedEvent {
     pub admin: Address,
     pub asset: Address,
     pub wasm_hash: BytesN<32>,
+    pub risk_tier: Symbol,
+    pub strategy: Symbol,
+    pub lockup_days: u32,
+    pub fee_bps: u32,
+    pub accepted_asset: Address,
+    pub operational_status: Symbol,
+    pub metadata_version: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct PoolMetadataUpdatedEvent {
+    pub salt: BytesN<32>,
+    pub risk_tier: Symbol,
+    pub strategy: Symbol,
+    pub lockup_days: u32,
+    pub fee_bps: u32,
+    pub accepted_asset: Address,
+    pub operational_status: Symbol,
+    pub metadata_version: u32,
 }
 
 const FACTORY_POOL_DEPLOYED_TOPIC: Symbol = symbol_short!("fpooldep");
+const FACTORY_POOL_METADATA_UPDATED_TOPIC: Symbol = symbol_short!("fmetaup");
 
 #[contract]
 pub struct VaultFactory;
@@ -126,7 +171,11 @@ impl VaultFactory {
 
     /// Update the approved drip-pool wasm hash used for new deployments.
     /// Never touches already-deployed pools' code or metadata.
-    pub fn set_approved_wasm_hash(env: Env, caller: Address, wasm_hash: BytesN<32>) -> Result<(), Error> {
+    pub fn set_approved_wasm_hash(
+        env: Env,
+        caller: Address,
+        wasm_hash: BytesN<32>,
+    ) -> Result<(), Error> {
         Self::require_admin(&env, &caller)?;
         env.storage()
             .instance()
@@ -140,7 +189,9 @@ impl VaultFactory {
         let mut assets = Self::get_approved_assets(&env);
         if !assets.contains(&asset) {
             assets.push_back(asset);
-            env.storage().instance().set(&DataKey::ApprovedAssets, &assets);
+            env.storage()
+                .instance()
+                .set(&DataKey::ApprovedAssets, &assets);
         }
         Ok(())
     }
@@ -158,7 +209,11 @@ impl VaultFactory {
     ) -> Result<Address, Error> {
         Self::require_admin(&env, &caller)?;
 
-        if env.storage().instance().has(&DataKey::PoolMeta(salt.clone())) {
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::PoolMeta(salt.clone()))
+        {
             return Err(Error::SaltAlreadyUsed);
         }
 
@@ -194,16 +249,28 @@ impl VaultFactory {
         env.invoke_contract::<()>(
             &deployed_address,
             &symbol_short!("set_token"),
-            soroban_sdk::vec![&env, pool_admin.clone().into_val(&env), asset.clone().into_val(&env)],
+            soroban_sdk::vec![
+                &env,
+                pool_admin.clone().into_val(&env),
+                asset.clone().into_val(&env)
+            ],
         );
 
         let metadata = PoolMetadata {
             pool_address: deployed_address.clone(),
             admin: pool_admin,
-            asset,
-            wasm_hash,
+            asset: asset.clone(),
+            wasm_hash: wasm_hash.clone(),
             deployed_at_ledger: env.ledger().sequence(),
             active: true,
+            risk_tier: symbol_short!("medium"),
+            strategy: symbol_short!("default"),
+            lockup_days: 0,
+            fee_bps: 75, // default treasury fee 0.75% (75 bps), above the floor
+            accepted_asset: asset.clone(),
+            operational_status: symbol_short!("active"),
+            metadata_version: 1,
+            metadata_updated_at_ledger: env.ledger().sequence(),
         };
         env.storage()
             .instance()
@@ -216,15 +283,87 @@ impl VaultFactory {
         env.events().publish(
             (FACTORY_POOL_DEPLOYED_TOPIC,),
             PoolDeployedEvent {
-                salt,
+                salt: salt.clone(),
                 pool_address: deployed_address.clone(),
                 admin: metadata.admin.clone(),
                 asset: metadata.asset.clone(),
                 wasm_hash: metadata.wasm_hash.clone(),
+                risk_tier: metadata.risk_tier.clone(),
+                strategy: metadata.strategy.clone(),
+                lockup_days: metadata.lockup_days,
+                fee_bps: metadata.fee_bps,
+                accepted_asset: metadata.accepted_asset.clone(),
+                operational_status: metadata.operational_status.clone(),
+                metadata_version: metadata.metadata_version,
             },
         );
 
         Ok(deployed_address)
+    }
+
+    /// Updates discoverable metadata for an existing pool. Metadata changes are
+    /// versioned so indexers can identify stale or replayed metadata snapshots.
+    pub fn update_pool_metadata(
+        env: Env,
+        caller: Address,
+        salt: BytesN<32>,
+        metadata: PoolMetadataUpdate,
+    ) -> Result<(), Error> {
+        Self::require_admin(&env, &caller)?;
+        let mut pool = Self::get_pool(env.clone(), salt.clone())?;
+
+        if metadata.expected_version != pool.metadata_version {
+            return Err(Error::MetadataStale);
+        }
+
+        // Parameter stringencies (#649). The frontend simulation caratlogs 0.5 bps
+        // as the treasury fee floor; `fee_bps` is stored as a whole-basis-point
+        // u32, so the floor is 1 bp here to keep the on-chain bound as tight as
+        // representation allows. Mirrors `admin-parameter-simulation.ts` so a value
+        // the UI marks as blocked can never be written on-chain regardless of who
+        // is calling.
+        if metadata.fee_bps < 1 {
+            return Err(Error::FeeBelowStringency);
+        }
+        if metadata.fee_bps > 10_000 {
+            return Err(Error::FeeExceedsCap);
+        }
+        if metadata.lockup_days > 3650 {
+            return Err(Error::LockupDaysExceedsCap);
+        }
+
+        let approved_assets = Self::get_approved_assets(&env);
+        if !approved_assets.contains(&metadata.accepted_asset) {
+            return Err(Error::AssetNotApproved);
+        }
+
+        pool.risk_tier = metadata.risk_tier;
+        pool.strategy = metadata.strategy;
+        pool.lockup_days = metadata.lockup_days;
+        pool.fee_bps = metadata.fee_bps;
+        pool.accepted_asset = metadata.accepted_asset.clone();
+        pool.operational_status = metadata.operational_status;
+        pool.metadata_version += 1;
+        pool.metadata_updated_at_ledger = env.ledger().sequence();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PoolMeta(salt.clone()), &pool);
+        env.events().publish(
+            (FACTORY_POOL_METADATA_UPDATED_TOPIC,),
+            PoolMetadataUpdatedEvent {
+                salt,
+                risk_tier: pool.risk_tier.clone(),
+                strategy: pool.strategy.clone(),
+                lockup_days: pool.lockup_days,
+                fee_bps: pool.fee_bps,
+                accepted_asset: pool.accepted_asset.clone(),
+                operational_status: pool.operational_status.clone(),
+                metadata_version: pool.metadata_version,
+            },
+        );
+
+        Ok(())
     }
 
     /// Marks a pool inactive in the registry (does not pause or otherwise
@@ -234,7 +373,9 @@ impl VaultFactory {
         Self::require_admin(&env, &caller)?;
         let mut meta = Self::get_pool(env.clone(), salt.clone())?;
         meta.active = false;
-        env.storage().instance().set(&DataKey::PoolMeta(salt), &meta);
+        env.storage()
+            .instance()
+            .set(&DataKey::PoolMeta(salt), &meta);
         Ok(())
     }
 

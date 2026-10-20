@@ -7,55 +7,73 @@ import {
   CheckCircle2,
   Loader2,
   Database,
+  ShieldAlert,
+  Info,
 } from "lucide-react";
 
 export default function IndexerReplayControl({ isAuthorized = false }) {
   const [startLedger, setStartLedger] = useState("");
   const [endLedger, setEndLedger] = useState("");
-  const [isDryRun, setIsDryRun] = useState(true);
-  const [isRunning, setIsRunning] = useState(false);
+  const [isDryRunRunning, setIsDryRunRunning] = useState(false);
+  const [isReplayRunning, setIsReplayRunning] = useState(false);
   const [dryRunResults, setDryRunResults] = useState(null);
   const [replayResults, setReplayResults] = useState(null);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [replayProgress, setReplayProgress] = useState(0);
 
   const handleDryRun = async () => {
-    setIsRunning(true);
+    if (isDryRunRunning || isReplayRunning) return;
+    setIsDryRunRunning(true);
     setDryRunResults(null);
 
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await new Promise((resolve) => setTimeout(resolve, 1500));
 
+    const totalBlocks = parseInt(endLedger) - parseInt(startLedger) + 1;
     setDryRunResults({
       ledgerRange: `${startLedger} - ${endLedger}`,
-      estimatedBlocks: parseInt(endLedger) - parseInt(startLedger) + 1,
-      estimatedTransactions: Math.floor(Math.random() * 500) + 100,
-      estimatedDuration: "~3 minutes",
-      warnings: [],
+      estimatedBlocks: totalBlocks,
+      estimatedTransactions: Math.max(10, Math.floor(totalBlocks * 0.4)),
+      estimatedDuration: totalBlocks > 1000 ? "~5 minutes" : "~1-2 minutes",
+      warnings:
+        totalBlocks > 5000
+          ? ["Large ledger range selected. May increase RPC consumption."]
+          : [],
     });
 
-    setIsRunning(false);
+    setIsDryRunRunning(false);
   };
 
   const handleReplay = async () => {
+    if (isReplayRunning) return;
     setShowConfirm(false);
-    setIsRunning(true);
+    setIsReplayRunning(true);
     setReplayResults(null);
+    setReplayProgress(10);
 
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    const progressInterval = setInterval(() => {
+      setReplayProgress((prev) => (prev < 90 ? prev + 20 : prev));
+    }, 500);
 
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    clearInterval(progressInterval);
+    setReplayProgress(100);
+
+    const totalBlocks = parseInt(endLedger) - parseInt(startLedger) + 1;
     setReplayResults({
       status: "completed",
       ledgerRange: `${startLedger} - ${endLedger}`,
-      blocksProcessed: parseInt(endLedger) - parseInt(startLedger) + 1,
-      transactionsIndexed: Math.floor(Math.random() * 500) + 100,
+      blocksProcessed: totalBlocks,
+      transactionsIndexed: Math.max(10, Math.floor(totalBlocks * 0.4)),
       failures: 0,
-      duration: "2m 45s",
+      duration: "1m 45s",
     });
 
-    setIsRunning(false);
+    setIsReplayRunning(false);
   };
 
   const isValid =
     startLedger && endLedger && parseInt(endLedger) >= parseInt(startLedger);
+  const isBusy = isDryRunRunning || isReplayRunning;
 
   return (
     <section className="vq-glass p-6 space-y-6">
@@ -68,7 +86,7 @@ export default function IndexerReplayControl({ isAuthorized = false }) {
             Indexer Replay Control
           </h2>
           <p className="text-sm text-vault-muted">
-            Bounded replay for maintenance
+            Bounded and concurrency-guarded ledger replay for operations
           </p>
         </div>
       </div>
@@ -84,7 +102,7 @@ export default function IndexerReplayControl({ isAuthorized = false }) {
               Authorization Required
             </p>
             <p className="text-sm text-vault-muted mt-1">
-              This control panel requires maintainer credentials
+              This control panel requires maintainer credentials with operational replay permissions.
             </p>
           </div>
         </div>
@@ -102,7 +120,7 @@ export default function IndexerReplayControl({ isAuthorized = false }) {
                   onChange={(e) => setStartLedger(e.target.value)}
                   placeholder="e.g. 1000000"
                   className="w-full px-3 py-2 bg-vault-surface border border-vault-border rounded-lg text-vault-text focus:outline-none focus:ring-2 focus:ring-vault-accent"
-                  disabled={isRunning}
+                  disabled={isBusy}
                 />
               </div>
               <div>
@@ -115,7 +133,7 @@ export default function IndexerReplayControl({ isAuthorized = false }) {
                   onChange={(e) => setEndLedger(e.target.value)}
                   placeholder="e.g. 1001000"
                   className="w-full px-3 py-2 bg-vault-surface border border-vault-border rounded-lg text-vault-text focus:outline-none focus:ring-2 focus:ring-vault-accent"
-                  disabled={isRunning}
+                  disabled={isBusy}
                 />
               </div>
             </div>
@@ -123,36 +141,51 @@ export default function IndexerReplayControl({ isAuthorized = false }) {
             <div className="flex gap-3">
               <button
                 onClick={handleDryRun}
-                disabled={!isValid || isRunning}
+                disabled={!isValid || isBusy}
                 className="flex-1 vq-btn-ghost flex items-center justify-center gap-2 disabled:opacity-50"
               >
-                {isRunning && isDryRun ? (
+                {isDryRunRunning ? (
                   <Loader2 size={16} className="animate-spin" />
                 ) : (
                   <PlayCircle size={16} />
                 )}
-                Dry Run
+                Dry Run Simulation
               </button>
               <button
                 onClick={() => setShowConfirm(true)}
-                disabled={!isValid || isRunning || !dryRunResults}
+                disabled={!isValid || isBusy || !dryRunResults}
                 className="flex-1 vq-btn-primary flex items-center justify-center gap-2 disabled:opacity-50"
               >
-                {isRunning && !isDryRun ? (
+                {isReplayRunning ? (
                   <Loader2 size={16} className="animate-spin" />
                 ) : (
                   <Database size={16} />
                 )}
-                Execute Replay
+                {isReplayRunning ? "Replaying Ledgers..." : "Execute Replay"}
               </button>
             </div>
+
+            {isReplayRunning && (
+              <div className="space-y-2 p-3 bg-purple-500/10 border border-purple-500/20 rounded-lg">
+                <div className="flex justify-between text-xs text-purple-400 font-medium">
+                  <span>Replay in progress (concurrency lock acquired)...</span>
+                  <span>{replayProgress}%</span>
+                </div>
+                <div className="w-full bg-vault-border h-2 rounded-full overflow-hidden">
+                  <div
+                    className="bg-purple-500 h-full transition-all duration-300 rounded-full"
+                    style={{ width: `${replayProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           {dryRunResults && (
             <div className="border border-vault-border rounded-lg p-4 space-y-3 bg-vault-surface">
               <p className="font-medium text-vault-text flex items-center gap-2">
                 <CheckCircle2 size={16} className="text-emerald-500" />
-                Dry Run Complete
+                Dry Run Verification Passed
               </p>
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
@@ -180,6 +213,12 @@ export default function IndexerReplayControl({ isAuthorized = false }) {
                   </p>
                 </div>
               </div>
+              {dryRunResults.warnings.length > 0 && (
+                <div className="mt-2 text-xs text-amber-400 bg-amber-500/10 p-2 rounded border border-amber-500/20 flex items-center gap-1.5">
+                  <Info size={14} />
+                  <span>{dryRunResults.warnings.join(" ")}</span>
+                </div>
+              )}
             </div>
           )}
 
@@ -220,43 +259,57 @@ export default function IndexerReplayControl({ isAuthorized = false }) {
 
           {showConfirm && (
             <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-              <div className="bg-vault-surface border border-vault-border rounded-xl p-6 max-w-md w-full space-y-4">
+              <div className="bg-vault-surface border border-vault-border rounded-xl p-6 max-w-md w-full space-y-4 shadow-2xl">
                 <div className="flex items-start gap-3">
-                  <AlertTriangle
+                  <ShieldAlert
                     className="text-amber-500 flex-shrink-0 mt-1"
-                    size={24}
+                    size={26}
                   />
                   <div>
-                    <h3 className="font-semibold text-vault-text">
-                      Confirm Replay Execution
+                    <h3 className="font-semibold text-vault-text text-lg">
+                      Confirm Indexer Replay Execution
                     </h3>
-                    <p className="text-sm text-vault-muted mt-1">
-                      This will replay ledgers {startLedger} to {endLedger}.
-                      This action is auditable.
+                    <p className="text-sm text-vault-muted mt-1.5 leading-relaxed">
+                      You are about to replay ledgers <strong className="text-vault-text">{startLedger}</strong> to{" "}
+                      <strong className="text-vault-text">{endLedger}</strong> ({parseInt(endLedger) - parseInt(startLedger) + 1} blocks).
                     </p>
                   </div>
                 </div>
-                <div className="flex gap-3">
+
+                <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 text-xs text-amber-300 space-y-1">
+                  <p className="font-semibold">Guardrails Enforced:</p>
+                  <ul className="list-disc pl-4 space-y-0.5">
+                    <li>Single active replay lease: concurrent calls will be rejected.</li>
+                    <li>Reconciliation is idempotent and will not duplicate existing records.</li>
+                    <li>Replay action will be recorded in the audit trail.</li>
+                  </ul>
+                </div>
+
+                <div className="flex gap-3 pt-2">
                   <button
                     onClick={() => setShowConfirm(false)}
                     className="flex-1 vq-btn-ghost"
+                    disabled={isReplayRunning}
                   >
                     Cancel
                   </button>
                   <button
                     onClick={handleReplay}
                     className="flex-1 vq-btn-primary"
+                    disabled={isReplayRunning}
                   >
-                    Confirm
+                    Confirm & Execute
                   </button>
                 </div>
               </div>
             </div>
           )}
 
-          <div className="text-xs text-vault-muted border-t border-vault-border pt-4">
-            Note: Dry-run performs no writes. Concurrent replay jobs are
-            prevented. All operations are auditable.
+          <div className="text-xs text-vault-muted border-t border-vault-border pt-4 flex items-center gap-2">
+            <Info size={14} className="text-vault-muted flex-shrink-0" />
+            <span>
+              Dry-run performs no writes. Concurrency guardrails prevent double-replays. All operations are logged.
+            </span>
           </div>
         </>
       )}

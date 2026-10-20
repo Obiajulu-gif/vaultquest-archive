@@ -3,8 +3,10 @@ import Providers from "@/components/providers/Providers";
 import { Toaster } from "sonner";
 import AttestationProvider from "@/components/AttestationProvider";
 import { Toaster } from "react-hot-toast";
+import ImpersonationBanner from "@/components/ImpersonationBanner";
 import { readFileSync } from "fs";
 import { resolve } from "path";
+
 
 let manifestVersion = "";
 let manifestEnvironment = "";
@@ -40,6 +42,8 @@ export default function RootLayout({ children }) {
         )}
       </head>
       <body>
+        {/* #791: Impersonation session banner — always visible when active */}
+        <ImpersonationBanner />
         <Providers>{children}</Providers>
         {/* Global toast container */}
         <Toaster position="top-right" richColors />

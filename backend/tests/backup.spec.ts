@@ -12,6 +12,10 @@ import {
   type FsAdapter
 } from "../src/services/backupService.js";
 
+vi.mock("@prisma/client", () => ({
+  PrismaClient: class {}
+}));
+
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
 function makeSpawn(exitCode = 0, stderr = ""): SpawnFn {
@@ -74,7 +78,7 @@ describe("BackupService.run()", () => {
     // Output path contains backup dir and timestamp filename
     expect(args).toContain("--file");
     const fileIdx = args.indexOf("--file");
-    expect(args[fileIdx + 1]).toContain(BACKUP_DIR);
+    expect(args[fileIdx + 1].replace(/\\/g, "/")).toContain(BACKUP_DIR);
     expect(args[fileIdx + 1]).toMatch(/backup-2026-06-28T02-00-00\.sql\.gz$/);
 
     // Password passed via env, not CLI
@@ -311,11 +315,187 @@ describe("BackupService.pruneOldBackups()", () => {
   });
 });
 
-// ─── startBackupCron wiring (light smoke) ─────────────────────────────────────
+// ─── BackupService.verifyBackup() ─────────────────────────────────────────────
 
-describe("startBackupCron", () => {
-  it("exports startBackupCron from cron.ts without error", async () => {
-    const { startBackupCron } = await import("../src/cron.js");
-    expect(typeof startBackupCron).toBe("function");
+describe("BackupService.verifyBackup()", () => {
+  it("returns valid = true when pg_restore --list succeeds with exit code 0", async () => {
+    const spawn = makeSpawn(0, "");
+    const svc = new BackupService({
+      backupDir: BACKUP_DIR,
+      databaseUrl: DATABASE_URL,
+      spawn,
+      fs: makeFs()
+    });
+
+    const dumpPath = "/backups/backup-2026-06-28T02-00-00.sql.gz";
+    const res = await svc.verifyBackup(dumpPath);
+
+    expect(res.valid).toBe(true);
+    expect(res.filePath).toBe(dumpPath);
+    expect(res.error).toBeUndefined();
+
+    expect(spawn).toHaveBeenCalledWith("pg_restore", ["--list", dumpPath], {});
+  });
+
+  it("returns valid = false and error message when file is corrupted/invalid", async () => {
+    const spawn = makeSpawn(1, "pg_restore: error: input file does not appear to be a valid archive");
+    const svc = new BackupService({
+      backupDir: BACKUP_DIR,
+      databaseUrl: DATABASE_URL,
+      spawn,
+      fs: makeFs()
+    });
+
+    const dumpPath = "/backups/corrupted.sql.gz";
+    const res = await svc.verifyBackup(dumpPath);
+
+    expect(res.valid).toBe(false);
+    expect(res.filePath).toBe(dumpPath);
+    expect(res.error).toContain("input file does not appear to be a valid archive");
   });
 });
+
+// ─── BackupService.restoreBackup() ────────────────────────────────────────────
+
+describe("BackupService.restoreBackup()", () => {
+  const SCRATCH_DB_URL = "postgres://user:secret@db.example.com:5432/vaultquest_scratch";
+
+  it("successfully restores dump file to a scratch database", async () => {
+    const spawn = makeSpawn(0, "");
+    const svc = new BackupService({
+      backupDir: BACKUP_DIR,
+      databaseUrl: DATABASE_URL,
+      spawn,
+      fs: makeFs()
+    });
+
+    const dumpPath = "/backups/backup-2026-06-28T02-00-00.sql.gz";
+    const result = await svc.restoreBackup(dumpPath, SCRATCH_DB_URL);
+
+    expect(result.filePath).toBe(dumpPath);
+    expect(result.targetDatabase).toBe("vaultquest_scratch");
+    expect(result.durationMs).toBeGreaterThanOrEqual(0);
+
+    expect(spawn).toHaveBeenCalledTimes(1);
+    const [cmd, args, env] = (spawn as ReturnType<typeof vi.fn>).mock.calls[0];
+
+    expect(cmd).toBe("pg_restore");
+    expect(args).toContain("--dbname");
+    expect(args).toContain("vaultquest_scratch");
+    expect(args).toContain(dumpPath);
+    expect(env.PGPASSWORD).toBe("secret");
+  });
+
+  it("blocks restoration when targeting production database without override flag", async () => {
+    const spawn = makeSpawn(0, "");
+    const svc = new BackupService({
+      backupDir: BACKUP_DIR,
+      databaseUrl: DATABASE_URL,
+      spawn,
+      fs: makeFs()
+    });
+
+    const dumpPath = "/backups/backup-2026-06-28T02-00-00.sql.gz";
+
+    // Rejects targeting identical production URL
+    await expect(svc.restoreBackup(dumpPath, DATABASE_URL)).rejects.toThrow(
+      "SAFETY GUARD ERROR: Refusing to restore to production database"
+    );
+
+    // No pg_restore spawn process should be invoked
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("allows production restoration when allowProductionRestore flag is true", async () => {
+    const spawn = makeSpawn(0, "");
+    const svc = new BackupService({
+      backupDir: BACKUP_DIR,
+      databaseUrl: DATABASE_URL,
+      spawn,
+      fs: makeFs()
+    });
+
+    const dumpPath = "/backups/backup-2026-06-28T02-00-00.sql.gz";
+    const result = await svc.restoreBackup(dumpPath, DATABASE_URL, {
+      allowProductionRestore: true
+    });
+
+    expect(result.targetDatabase).toBe("vaultquest");
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws an error when pg_restore exits with a non-zero code", async () => {
+    const spawn = makeSpawn(1, "connection to server failed");
+    const svc = new BackupService({
+      backupDir: BACKUP_DIR,
+      databaseUrl: DATABASE_URL,
+      spawn,
+      fs: makeFs()
+    });
+
+    await expect(
+      svc.restoreBackup("/backups/backup-1.sql.gz", SCRATCH_DB_URL)
+    ).rejects.toThrow("pg_restore exited with code 1");
+  });
+});
+
+// ─── BackupService.runRestoreDrill() ──────────────────────────────────────────
+
+describe("BackupService.runRestoreDrill()", () => {
+  const SCRATCH_DB_URL = "postgres://user:secret@db.example.com:5432/vaultquest_scratch";
+
+  it("executes restore drill against the latest backup file", async () => {
+    const spawn = makeSpawn(0, "");
+    const fs = makeFs({
+      readdir: vi.fn().mockResolvedValue([
+        "backup-2026-06-20T02-00-00.sql.gz",
+        "backup-2026-06-28T02-00-00.sql.gz" // latest
+      ])
+    });
+
+    const svc = new BackupService({
+      backupDir: BACKUP_DIR,
+      databaseUrl: DATABASE_URL,
+      spawn,
+      fs
+    });
+
+    const drillResult = await svc.runRestoreDrill(SCRATCH_DB_URL);
+
+    expect(drillResult.success).toBe(true);
+    expect(drillResult.verify.valid).toBe(true);
+    expect(drillResult.verify.filePath).toContain("2026-06-28");
+    expect(drillResult.restore?.targetDatabase).toBe("vaultquest_scratch");
+
+    // Spawn called twice: 1 for pg_restore --list (verify), 1 for pg_restore (restore)
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails drill gracefully when no backup files exist", async () => {
+    const fs = makeFs({
+      readdir: vi.fn().mockResolvedValue([])
+    });
+
+    const svc = new BackupService({
+      backupDir: BACKUP_DIR,
+      databaseUrl: DATABASE_URL,
+      fs
+    });
+
+    const drillResult = await svc.runRestoreDrill(SCRATCH_DB_URL);
+
+    expect(drillResult.success).toBe(false);
+    expect(drillResult.error).toContain("No backup files found");
+  });
+});
+
+// ─── startBackupCron & startRestoreDrillCron wiring ─────────────────────────
+
+describe("startBackupCron and startRestoreDrillCron", () => {
+  it("exports startBackupCron and startRestoreDrillCron from cron.ts without error", async () => {
+    const { startBackupCron, startRestoreDrillCron } = await import("../src/cron.js");
+    expect(typeof startBackupCron).toBe("function");
+    expect(typeof startRestoreDrillCron).toBe("function");
+  });
+});
+

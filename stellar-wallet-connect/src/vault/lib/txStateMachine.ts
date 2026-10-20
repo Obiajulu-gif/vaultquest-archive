@@ -6,9 +6,12 @@
  * invalid transitions can be regression-tested without mounting React.
  */
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { TimelineStage } from "../../components/TransactionTimeline";
-import type { PoolActionInput, PoolActionType, VaultContractClient } from "../contract/types";
+import { ContractInterfaceError, type PoolActionInput, type PoolActionType, type VaultContractClient } from "../contract/types";
+import { assertNetworkMatchesBeforeSigning, assertNotMultisigBeforeSigning } from "../../core/walletService.js";
+import { assertSessionAliveBeforeSigning } from "../../core/sessionLiveness.js";
+import { mapWalletErrorToRejection, getRejectionExplanation } from "../../../../lib/rejectionReasons.js";
 
 export type ActiveTxStage = Exclude<TimelineStage, "success" | "failed">;
 
@@ -20,7 +23,7 @@ export type TxFlowState =
   | { stage: "confirming"; txHash: string }
   | { stage: "indexing"; txHash: string }
   | { stage: "success"; txHash: string }
-  | { stage: "failed"; failedAt: ActiveTxStage; message: string };
+  | { stage: "failed"; failedAt: ActiveTxStage; message: string; rejectionExplanation?: { reasonCode: string; userMessage: string; recoveryHint: string } };
 
 export type TxFlowEvent =
   | { type: "START" }
@@ -29,7 +32,7 @@ export type TxFlowEvent =
   | { type: "CONFIRMING"; txHash: string }
   | { type: "INDEXING"; txHash: string }
   | { type: "SUCCEEDED"; txHash: string }
-  | { type: "FAILED"; failedAt: ActiveTxStage; message: string }
+  | { type: "FAILED"; failedAt: ActiveTxStage; message: string; rejectionExplanation?: { reasonCode: string; userMessage: string; recoveryHint: string } }
   | { type: "RESET" };
 
 export interface TxFlowResult {
@@ -49,6 +52,16 @@ export interface TxFlowResult {
 }
 
 export interface TxFlowOptions {
+  /** Business rules applied before the wallet can display a signing prompt. */
+  businessPolicy?: BusinessPolicyEngine;
+  /** Live rule context supplied by the vault view when lockup/claim data is available. */
+  policyContext?: {
+    lockedUntilLedger?: number;
+    currentLedger?: number;
+    claimableAmount?: number;
+    claimDeadline?: number | null;
+    now?: number;
+  };
   /** Called after ledger confirmation and before the indexing stage. */
   onConfirmed?: (txHash: string) => void;
   /**
@@ -102,7 +115,7 @@ export function transitionTxState(state: TxFlowState, event: TxFlowEvent): TxFlo
         : state;
     case "FAILED":
       return isActiveState(state)
-        ? { stage: "failed", failedAt: event.failedAt, message: event.message }
+        ? { stage: "failed", failedAt: event.failedAt, message: event.message, rejectionExplanation: event.rejectionExplanation }
         : state;
     case "RESET":
       return state.stage === "idle" || isTerminalState(state) ? INITIAL_STATE : state;
@@ -121,23 +134,41 @@ export class TxConfirmationTimeoutError extends Error {
 export function mapTxError(
   err: unknown,
   fallbackStage: ActiveTxStage,
-): { failedAt: ActiveTxStage; message: string } {
+): { failedAt: ActiveTxStage; message: string; rejectionExplanation?: { reasonCode: string; userMessage: string; recoveryHint: string } } {
   const message = err instanceof Error ? err.message : String(err);
   const kind = (err as { kind?: string }).kind ?? "";
 
+  // Map to rejection explanation if available
+  const rejectionReason = mapWalletErrorToRejection(kind);
+  const rejectionExplanation = rejectionReason ? getRejectionExplanation(rejectionReason) : undefined;
+
+  if (kind === "network_mismatch" || kind === "multisig_unsupported") {
+    // Fails at "preparing" — both are caught before the wallet's signing
+    // prompt is ever shown (#735, #736), not a rejection of an in-flight
+    // signature.
+    return { failedAt: "preparing", message, rejectionExplanation };
+  }
   if (kind === "wallet_disconnected" || kind === "signature_rejected") {
-    return { failedAt: "awaiting-signature", message };
+    return { failedAt: "awaiting-signature", message, rejectionExplanation };
   }
   if (kind === "rpc_failure") {
-    return { failedAt: "submitting", message };
+    return { failedAt: "submitting", message, rejectionExplanation };
   }
   if (kind === "contract_error" || kind === "confirmation_timeout") {
-    return { failedAt: "confirming", message };
+    return { failedAt: "confirming", message, rejectionExplanation };
   }
   if (kind === "stale_data") {
-    return { failedAt: "indexing", message };
+    return { failedAt: "indexing", message, rejectionExplanation };
   }
-  return { failedAt: fallbackStage, message };
+  // Lockup-active and insufficient-liquidity are contract-level rejections,
+  // not RPC or wallet failures, so they fail at the same stage as a generic
+  // contract_error — but they keep their own `kind` on the thrown error so
+  // callers (e.g. WithdrawalModal) can render a distinct, non-generic
+  // message instead of "Transaction reverted by the contract." (#620).
+  if (kind === "lockup_active" || kind === "insufficient_liquidity") {
+    return { failedAt: "confirming", message, rejectionExplanation };
+  }
+  return { failedAt: fallbackStage, message, rejectionExplanation };
 }
 
 function delay(ms: number): Promise<void> {
@@ -169,6 +200,146 @@ function withTimeout(
 function stateFailureFallback(state: TxFlowState): ActiveTxStage {
   if (isActiveState(state)) return state.stage;
   return "confirming";
+}
+
+// ─── Persistence helpers (#631) ───────────────────────────────────────────────
+
+interface PersistedTxRecord {
+  txHash: string | null;
+  stage: ActiveTxStage;
+  savedAt: number;
+}
+
+const PERSIST_KEY_PREFIX = "vaultquest:pending_tx:";
+const PERSIST_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
+
+function persistTxRecord(scopeKey: string, record: PersistedTxRecord): void {
+  try {
+    localStorage.setItem(PERSIST_KEY_PREFIX + scopeKey, JSON.stringify(record));
+  } catch {
+    // quota exceeded or SSR — ignore
+  }
+}
+
+function loadPersistedTxRecord(scopeKey: string): PersistedTxRecord | null {
+  try {
+    const raw = localStorage.getItem(PERSIST_KEY_PREFIX + scopeKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedTxRecord;
+    if (Date.now() - parsed.savedAt > PERSIST_TTL_MS) {
+      localStorage.removeItem(PERSIST_KEY_PREFIX + scopeKey);
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function clearPersistedTxRecord(scopeKey: string): void {
+  try {
+    localStorage.removeItem(PERSIST_KEY_PREFIX + scopeKey);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Returns a sorted, deduplicated list of in-flight tx hashes seen in this
+ * session. Prevents duplicate wallet submissions from creating parallel flows.
+ */
+const _seenHashes = new Set<string>();
+export function markTxHashSeen(txHash: string): boolean {
+  if (_seenHashes.has(txHash)) return false;
+  _seenHashes.add(txHash);
+  return true;
+}
+
+export interface PersistentTxFlowOptions {
+  /**
+   * Unique scope key: typically `${walletAddress}:${network}` so each wallet
+   * on each network has its own recovery slot.
+   */
+  scopeKey: string;
+}
+
+export interface PersistentTxFlowResult extends TxFlowResult {
+  /** True when the flow was recovered from a previous interrupted session. */
+  recovered: boolean;
+}
+
+/**
+ * Wraps `useTxFlow` with localStorage persistence (#631).
+ *
+ * On mount: if a non-terminal tx record exists in storage (tab close,
+ * navigation away mid-flow), the state is restored to `failed` with a
+ * recovery message so the user sees the last known stage and can retry or
+ * check the explorer.  Pending hashes that reach `success` or `failed`
+ * clear their record automatically.
+ */
+export function usePersistentTxFlow({ scopeKey }: PersistentTxFlowOptions): PersistentTxFlowResult {
+  const flow = useTxFlow();
+  const [recovered, setRecovered] = useState(false);
+
+  useEffect(() => {
+    const record = loadPersistedTxRecord(scopeKey);
+    if (!record) return;
+
+    // A previously-pending tx was interrupted. Surface it as failed so the
+    // user knows to verify on-chain rather than silently losing the status.
+    clearPersistedTxRecord(scopeKey);
+    flow.reset();
+    // We cannot drive the machine to "preparing" → ... → "failed" purely from
+    // localStorage, so we directly inject the terminal failure state.  The
+    // txHash, if present, was already submitted — the user should verify it.
+    const message =
+      record.txHash
+        ? `Transaction interrupted at '${record.stage}' stage. ` +
+          `Hash ${record.txHash.slice(0, 12)}… may have landed — check the explorer.`
+        : `Transaction interrupted at '${record.stage}' stage before a hash was recorded.`;
+
+    // Use the internal transition sequence to reach "failed" legally:
+    // idle → preparing → awaiting-signature → failed
+    // We call reset first (already done), then drive through the minimal path.
+    // Because useTxFlow exposes `run`, not `transition`, we replicate only the
+    // final state via a synthetic call path using the public reset + a no-op
+    // run that immediately throws. This keeps the stateRef consistent.
+    (async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (flow as any).run(
+        {
+          submitAction: async () => {
+            const err: Error & { kind?: string } = new Error(message);
+            err.kind = record.txHash ? "confirmation_timeout" : "rpc_failure";
+            throw err;
+          },
+        },
+        "claim",
+        { poolId: "", walletAddress: "" },
+        { confirmationTimeoutMs: 0, indexingDelayMs: 0 },
+      );
+    })().catch(() => undefined);
+
+    setRecovered(true);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeKey]);
+
+  // Persist whenever the state advances to a non-idle, non-terminal stage.
+  useEffect(() => {
+    const { state } = flow;
+    if (state.stage === "idle" || state.stage === "success" || state.stage === "failed") {
+      clearPersistedTxRecord(scopeKey);
+      return;
+    }
+    const record: PersistedTxRecord = {
+      stage: state.stage as ActiveTxStage,
+      txHash: "txHash" in state ? (state.txHash ?? null) : null,
+      savedAt: Date.now(),
+    };
+    persistTxRecord(scopeKey, record);
+  }, [flow, flow.state, scopeKey]);
+
+  return { ...flow, recovered };
 }
 
 export function useTxFlow(): TxFlowResult {
@@ -214,6 +385,44 @@ export function useTxFlow(): TxFlowResult {
       } = options;
 
       try {
+        const policy = options.businessPolicy ?? DEFAULT_BUSINESS_POLICY_ENGINE;
+        let decision;
+        if (["create", "join", "drip"].includes(type) && input.amount !== undefined) {
+          decision = policy.evaluate({ rule: "deposit", amount: Number(input.amount) });
+        } else if (type === "withdraw") {
+          decision = policy.evaluate({
+            rule: "withdrawal",
+            ...(input.amount !== undefined && { amount: Number(input.amount) }),
+            ...(options.policyContext?.lockedUntilLedger !== undefined && { lockedUntilLedger: options.policyContext.lockedUntilLedger }),
+            ...(options.policyContext?.currentLedger !== undefined && { currentLedger: options.policyContext.currentLedger })
+          });
+        } else if (type === "claim" && options.policyContext?.claimableAmount !== undefined) {
+          decision = policy.evaluate({
+            rule: "claim",
+            availableAmount: options.policyContext.claimableAmount,
+            deadline: options.policyContext.claimDeadline,
+            now: options.policyContext.now ?? Date.now()
+          });
+        }
+        if (decision?.status === "deny") {
+          const kind = decision.code === "LockupActive" ? "lockup_active" : "contract_error";
+          throw new ContractInterfaceError(kind, `${decision.code}: ${decision.message}`);
+        }
+
+        // #735: fresh network check immediately before every signing
+        // request — never cached from connect time. Throws before the
+        // wallet's signing prompt is shown on a mismatch.
+        await assertNetworkMatchesBeforeSigning();
+        // #736: block signing for a detected multisig/thresholded account
+        // with a clear message, rather than letting it hit an ambiguous
+        // low-level signing/threshold error later.
+        assertNotMultisigBeforeSigning();
+        // #733: fresh wallet session-liveness check — catches a dead,
+        // locked, or silently-switched session before the signing prompt,
+        // instead of surfacing a confusing failure after the user has
+        // already committed to this action.
+        await assertSessionAliveBeforeSigning();
+
         transition({ type: "AWAIT_SIGNATURE" });
         const result = await client.submitAction(type, input);
 

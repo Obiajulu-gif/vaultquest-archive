@@ -150,3 +150,7 @@ export default function VaultActivity({ params }) {
   );
 }
 ```
+
+## 6. EVM and Wagmi Usage
+
+While VaultQuest is fundamentally a Stellar/Soroban dApp, the frontend retains wagmi, viem, and rainbowkit dependencies and UI integrations for planned EVM-bridge support. These EVM libraries are strictly used for cross-chain bridging flows and should NOT be used to fetch or interact with the core Soroban savings contracts. All Soroban contract data should be read using the stellar-wallet-connect module or API calls.

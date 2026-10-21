@@ -1,0 +1,637 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Generated fixtures for rare failure and recovery paths (#998). Do not edit by hand.",
+  "generator": "lib/recovery-fixture-generator.ts",
+  "seed": "vaultquest-recovery-v1",
+  "retryVariants": 8,
+  "counts": {
+    "total": 18,
+    "byPath": {
+      "normal": 1,
+      "retry": 12,
+      "failure": 3,
+      "authorization": 1,
+      "recovery": 1
+    }
+  },
+  "fixtures": [
+    {
+      "id": "normal-single-success",
+      "path": "normal",
+      "description": "A single submission is applied on the first attempt.",
+      "actor": {
+        "id": "user:alice",
+        "role": "user",
+        "authorized": true
+      },
+      "idempotencyKey": "idem-normal-1",
+      "maxAttempts": 3,
+      "attempts": [
+        {
+          "attempt": 1,
+          "resultCode": "tx_success",
+          "retryable": false,
+          "recoveryAction": "none"
+        }
+      ],
+      "terminalState": "succeeded",
+      "recovery": {
+        "rollbackRequired": false,
+        "compensations": [],
+        "resumable": false
+      }
+    },
+    {
+      "id": "retry-bad-seq-resequenced",
+      "path": "retry",
+      "description": "tx_bad_seq on the first attempt; re-sequenced and applied on retry.",
+      "actor": {
+        "id": "user:alice",
+        "role": "user",
+        "authorized": true
+      },
+      "idempotencyKey": "idem-retry-badseq",
+      "maxAttempts": 4,
+      "attempts": [
+        {
+          "attempt": 1,
+          "resultCode": "tx_bad_seq",
+          "retryable": true,
+          "recoveryAction": "resequence"
+        },
+        {
+          "attempt": 2,
+          "resultCode": "tx_success",
+          "retryable": false,
+          "recoveryAction": "none"
+        }
+      ],
+      "terminalState": "succeeded",
+      "recovery": {
+        "rollbackRequired": false,
+        "compensations": [],
+        "resumable": true
+      }
+    },
+    {
+      "id": "retry-fee-surge-bumped",
+      "path": "retry",
+      "description": "tx_insufficient_fee during a fee surge; resubmitted with a higher fee.",
+      "actor": {
+        "id": "user:alice",
+        "role": "user",
+        "authorized": true
+      },
+      "idempotencyKey": "idem-retry-fee",
+      "maxAttempts": 3,
+      "attempts": [
+        {
+          "attempt": 1,
+          "resultCode": "tx_insufficient_fee",
+          "retryable": true,
+          "recoveryAction": "bump_fee"
+        },
+        {
+          "attempt": 2,
+          "resultCode": "tx_success",
+          "retryable": false,
+          "recoveryAction": "none"
+        }
+      ],
+      "terminalState": "succeeded",
+      "recovery": {
+        "rollbackRequired": false,
+        "compensations": [],
+        "resumable": true
+      }
+    },
+    {
+      "id": "retry-rpc-transient-resend",
+      "path": "retry",
+      "description": "Two RPC transport failures (no on-chain result) followed by a resend that applies.",
+      "actor": {
+        "id": "user:alice",
+        "role": "user",
+        "authorized": true
+      },
+      "idempotencyKey": "idem-retry-rpc",
+      "maxAttempts": 4,
+      "attempts": [
+        {
+          "attempt": 1,
+          "resultCode": "rpc_unavailable",
+          "retryable": true,
+          "recoveryAction": "resend"
+        },
+        {
+          "attempt": 2,
+          "resultCode": "rpc_unavailable",
+          "retryable": true,
+          "recoveryAction": "resend"
+        },
+        {
+          "attempt": 3,
+          "resultCode": "tx_success",
+          "retryable": false,
+          "recoveryAction": "none"
+        }
+      ],
+      "terminalState": "succeeded",
+      "recovery": {
+        "rollbackRequired": false,
+        "compensations": [],
+        "resumable": true
+      }
+    },
+    {
+      "id": "retry-exhausted-rollback",
+      "path": "retry",
+      "description": "Repeated tx_bad_seq exhausts the retry budget; reserved resources are released.",
+      "actor": {
+        "id": "user:alice",
+        "role": "user",
+        "authorized": true
+      },
+      "idempotencyKey": "idem-retry-exhausted",
+      "maxAttempts": 3,
+      "attempts": [
+        {
+          "attempt": 1,
+          "resultCode": "tx_bad_seq",
+          "retryable": true,
+          "recoveryAction": "resequence"
+        },
+        {
+          "attempt": 2,
+          "resultCode": "tx_bad_seq",
+          "retryable": true,
+          "recoveryAction": "resequence"
+        },
+        {
+          "attempt": 3,
+          "resultCode": "tx_bad_seq",
+          "retryable": true,
+          "recoveryAction": "resequence"
+        }
+      ],
+      "terminalState": "failed",
+      "recovery": {
+        "rollbackRequired": true,
+        "compensations": [
+          "Mark the action-ledger entry as failed with the last result code.",
+          "Release any liquidity reserved for the pending submission."
+        ],
+        "resumable": false
+      }
+    },
+    {
+      "id": "failure-too-late-expired",
+      "path": "failure",
+      "description": "tx_too_late: the time bounds lapsed before inclusion; the intent was abandoned.",
+      "actor": {
+        "id": "user:alice",
+        "role": "user",
+        "authorized": true
+      },
+      "idempotencyKey": "idem-failure-toolate",
+      "maxAttempts": 2,
+      "attempts": [
+        {
+          "attempt": 1,
+          "resultCode": "tx_too_late",
+          "retryable": true,
+          "recoveryAction": "rebuild_time_bounds"
+        }
+      ],
+      "terminalState": "failed",
+      "recovery": {
+        "rollbackRequired": false,
+        "compensations": [],
+        "resumable": false
+      }
+    },
+    {
+      "id": "failure-bad-auth-permanent",
+      "path": "failure",
+      "description": "tx_bad_auth (wrong network passphrase): permanent, non-retryable, nothing applied.",
+      "actor": {
+        "id": "user:alice",
+        "role": "user",
+        "authorized": true
+      },
+      "idempotencyKey": "idem-failure-badauth",
+      "maxAttempts": 3,
+      "attempts": [
+        {
+          "attempt": 1,
+          "resultCode": "tx_bad_auth",
+          "retryable": false,
+          "recoveryAction": "abort"
+        }
+      ],
+      "terminalState": "failed",
+      "recovery": {
+        "rollbackRequired": false,
+        "compensations": [],
+        "resumable": false
+      }
+    },
+    {
+      "id": "failure-op-revert",
+      "path": "failure",
+      "description": "tx_failed: an operation failed so the transaction was not applied; non-retryable.",
+      "actor": {
+        "id": "user:alice",
+        "role": "user",
+        "authorized": true
+      },
+      "idempotencyKey": "idem-failure-opfail",
+      "maxAttempts": 3,
+      "attempts": [
+        {
+          "attempt": 1,
+          "resultCode": "tx_failed",
+          "retryable": false,
+          "recoveryAction": "abort"
+        }
+      ],
+      "terminalState": "failed",
+      "recovery": {
+        "rollbackRequired": false,
+        "compensations": [],
+        "resumable": false
+      }
+    },
+    {
+      "id": "authorization-forbidden-actor",
+      "path": "authorization",
+      "description": "An unauthorized actor is rejected before any transaction is built; terminal.",
+      "actor": {
+        "id": "user:mallory",
+        "role": "user",
+        "authorized": false
+      },
+      "idempotencyKey": "idem-authz-1",
+      "maxAttempts": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "resultCode": "app_forbidden",
+          "retryable": false,
+          "recoveryAction": "abort"
+        }
+      ],
+      "terminalState": "failed",
+      "recovery": {
+        "rollbackRequired": false,
+        "compensations": [],
+        "resumable": false
+      }
+    },
+    {
+      "id": "recovery-timeout-divergence-compensated",
+      "path": "recovery",
+      "description": "submission_timeout: locally marked failed, but reconciliation found the tx applied on-chain; local state compensated.",
+      "actor": {
+        "id": "service:reconciler",
+        "role": "service",
+        "authorized": true
+      },
+      "idempotencyKey": "idem-recovery-divergence",
+      "maxAttempts": 2,
+      "attempts": [
+        {
+          "attempt": 1,
+          "resultCode": "submission_timeout",
+          "retryable": true,
+          "recoveryAction": "recheck_by_hash"
+        }
+      ],
+      "terminalState": "compensated",
+      "recovery": {
+        "rollbackRequired": true,
+        "compensations": [
+          "Confirm the transaction outcome on-chain by hash.",
+          "Reconcile the local ledger/projection to match the applied on-chain result."
+        ],
+        "resumable": false
+      }
+    },
+    {
+      "id": "retry-variant-001",
+      "path": "retry",
+      "description": "Generated retry variant: 1× tx_bad_seq then success.",
+      "actor": {
+        "id": "user:generated",
+        "role": "user",
+        "authorized": true
+      },
+      "idempotencyKey": "idem-variant-1",
+      "maxAttempts": 5,
+      "attempts": [
+        {
+          "attempt": 1,
+          "resultCode": "tx_bad_seq",
+          "retryable": true,
+          "recoveryAction": "resequence"
+        },
+        {
+          "attempt": 2,
+          "resultCode": "tx_success",
+          "retryable": false,
+          "recoveryAction": "none"
+        }
+      ],
+      "terminalState": "succeeded",
+      "recovery": {
+        "rollbackRequired": false,
+        "compensations": [],
+        "resumable": true
+      }
+    },
+    {
+      "id": "retry-variant-002",
+      "path": "retry",
+      "description": "Generated retry variant: 4× tx_insufficient_fee then success.",
+      "actor": {
+        "id": "user:generated",
+        "role": "user",
+        "authorized": true
+      },
+      "idempotencyKey": "idem-variant-2",
+      "maxAttempts": 5,
+      "attempts": [
+        {
+          "attempt": 1,
+          "resultCode": "tx_insufficient_fee",
+          "retryable": true,
+          "recoveryAction": "bump_fee"
+        },
+        {
+          "attempt": 2,
+          "resultCode": "tx_insufficient_fee",
+          "retryable": true,
+          "recoveryAction": "bump_fee"
+        },
+        {
+          "attempt": 3,
+          "resultCode": "tx_insufficient_fee",
+          "retryable": true,
+          "recoveryAction": "bump_fee"
+        },
+        {
+          "attempt": 4,
+          "resultCode": "tx_insufficient_fee",
+          "retryable": true,
+          "recoveryAction": "bump_fee"
+        },
+        {
+          "attempt": 5,
+          "resultCode": "tx_success",
+          "retryable": false,
+          "recoveryAction": "none"
+        }
+      ],
+      "terminalState": "succeeded",
+      "recovery": {
+        "rollbackRequired": false,
+        "compensations": [],
+        "resumable": true
+      }
+    },
+    {
+      "id": "retry-variant-003",
+      "path": "retry",
+      "description": "Generated retry variant: 1× tx_bad_seq then success.",
+      "actor": {
+        "id": "user:generated",
+        "role": "user",
+        "authorized": true
+      },
+      "idempotencyKey": "idem-variant-3",
+      "maxAttempts": 5,
+      "attempts": [
+        {
+          "attempt": 1,
+          "resultCode": "tx_bad_seq",
+          "retryable": true,
+          "recoveryAction": "resequence"
+        },
+        {
+          "attempt": 2,
+          "resultCode": "tx_success",
+          "retryable": false,
+          "recoveryAction": "none"
+        }
+      ],
+      "terminalState": "succeeded",
+      "recovery": {
+        "rollbackRequired": false,
+        "compensations": [],
+        "resumable": true
+      }
+    },
+    {
+      "id": "retry-variant-004",
+      "path": "retry",
+      "description": "Generated retry variant: 2× rpc_unavailable then success.",
+      "actor": {
+        "id": "user:generated",
+        "role": "user",
+        "authorized": true
+      },
+      "idempotencyKey": "idem-variant-4",
+      "maxAttempts": 5,
+      "attempts": [
+        {
+          "attempt": 1,
+          "resultCode": "rpc_unavailable",
+          "retryable": true,
+          "recoveryAction": "resend"
+        },
+        {
+          "attempt": 2,
+          "resultCode": "rpc_unavailable",
+          "retryable": true,
+          "recoveryAction": "resend"
+        },
+        {
+          "attempt": 3,
+          "resultCode": "tx_success",
+          "retryable": false,
+          "recoveryAction": "none"
+        }
+      ],
+      "terminalState": "succeeded",
+      "recovery": {
+        "rollbackRequired": false,
+        "compensations": [],
+        "resumable": true
+      }
+    },
+    {
+      "id": "retry-variant-005",
+      "path": "retry",
+      "description": "Generated retry variant: 2× tx_bad_seq then success.",
+      "actor": {
+        "id": "user:generated",
+        "role": "user",
+        "authorized": true
+      },
+      "idempotencyKey": "idem-variant-5",
+      "maxAttempts": 5,
+      "attempts": [
+        {
+          "attempt": 1,
+          "resultCode": "tx_bad_seq",
+          "retryable": true,
+          "recoveryAction": "resequence"
+        },
+        {
+          "attempt": 2,
+          "resultCode": "tx_bad_seq",
+          "retryable": true,
+          "recoveryAction": "resequence"
+        },
+        {
+          "attempt": 3,
+          "resultCode": "tx_success",
+          "retryable": false,
+          "recoveryAction": "none"
+        }
+      ],
+      "terminalState": "succeeded",
+      "recovery": {
+        "rollbackRequired": false,
+        "compensations": [],
+        "resumable": true
+      }
+    },
+    {
+      "id": "retry-variant-006",
+      "path": "retry",
+      "description": "Generated retry variant: 2× rpc_unavailable then success.",
+      "actor": {
+        "id": "user:generated",
+        "role": "user",
+        "authorized": true
+      },
+      "idempotencyKey": "idem-variant-6",
+      "maxAttempts": 5,
+      "attempts": [
+        {
+          "attempt": 1,
+          "resultCode": "rpc_unavailable",
+          "retryable": true,
+          "recoveryAction": "resend"
+        },
+        {
+          "attempt": 2,
+          "resultCode": "rpc_unavailable",
+          "retryable": true,
+          "recoveryAction": "resend"
+        },
+        {
+          "attempt": 3,
+          "resultCode": "tx_success",
+          "retryable": false,
+          "recoveryAction": "none"
+        }
+      ],
+      "terminalState": "succeeded",
+      "recovery": {
+        "rollbackRequired": false,
+        "compensations": [],
+        "resumable": true
+      }
+    },
+    {
+      "id": "retry-variant-007",
+      "path": "retry",
+      "description": "Generated retry variant: 4× rpc_unavailable then success.",
+      "actor": {
+        "id": "user:generated",
+        "role": "user",
+        "authorized": true
+      },
+      "idempotencyKey": "idem-variant-7",
+      "maxAttempts": 5,
+      "attempts": [
+        {
+          "attempt": 1,
+          "resultCode": "rpc_unavailable",
+          "retryable": true,
+          "recoveryAction": "resend"
+        },
+        {
+          "attempt": 2,
+          "resultCode": "rpc_unavailable",
+          "retryable": true,
+          "recoveryAction": "resend"
+        },
+        {
+          "attempt": 3,
+          "resultCode": "rpc_unavailable",
+          "retryable": true,
+          "recoveryAction": "resend"
+        },
+        {
+          "attempt": 4,
+          "resultCode": "rpc_unavailable",
+          "retryable": true,
+          "recoveryAction": "resend"
+        },
+        {
+          "attempt": 5,
+          "resultCode": "tx_success",
+          "retryable": false,
+          "recoveryAction": "none"
+        }
+      ],
+      "terminalState": "succeeded",
+      "recovery": {
+        "rollbackRequired": false,
+        "compensations": [],
+        "resumable": true
+      }
+    },
+    {
+      "id": "retry-variant-008",
+      "path": "retry",
+      "description": "Generated retry variant: 2× rpc_unavailable then success.",
+      "actor": {
+        "id": "user:generated",
+        "role": "user",
+        "authorized": true
+      },
+      "idempotencyKey": "idem-variant-8",
+      "maxAttempts": 5,
+      "attempts": [
+        {
+          "attempt": 1,
+          "resultCode": "rpc_unavailable",
+          "retryable": true,
+          "recoveryAction": "resend"
+        },
+        {
+          "attempt": 2,
+          "resultCode": "rpc_unavailable",
+          "retryable": true,
+          "recoveryAction": "resend"
+        },
+        {
+          "attempt": 3,
+          "resultCode": "tx_success",
+          "retryable": false,
+          "recoveryAction": "none"
+        }
+      ],
+      "terminalState": "succeeded",
+      "recovery": {
+        "rollbackRequired": false,
+        "compensations": [],
+        "resumable": true
+      }
+    }
+  ]
+}

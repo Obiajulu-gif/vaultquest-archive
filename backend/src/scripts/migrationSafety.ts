@@ -154,8 +154,10 @@ export interface DuplicateReviewResolution {
 
 const normalize = (sql: string) => sql.replace(/\s+/g, " ").trim();
 
-const identifier = (after: string): string => {
+const identifier = (after?: string): string => {
+  if (!after) return "";
   const match = after.match(/"([^"]+)"|([A-Za-z_][\w$]*)/);
+  return match ? (match[1] ?? match[2] ?? "") : "";
   return match?.[1] ?? match?.[2] ?? "";
 };
 
@@ -243,6 +245,8 @@ export function parseMigrationSql(migrationId: string, sql: string): MigrationPl
     }
 
     if ((match = /^ALTER TABLE "?([^"\s]+)"? ADD COLUMN (IF NOT EXISTS )?"?([^"\s]+)"?/i.exec(statement))) {
+      const table = identifier(match[1]);
+      const column = identifier(match[3]);
       const table = identifier(match[1] ?? "");
       const column = identifier(match[3] ?? "");
       actions.push({
@@ -259,6 +263,8 @@ export function parseMigrationSql(migrationId: string, sql: string): MigrationPl
     }
 
     if ((match = /^ALTER TABLE "?([^"\s]+)"? DROP COLUMN (IF EXISTS )?"?([^"\s]+)"?/i.exec(statement))) {
+      const table = identifier(match[1]);
+      const column = identifier(match[3]);
       const table = identifier(match[1] ?? "");
       const column = identifier(match[3] ?? "");
       actions.push({
@@ -275,10 +281,12 @@ export function parseMigrationSql(migrationId: string, sql: string): MigrationPl
     }
 
     if ((match = /^ALTER TABLE "?([^"\s]+)"? ALTER COLUMN "?([^"\s]+)"? (.+)/i.exec(statement))) {
+      const table = identifier(match[1]);
+      const column = identifier(match[2]);
       const table = identifier(match[1] ?? "");
       const column = identifier(match[2] ?? "");
       const alteration = match[3] ?? "";
-      const isNotNull = /SET NOT NULL/.test(alteration);
+      const isNotNull = /SET NOT NULL/i.test(alteration);
       actions.push({
         kind: "alter-column",
         name: `${table}.${column}`,
@@ -294,6 +302,7 @@ export function parseMigrationSql(migrationId: string, sql: string): MigrationPl
     }
 
     if ((match = /^UPDATE "?([^"\s]+)"?/i.exec(statement))) {
+      const table = identifier(match[1]);
       const table = identifier(match[1] ?? "");
       const hasWhere = /\bWHERE\b/i.test(statement);
       actions.push({

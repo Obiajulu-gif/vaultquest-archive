@@ -263,7 +263,14 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error("Migration safety check failed:", error);
-  process.exit(1);
-});
+const isMain =
+  process.argv[1] !== undefined &&
+  (process.argv[1].endsWith("migrationSafetyCli.ts") ||
+    process.argv[1].endsWith("migrationSafetyCli.js"));
+
+if (isMain) {
+  main().catch((error) => {
+    console.error("Migration safety check failed:", error);
+    process.exit(1);
+  });
+}

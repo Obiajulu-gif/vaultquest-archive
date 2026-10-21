@@ -1,13 +1,15 @@
 # Accessibility Regression Coverage
 
-`app/tests/a11y-regression.spec.tsx` (run with `pnpm test`) locks in keyboard, focus,
-screen-reader, error-announcement and reduced-motion behaviour for three core flows.
+`app/tests/a11y-regression.spec.tsx` and `app/tests/a11y-async-states.spec.tsx` (run with `pnpm test`) lock in keyboard, focus,
+screen-reader, error-announcement, async status, and reduced-motion behaviour for core flows.
 
 | Flow | Component | Protected behaviour |
 |---|---|---|
 | Dense form | `PoolCreationForm` | Labelled controls, `aria-required`; visual tab order; on invalid submit focus moves to the first invalid field, each field gets `aria-invalid` + `aria-describedby` to its error, one summary `role="alert"`; focus moves to the step heading on step change; failed submit shows an in-page alert and keeps values; submitting is a busy `role="status"` |
 | Data table | `VaultComparisonTable` | Caption, column and row headers; sort headers are buttons (Tab + Enter/Space); `aria-sort` follows the sort; sort changes announced politely (never on first render); per-row controls have unique names |
 | Error recovery | `VaultRetryQueue` | Retry/Dismiss names say which action (visible text first, WCAG 2.5.3); error text is the Retry button's description; outcomes announced (polite for resolved/submitted/backoff, assertive for exhausted), countdown ticks are not; focus stays in the queue when a row or its Retry button disappears; "cleared" is announced even after the queue unmounts |
+| Modal & Async | `DepositModal` | Dialog semantics (`role="dialog"`, `aria-modal="true"`, `aria-labelledby`); focus trap (Tab/Shift+Tab cycle); focus restored to trigger on close; step headings receive focus on transition; loading state has `role="status"`, `aria-live="polite"`, `aria-busy="true"`; validation and execution failures expose `role="alert"`, `aria-live="assertive"`, `aria-invalid`, `aria-describedby`; accessible keyboard retry; disconnected wallet authorization warning |
+| Conflict resolution | `ConflictResolutionUI` | State modification alerts (`role="alert"`), `aria-busy` indicator during resolution, keyboard-operable refresh and dismiss actions |
 
 **Reduced motion:** `lib/usePrefersReducedMotion.ts` follows `(prefers-reduced-motion: reduce)` live.
 The components drop spinners, step transitions and framer-motion entrance/layout animations when it is set.

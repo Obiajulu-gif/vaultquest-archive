@@ -268,4 +268,60 @@
 - `backend/src/app.ts`
 - `backend/tests/resumableRepairJob.spec.ts`
 
+---
+
+## #966 – Add concurrency tests for duplicate submissions and stale versions
+
+**Problem:** Concurrent duplicate actions with the same or altered payloads, along with stale version edits during optimistic locking races, lacked comprehensive executable verification covering convergence, conflict rejection, idempotent retries, and cross-wallet authorization isolation.
+
+**Resolution:**
+- Added deterministic concurrency test suite `backend/tests/concurrencyDuplicateStaleVersions.spec.ts` verifying duplicate submissions (identical convergence, 409 conflict on altered payload, idempotent retry after network failures, and cross-wallet isolation preventing idempotency key hijacking).
+- Verified stale version detection and optimistic locking (sequence advancement on valid writes, 409 CONCURRENT_MODIFICATION rejection on stale tokens, automatic token refresh and retry with `executeWithRetryOnConflict`, unauthorized actor rejection, and 10-way stress races where exactly 1 writer commits).
+- Added frontend concurrency suite `tests/concurrency-stale-version.test.ts` validating client-side optimistic concurrency control helpers, conflict banner rendering, and retry triggers.
+- Updated `docs/IDEMPOTENCY.md` with explicit invariants, operational edge cases, and recovery/rollback guidelines.
+
+**Files changed:**
+- `backend/tests/concurrencyDuplicateStaleVersions.spec.ts`
+- `tests/concurrency-stale-version.test.ts`
+- `docs/IDEMPOTENCY.md`
+
+---
+
+## #969 – Add accessibility coverage for keyboard, focus, and async status states
+
+**Problem:** Interactive async dialogs and conflict banners (e.g., `DepositModal`, `ConflictResolutionUI`) lacked complete WCAG 2.1 AA accessibility coverage across keyboard navigation (Tab/Shift+Tab focus trapping, Escape dismissal), initial focus management, focus restoration on unmount, live regions for async pending/error states (`role="status"`, `role="alert"`, `aria-busy`), form input error binding (`aria-invalid`, `aria-describedby`), and disconnected wallet authorization guards.
+
+**Resolution:**
+- Enhanced `components/app/DepositModal.jsx` with full dialog ARIA semantics (`role="dialog"`, `aria-modal="true"`, `aria-labelledby`), active focus trapping with Tab cycling, `previouslyFocusedRef` focus restoration to trigger elements, heading auto-focus on step transitions, live regions for async transaction states, assertive error announcements with accessible keyboard retry buttons, and disconnected wallet authorization gates.
+- Enhanced `lib/useConflictAwareOperation.tsx` (`ConflictResolutionUI` and `ConflictBanner`) with `role="alert"`, `aria-busy`, accessible labels, and keyboard-operable retry actions.
+- Created comprehensive test suite in `app/tests/a11y-async-states.spec.tsx` covering normal, failure, retry, authorization, and reduced-motion states (12 tests).
+- Updated `docs/ACCESSIBILITY_REGRESSION.md` with component protections, test matrix, and audit guidelines.
+
+**Files changed:**
+- `components/app/DepositModal.jsx`
+- `lib/useConflictAwareOperation.tsx`
+- `app/tests/a11y-async-states.spec.tsx`
+- `docs/ACCESSIBILITY_REGRESSION.md`
+
+---
+
+## #972 – Add release readiness checks for migrations, smoke tests, and rollback
+
+**Problem:** Release validation lacked an automated and auditable pipeline uniting migration safety checks (destructive statement detection, rollback notes, post-checks), Fastify application smoke tests (liveness, component aggregation, Problem Details errors, degraded retry headers, internal secret auth), and dual-control maintainer sign-off verification with emergency exception workflows.
+
+**Resolution:**
+- Fixed casing bug in `backend/src/scripts/migrationSafety.ts` identifier parsing with `/i` on statement and updated rollback notes text for pre-migration backups.
+- Created `backend/src/scripts/releaseReadiness.ts` exporting `validateReleaseReadiness` and `formatReport` automating checks across documentation, migrations, rollback procedures, configuration inventories, and dual-control maintainer authorizations.
+- Created `docs/release-readiness-checklist.md` satisfying all required checklist sections (Tests, Migration, Configuration, Rollback, Documentation, Maintainer sign-off) and emergency exception workflows.
+- Refactored `backend/tests/smoke.spec.ts` with mock database fallback to reliably verify normal, failure, retry (`Retry-After: 30` on degraded mode), and authorization paths (`x-internal-secret` enforcement) in environments with or without Docker.
+- Added test suite `backend/tests/releaseReadiness.spec.ts` testing release readiness verification across normal, failure, retry, and authorization paths.
+
+**Files changed:**
+- `backend/src/scripts/migrationSafety.ts`
+- `backend/src/scripts/migrationSafetyCli.ts`
+- `backend/src/scripts/releaseReadiness.ts`
+- `backend/tests/smoke.spec.ts`
+- `backend/tests/releaseReadiness.spec.ts`
+- `docs/release-readiness-checklist.md`
+
 

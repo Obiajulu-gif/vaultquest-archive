@@ -118,8 +118,13 @@ export function ConflictResolutionUI({
   const rejectionExplanation = getRejectionExplanation(conflict.reasonCode);
 
   return (
-    <div className="conflict-resolution-banner" role="alert" aria-live="polite">
-      <div className="conflict-icon">⚠️</div>
+    <div
+      className="conflict-resolution-banner"
+      role="alert"
+      aria-live="polite"
+      aria-busy={isResolving}
+    >
+      <div className="conflict-icon" aria-hidden="true">⚠️</div>
       <div className="conflict-content">
         <h3 className="conflict-title">Data Changed</h3>
         <p className="conflict-message">{conflict.userMessage}</p>
@@ -128,13 +133,16 @@ export function ConflictResolutionUI({
           <button
             onClick={onResolve}
             disabled={isResolving}
+            aria-busy={isResolving}
             className="conflict-resolve-btn"
+            aria-label={isResolving ? "Refreshing data, please wait" : "Refresh data to latest version"}
           >
             {isResolving ? "Refreshing..." : "Refresh Data"}
           </button>
           <button
             onClick={onDismiss}
             className="conflict-dismiss-btn"
+            aria-label="Dismiss conflict notification"
           >
             Dismiss
           </button>
@@ -154,19 +162,19 @@ export function ConflictBanner({
 }: Omit<ConflictResolutionUIProps, "isResolving">) {
   return (
     <div className="conflict-banner" role="alert" aria-live="polite">
-      <span className="conflict-banner-icon">⚠️</span>
+      <span className="conflict-banner-icon" aria-hidden="true">⚠️</span>
       <span className="conflict-banner-message">{conflict.userMessage}</span>
       <button
         onClick={onResolve}
         className="conflict-banner-refresh"
-        aria-label="Refresh data"
+        aria-label="Refresh data to latest version"
       >
         Refresh
       </button>
       <button
         onClick={onDismiss}
         className="conflict-banner-dismiss"
-        aria-label="Dismiss conflict"
+        aria-label="Dismiss conflict alert"
       >
         ✕
       </button>

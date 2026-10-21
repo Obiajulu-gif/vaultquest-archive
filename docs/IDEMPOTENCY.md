@@ -442,6 +442,43 @@ This implementation:
 - Keys in URLs are safe (no auth bypass)
 - Consider key rotation if leaked in unusual circumstances
 
+## Concurrency Invariants: Duplicate Submissions & Stale Versions (#966)
+
+### Invariants
+
+1. **Exactly-Once Execution Under Racing Submissions**:
+   When $N$ simultaneous requests arrive carrying identical idempotency keys and payloads, the underlying mutation executes exactly once. All concurrent callers receive the same receipt with identical status and ID without creating multiple rows or duplicate ledger records.
+
+2. **Payload Conflict Rejection**:
+   Reusing an existing idempotency key with an altered payload (e.g. changed amount, recipient, or action type) is strictly rejected with `409 Conflict` (`IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD`). The original record is immutable.
+
+3. **Multi-Tenant Key Isolation**:
+   Idempotency keys and version tokens are strictly wallet-scoped. An attempt by Wallet B to reuse an idempotency key or submit against a version token owned by Wallet A is rejected without revealing Wallet A's payload or state.
+
+4. **Optimistic Version Fencing**:
+   Editable entities (saved pools, user preferences, configurations) carry version tokens combining entity ID, entity type, last modification timestamp, and sequence counter. Mutations verify that `expectedVersion == currentVersion`. Stale mutations are rejected with `VAULT_CONCURRENT_MODIFICATION` (`409 Conflict`).
+
+### Operational Edge Cases and Failure Modes
+
+- **Network Timeout During In-Flight Mutation**:
+  If a client disconnects while a request is in flight, the database transaction completes atomically. Subsequent client retries with the same `Idempotency-Key` return the completed outcome immediately rather than re-executing.
+- **Clock Skew Across Distributed Nodes**:
+  Version tokens prioritize monotonic sequence counters (`sequence`) over wall-clock timestamps (`version`). Even if database server clocks drift, sequence increments guarantee deterministic ordering.
+- **Client Retry Storm on Stale Data**:
+  When multiple browser tabs or clients concurrently attempt to update the same record, exactly one commit succeeds. Losers receive `VAULT_CONCURRENT_MODIFICATION` with `retryable: true`, which triggers an automated refresh and fresh token acquisition before retrying, preventing infinite write contention.
+- **Deadlock and Serialization Failures**:
+  Postgres `Serializable` transactions are wrapped in a retry handler with exponential backoff and jitter (`MAX_TX_RETRIES = 5`, retryable error `P2034`), preventing 500 errors during burst concurrency.
+
+### Recovery and Rollback Behavior
+
+- **Conflict Recovery**:
+  When a mutation fails with `VAULT_CONCURRENT_MODIFICATION`, the client executes a recovery workflow:
+  1. Fetch latest entity snapshot and version token via `GET /...`.
+  2. If changes are compatible, re-apply client delta against the new version token.
+  3. If changes conflict semantically, present `ConflictResolutionUI` prompting the user to refresh or review differences.
+- **Rollback Safety**:
+  Idempotency keys and version tokens are stored directly alongside rows or in the `idempotency_keys` table. Reverting application code maintains backward compatibility; database rollback restores previous row versions using WAL point-in-time recovery (PITR) or pre-migration snapshot dumps without orphaned lock state.
+
 ## References
 
 - Related issue: [VaultQuest: Add idempotency and replay protection for high-risk write operations](https://github.com/Obiajulu-gif/vaultquest-archive/issues/XXX)

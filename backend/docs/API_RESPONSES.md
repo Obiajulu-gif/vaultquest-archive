@@ -38,7 +38,7 @@ Clients should pass the returned cursor back as `?cursor=` unchanged.
 
 All errors use one envelope. The full field reference, the complete code
 table (category, retryability, HTTP status) and worked examples live in
-[`docs/API.md`(________docs/API.md#standard-errors); they are enforced by
+[`docs/API.md`](API.md#standard-errors); they are enforced by
 `tests/apiContract.spec.ts`.
 
 ```json
@@ -73,6 +73,22 @@ Unknown exceptions fall back to `INTERNAL`. Frontends should retry only when
 `error.retryable` is `true` (with backoff, honouring `Retry-After`); never
 auto-retry validation, auth, or conflict errors.
 
+
+## Remediation at a glance
+
+Use the stable `category`, `retryable`, and `recovery` fields together when deciding what to do next. The machine-readable `code` remains the primary key; the text fields are safe guidance for clients and operators.
+
+| Category | Typical response | Client or operator action |
+| --- | --- | --- |
+| `validation` | `retryable: false` | Correct the reported fields and submit the request again. |
+| `authorization` | `retryable: false` | Refresh credentials or request the required permission; do not retry unchanged. |
+| `not_found` | `retryable: false` | Confirm the resource identifier and current wallet scope. |
+| `conflict` | `retryable: false` | Refresh state, reconcile the current version, and retry only after the conflict is resolved. |
+| `rate_limit` | `retryable: true` | Respect `Retry-After` and retry with backoff. |
+| `dependency` or `settlement` | `retryable: true` when indicated | Retry with backoff and preserve the `error_id` for support if the condition persists. |
+| `internal` | `retryable: false` by default | Surface the correlation ID and `error_id`; operators should investigate server logs before replaying work. |
+
+Clients must branch on `code` and `retryable`, not on the human-readable `message`. Operators should include the `error_id`, request timestamp, and endpoint when escalating a failure. This keeps remediation consistent across normal, failure, retry, and authorization paths without exposing internal exception text.
 ## Contract versioning
 
 Every core response has a semantic version recorded in

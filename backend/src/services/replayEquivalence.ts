@@ -16,7 +16,8 @@
  */
 
 import { Prisma, type ActionLedger, type PrismaClient } from "@prisma/client";
-import { LedgerService, canonicalStringify } from "./ledger.js";
+import { LedgerService } from "./ledger.js";
+import { canonicalStringify } from "../utils/canonicalJson.js";
 import {
   StellarIndexer,
   RPC_MAX_SCAN_LEDGERS,

@@ -13,6 +13,8 @@ export const PERMISSIONS = [
   "own.data.read",
   "own.data.export",
   "own.data.import",
+  // #983: a wallet edits its own records (multi-client saved-pool edits).
+  "own.data.write",
   // #812: a wallet reads its own signed receipts; maintainers read any.
   "own.receipts.read",
   "admin.receipts.read",
@@ -25,6 +27,9 @@ export const PERMISSIONS = [
   // #815: operation-limit policies, overrides and resets.
   "admin.limits.read",
   "admin.limits.write",
+  // Guarded feature-flag rollouts and rollback verification.
+  "admin.flags.read",
+  "admin.flags.write",
   "admin.audit.read",
   "admin.audit.write",
   "admin.audit.export",
@@ -47,6 +52,7 @@ const USER_PERMISSIONS: readonly Permission[] = [
   "own.data.read",
   "own.data.export",
   "own.data.import",
+  "own.data.write",
   "own.receipts.read",
 ];
 
@@ -71,6 +77,8 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
     "admin.audit_trail.export",
     "admin.limits.read",
     "admin.limits.write",
+    "admin.flags.read",
+    "admin.flags.write",
     // #791: impersonation — maintainer-only.
     "admin.impersonation.read",
     "admin.impersonation.write",

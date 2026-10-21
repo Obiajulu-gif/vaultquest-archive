@@ -15,6 +15,7 @@ records, and which tests prove it.
 | Ledger balance updates | Lost updates or negative balances under read-modify-write | Amount arithmetic is immutable and total; debits are guarded by a positive-balance check before application | `C7`, `C8` |
 | Job lease acquisition | Two workers running the same cron job | Unique constraint on `job_leases.job_name` plus an expiry-guarded takeover that bumps the fencing token | `C9` |
 | Fenced writes after takeover | A worker whose lease expired committing a stale write | `LeaseService.isFencingTokenCurrent` / token in the WHERE clause of the guarded write | `C10` |
+| Multi-client saved-pool edits (#983) | Two tabs/devices editing the same saved pool; the later request silently overwriting the other | Per-field clocks + deterministic resolution (`lib/conflict-resolver.ts`), compare-and-set on `saved_pools.version` with re-resolution on a miss | `saved-pools-conflict.spec.ts`, `tests/conflict-resolver.test.ts` |
 
 ## Strategy
 

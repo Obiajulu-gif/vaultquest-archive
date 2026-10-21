@@ -9,7 +9,7 @@
  * - Schema versioning
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { TrendAggregationService, WINDOW_DURATIONS, TREND_SCHEMA_VERSION, type TrendMetric } from "./trendAggregationService";
 import type { PrismaClient } from "@prisma/client";
 

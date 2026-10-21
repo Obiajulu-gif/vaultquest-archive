@@ -76,6 +76,12 @@ function source(actions: any[], pools: any[]): ExportSource & { calls: string[] 
 }
 
 describe("DataExportService", () => {
+  it("exports saved-pool provenance without copying private source record values", async () => {
+    const provenance = { id: "prov", source: "import_batch", importBatchId: "batch", transformVersion: "1", actor: ALICE, timestamp: now.toISOString() };
+    const { data } = await new DataExportService(source([], [{ ...pool("p"), provenance }])).build({ principal: alice });
+    expect(data.saved_pools![0]).toMatchObject({ provenance });
+    expect((data.saved_pools![0] as any).provenance).not.toBe(provenance);
+  });
   const now = new Date("2026-03-01T12:00:00Z");
 
   it("includes schema version, generation metadata, retention expiry and checksum", async () => {
@@ -116,7 +122,7 @@ describe("DataExportService", () => {
     const rows = [action(1), action(2, { redactedAt: new Date() })];
     const { data } = await new DataExportService(source(rows, [])).build({ principal: alice, sections: ["actions"] });
     expect(data.actions).toHaveLength(1);
-    expect(data.saved_pools).toBeUndefined();
+    expect(data.saved_pools).toBendefined();
   });
 
   it("projects sparse and fully-populated records without throwing", async () => {

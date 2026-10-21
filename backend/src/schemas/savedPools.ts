@@ -36,3 +36,21 @@ export const savedPoolListQuery = z.object({
 export const savedPoolDeleteParams = z.object({
   poolId: z.string().min(1).max(120)
 });
+
+/**
+ * #983 — a field-level edit from one client. `base_version` is the `version`
+ * the client read; `client_id` + `edited_at` order concurrent edits
+ * deterministically (lib/conflict-resolver.ts).
+ */
+export const savedPoolEditBody = z.object({
+  base_version: z.number().int().min(0),
+  client_id: z.string().trim().min(1).max(64),
+  edited_at: z.string().datetime({ offset: true }),
+  changes: savedPoolRecord
+    .omit({ pool_id: true })
+    .partial()
+    .strict()
+    .refine((changes) => Object.values(changes).some((v) => v !== undefined), {
+      message: "changes must name at least one field"
+    })
+});

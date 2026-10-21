@@ -142,6 +142,12 @@ export interface OnChainParticipant {
   yield_accrued: string; // i128
 }
 
+export interface OnChainRoundingRemainder {
+  whole_units: string; // i128 token units
+  numerator: string; // i128 fraction numerator
+  denominator: string; // i128 frozen round snapshot
+}
+
 // ── Contract Method Signatures ──────────────────────────────────────────────
 
 export type ContractMethod =
@@ -164,7 +170,8 @@ export type ContractMethod =
   | "pool"
   | "savings"
   | "admins"
-  | "threshold";
+  | "threshold"
+  | "round_rounding_remainder";
 
 // ── Cross-Stack Type Mapping ────────────────────────────────────────────────
 
@@ -340,6 +347,7 @@ export function validateContractMethod(method: string): string | null {
     "unclaimed_swept", "renew_participant", "renew_instance", "renew_storage",
     "emergency_withdraw", "is_emergency", "emergency_assets",
     "execute_proposal", "set_claim_deadline", "sweep_unclaimed",
+    "round_rounding_remainder",
     "config_version",
   ];
 

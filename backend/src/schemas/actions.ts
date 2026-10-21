@@ -80,6 +80,96 @@ export const actionHistoryQuery = z.object({
   status: z.enum(ACTION_STATUSES).optional(),
 });
 
+/**
+ * Versioned API response contracts (VAULTQUEST_API_VERSION).
+ *
+ * These schemas describe the stable shape of core API responses exposed to
+ * contributor integrations. Every response envelope carries the contract
+ * version so consumers can detect breaking changes early. Additive fields
+ * are allowed within a major version; removing or retyping a field requires a
+ * major version bump.
+ */
+export const API_CONTRACT_VERSION = "1.0.0" as const;
+
+export const apiVersionSchema = z.literal(API_CONTRACT_VERSION);
+
+/** Standard error codes exposed to integrators. */
+export const API_ERROR_CODES = [
+  "validation_error",
+  "not_found",
+  "conflict",
+  "rate_limited",
+  "internal_error",
+] as const;
+
+export const apiErrorCodeSchema = z.enum(API_ERROR_CODES);
+
+export const apiErrorDetailSchema = z.object({
+  code: apiErrorCodeSchema,
+  message: z.string().min(1).max(1000),
+  field: z.string().min(1).max(200).optional(),
+});
+
+export const apiErrorResponseSchema = z.object({
+  version: apiVersionSchema,
+  ok: z.literal(false),
+  error: apiErrorDetailSchema,
+});
+
+export const apiSuccessEnvelope = <T extends z.ZodType<any>>(data: T) =>
+  z.object({
+    version: apiVersionSchema,
+    ok: z.literal(true),
+    data,
+  });
+
+export const actionStatusSchema = z.enum(ACTION_STATUSES);
+
+export const actionResponseSchema = z.object({
+  id: z.string().uuid(),
+  wallet_address: walletSchema,
+  action_type: z.enum(ACTION_TYPES),
+  status: actionStatusSchema,
+  tx_hash: z.string().min(4).max(200).nullable(),
+  created_at: z.string().datetime(),
+  confirmed_at: z.string().datetime().nullable(),
+});
+
+export const actionListResponseSchema = apiSuccessEnvelope(
+  z.object({
+    items: z.array(actionResponseSchema),
+    next_cursor: z.string().uuid().nullable(),
+  }),
+);
+
+export const dashboardResponseSchema = apiSuccessEnvelope(
+  z.object({
+    wallet_address: walletSchema,
+    total_deposited: z.string(),
+    total_prizes_won: z.string(),
+    active_actions: z.number().int().nonnegative(),
+    generated_at: z.string().datetime(),
+  }),
+);
+
+export const portfolioResponseSchema = apiSuccessEnvelope(
+  z.object({
+    wallet_address: stellarWalletAddressSchema,
+    vaults: z.array(
+      z.object({
+        vault_id: z.string().min(1).max(200),
+        balance: z.string(),
+        last_updated_at: z.string().datetime(),
+      }),
+    ),
+  }),
+);
+
+export type ApiErrorResponse = z.infer<typeof apiErrorResponseSchema>;
+export type ActionResponse = z.infer<typeof actionResponseSchema>;
+export type ActionListResponse = z.infer<typeof actionListResponseSchema>;
+export type DashboardResponse = z.infer<typeof dashboardResponseSchema>;
+export type PortfolioResponse = z.infer<typeof portfolioResponseSchema>
 export const publicActivityQuery = z.object({
   cursor: z.string().uuid().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(25),

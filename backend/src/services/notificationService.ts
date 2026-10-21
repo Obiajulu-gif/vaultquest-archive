@@ -111,7 +111,7 @@ export class NotificationService {
 private readonly leadHours = 24,
     private readonly idempotencyService?: IdempotencyService,
     private readonly delivery: NotificationDeliveryAdapter | null = null,
-    private readonly maxDeliveryAttempts = DEFAULT_MAX_DELIVER_ATTEMPTS
+    private readonly maxDeliveryAttempts = DEFAULT_MAX_DELIVERY_ATTEMPTS
   ) {}
 
   /**

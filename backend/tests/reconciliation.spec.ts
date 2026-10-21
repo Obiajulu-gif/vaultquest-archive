@@ -1,1 +1,449 @@
-aW1wb3J0IHsgZGVzY3JpYmUsIGl0LCBleHBlY3QsIGJlZm9yZUFsbCwgYWZ0ZXJBbGwsIGJlZm9yZUVhY2ggfSBmcm9tICJ2aXRlc3QiOwppbXBvcnQgeyBzdGFydFRlc3REYiwgcmVzZXREYiwgdHlwZSBUZXN0RGIgfSBmcm9tICIuL2hlbHBlcnMvZGIuanMiOwppbXBvcnQgeyBSZWNvbmNpbGlhdGlvblNlcnZpY2UsIGNyZWF0ZVJlY29uY2lsaWF0aW9uU2VydmljZSwgdHlwZSBPdXRib3VuZEFjdGlvblJlY29yZCB9IGZyb20gIi4uL3NyYy9zZXJ2aWNlcy9yZWNvbmNpbGVyLmpzIjsKCmRlc2NyaWJlKCJSZWNvbmNpbGlhdGlvblNlcnZpY2UiLCAoKSA9PiB7CiAgbGV0IGRiOiBUZXN0RGI7CiAgbGV0IHNlcnZpY2U6IFJlY29uY2lsaWF0aW9uU2VydmljZTsKICBsZXQgc3VibWl0Q2FsbHM6IEFycmF5PHsgcGF5bG9hZDogUmVjb3JkPHN0cmluZywgdW5rbm93bj4gfT4gPSBbXTsKICBsZXQgY2hhaW5TdGF0ZTogTWFwPHN0cmluZywgeyBjb25maXJtZWQ6IGJvb2xlYW47IGVycm9yQ29kZT86IHN0cmluZzsgZXJyb3JEZXRhaWw/OiBzdHJpbmcgfT4gPSBuZXcgTWFwKCk7CgogIGJlZm9yZUFsbChhc3luYyAoKSA9PiB7CiAgICBkYiA9IGF3YWl0IHN0YXJ0VGVzdERiKCk7CiAgfSk7CgogIGFmdGVyQWxsKGFzeW5jICgpID0+IHsKICAgIGF3YWl0IGRiLnN0b3AoKTsKICB9KTsKCiAgYmVmb3JlRWFjaChhc3luYyAoKSA9PiB7CiAgICBhd2FpdCByZXNldERiKGRiLnByaXNtYSk7CiAgICBzdWJtaXRDYWxscyA9IFtdOwogICAgY2hhaW5TdGF0ZS5jbGVhcigpOwoKICAgIGNvbnN0IHN1Ym1pdEZuID0gYXN5bmMgKHBheWxvYWQ6IFJlY29yZDxzdHJpbmcsIHVua25vd24+KSA9PiB7CiAgICAgIHN1Ym1pdENhbGxzLnB1c2goeyBwYXlsb2FkIH0pOwogICAgICBjb25zdCB0eEhhc2ggPSBgdHhfJHtEYXRlLm5vdygpfV8ke01hdGgucmFuZG9tKCkudG9TdHJpbmcoMzYpLnNsaWNlKDIpfWA7CiAgICAgIGNoYWluU3RhdGUuc2V0KHR4SGFzaCwgeyBjb25maXJtZWQ6IGZhbHNlIH0pOwogICAgICByZXR1cm4geyB0eEhhc2ggfTsKICAgIH07CgogICAgY29uc3QgY2hlY2tDaGFpbkZuID0gYXN5bmMgKHR4SGFzaDogc3RyaW5nKSA9PiB7CiAgICAgIHJldHVybiBjaGFpblN0YXRlLmdldCh0eEhhc2gpID8/IHsgY29uZmlybWVkOiBmYWxzZSB9OwogICAgfTsKCiAgICBzZXJ2aWNlID0gY3JlYXRlUmVjb25jaWxpYXRpb25TZXJ2aWNlKHsKICAgICAgcHJpc21hOiBkYi5wcmlzbWEsCiAgICAgIHN1Ym1pdEZuLAogICAgICBjaGVja0NoYWluRm4KICAgIH0pOwogIH0pOwoKICBkZXNjcmliZSgiY3JlYXRlT3JHZXRPdXRib3VuZEFjdGlvbiIsICgpID0+IHsKICAgIGl0KCJjcmVhdGVzIGEgbmV3IG91dGJvdW5kIGFjdGlvbiIsIGFzeW5jICgpID0+IHsKICAgICAgY29uc3QgcmVjb3JkID0gYXdhaXQgc2VydmljZS5jcmVhdGVPckdldE91dGJvdW5kQWN0aW9uKHsKICAgICAgICBhY3Rpb25LZXk6ICJwYXlvdXRfdmF1bHRfMSIsCiAgICAgICAgYWN0aW9uVHlwZTogInBheW91dCIsCiAgICAgICAgcGF5bG9hZDogeyB2YXVsdElkOiAiMSIsIGFtb3VudDogIjEwMDAiLCByZWNpcGllbnQ6ICJHUkVDSVBJRU5UIiB9CiAgICAgIH0pOwoKICAgICAgZXhwZWN0KHJlY29yZC5hY3Rpb25LZXkpLnRvQmUoInBheW91dF92YXVsdF8xIik7CiAgICAgIGV4cGVjdChyZWNvcmQuYWN0aW9uVHlwZSkudG9CZSgicGF5b3V0Iik7CiAgICAgIGV4cGVjdChyZWNvcmQuc3RhdHVzKS50b0JlKCJwZW5kaW5nIik7CiAgICAgIGV4cGVjdChyZWNvcmQuYXR0ZW1wdHMpLnRvQmUoMCk7CiAgICAgIGV4cGVjdChyZWNvcmQudHhIYXNoKS50b0JlTnVsbCgpOwogICAgfSk7CgogICAgaXQoInJldHVybnMgZXhpc3RpbmcgYWN0aW9uIG9uIGR1cGxpY2F0ZSBrZXkiLCBhc3luYyAoKSA9PiB7CiAgICAgIGNvbnN0IGZpcnN0ID0gYXdhaXQgc2VydmljZS5jcmVhdGVPckdldE91dGJvdW5kQWN0aW9uKHsKICAgICAgICBhY3Rpb25LZXk6ICJkdXBsaWNhdGVfa2V5IiwKICAgICAgICBhY3Rpb25UeXBlOiAicGF5b3V0IiwKICAgICAgICBwYXlsb2FkOiB7IGFtb3VudDogIjEwMCIgfQogICAgICB9KTsKCiAgICAgIGNvbnN0IHNlY29uZCA9IGF3YWl0IHNlcnZpY2UuY3JlYXRlT3JHZXRPdXRib3VuZEFjdGlvbih7CiAgICAgICAgYWN0aW9uS2V5OiAiZHVwbGljYXRlX2tleSIsCiAgICAgICAgYWN0aW9uVHlwZTogInBheW91dCIsCiAgICAgICAgcGF5bG9hZDogeyBhbW91bnQ6ICIyMDAiIH0KICAgICAgfSk7CgogICAgICBleHBlY3Qoc2Vjb25kLmlkKS50b0JlKGZpcnN0LmlkKTsKICAgICAgZXhwZWN0KHNlY29uZC5wYXlsb2FkKS50b0VxdWFsKGZpcnN0LnBheWxvYWQpOwogICAgfSk7CiAgfSk7CgogIGRlc2NyaWJlKCJzdWJtaXRPdXRib3VuZEFjdGlvbiIsICgpID0+IHsKICAgIGl0KCJzdWJtaXRzIGEgcGVuZGluZyBhY3Rpb24gYW5kIG1hcmtzIGFzIHN1Ym1pdHRlZCIsIGFzeW5jICgpID0+IHsKICAgICAgYXdhaXQgc2VydmljZS5jcmVhdGVPckdldE91dGJvdW5kQWN0aW9uKHsKICAgICAgICBhY3Rpb25LZXk6ICJzdWJtaXRfdGVzdF8xIiwKICAgICAgICBhY3Rpb25UeXBlOiAicGF5b3V0IiwKICAgICAgICBwYXlsb2FkOiB7IGFtb3VudDogIjUwMCIgfQogICAgICB9KTsKCiAgICAgIGNvbnN0IHJlc3VsdCA9IGF3YWl0IHNlcnZpY2Uuc3VibWl0T3V0Ym91bmRBY3Rpb24oInN1Ym1pdF90ZXN0XzEiKTsKCiAgICAgIGV4cGVjdChyZXN1bHQubmV3bHlTdWJtaXR0ZWQpLnRvQmUodHJ1ZSk7CiAgICAgIGV4cGVjdChyZXN1bHQucmVjb3JkLnN0YXR1cykudG9CZSgic3VibWl0dGVkIik7CiAgICAgIGV4cGVjdChyZXN1bHQucmVjb3JkLnR4SGFzaCkudG9CZVRydXRoeSgpOwogICAgICBleHBlY3QocmVzdWx0LnJlY29yZC5hdHRlbXB0cykudG9CZSgxKTsKICAgICAgZXhwZWN0KHN1Ym1pdENhbGxzKS50b0hhdmVMZW5ndGgoMSk7CiAgICB9KTsKCiAgICBpdCgiZG9lcyBub3QgZG91YmxlLXN1Ym1pdCBpZiBhbHJlYWR5IHN1Ym1pdHRlZCIsIGFzeW5jICgpID0+IHsKICAgICAgYXdhaXQgc2VydmljZS5jcmVhdGVPckdldE91dGJvdW5kQWN0aW9uKHsKICAgICAgICBhY3Rpb25LZXk6ICJzdWJtaXRfdGVzdF8yIiwKICAgICAgICBhY3Rpb25UeXBlOiAicGF5b3V0IiwKICAgICAgICBwYXlsb2FkOiB7IGFtb3VudDogIjUwMCIgfQogICAgICB9KTsKCiAgICAgIGF3YWl0IHNlcnZpY2Uuc3VibWl0T3V0Ym91bmRBY3Rpb24oInN1Ym1pdF90ZXN0XzIiKTsKICAgICAgY29uc3QgcmVzdWx0ID0gYXdhaXQgc2VydmljZS5zdWJtaXRPdXRib3VuZEFjdGlvbigic3VibWl0X3Rlc3RfMiIpOwoKICAgICAgZXhwZWN0KHJlc3VsdC5uZXdseVN1Ym1pdHRlZCkudG9CZShmYWxzZSk7CiAgICAgIGV4cGVjdChzdWJtaXRDYWxscykudG9IYXZlTGVuZ3RoKDEpOwogICAgfSk7CgogICAgaXQoImNvbmZpcm1zIGFjdGlvbiBpZiBjaGFpbiByZXBvcnRzIGNvbmZpcm1lZCIsIGFzeW5jICgpID0+IHsKICAgICAgYXdhaXQgc2VydmljZS5jcmVhdGVPckdldE91dGJvdW5kQWN0aW9uKHsKICAgICAgICBhY3Rpb25LZXk6ICJzdWJtaXRfdGVzdF8zIiwKICAgICAgICBhY3Rpb25UeXBlOiAicGF5b3V0IiwKICAgICAgICBwYXlsb2FkOiB7IGFtb3VudDogIjUwMCIgfQogICAgICB9KTsKCiAgICAgIGNvbnN0IGZpcnN0U3VibWl0ID0gYXdhaXQgc2VydmljZS5zdWJtaXRPdXRib3VuZEFjdGlvbigic3VibWl0X3Rlc3RfMyIpOwogICAgICBjb25zdCB0eEhhc2ggPSBmaXJzdFN1Ym1pdC5yZWNvcmQudHhIYXNoITsKICAgICAgY2hhaW5TdGF0ZS5zZXQodHhIYXNoLCB7IGNvbmZpcm1lZDogdHJ1ZSB9KTsKCiAgICAgIGNvbnN0IHJlc3VsdCA9IGF3YWl0IHNlcnZpY2Uuc3VibWl0T3V0Ym91bmRBY3Rpb24oInN1Ym1pdF90ZXN0XzMiKTsKCiAgICAgIGV4cGVjdChyZXN1bHQucmVjb3JkLnN0YXR1cykudG9CZSgiY29uZmlybWVkIik7CiAgICAgIGV4cGVjdChyZXN1bHQucmVjb3JkLmNvbmZpcm1lZEF0KS50b0JlVHJ1dGh5KCk7CiAgICB9KTsKCiAgICBpdCgiaW5jcmVtZW50cyBhdHRlbXB0cyBvbiBzdWJtaXQgZmFpbHVyZSIsIGFzeW5jICgpID0+IHsKICAgICAgY29uc3QgZmFpbGluZ1N1Ym1pdEZuID0gYXN5bmMgKCkgPT4gewogICAgICAgIHRocm93IG5ldyBFcnJvcigiTmV0d29yayBlcnJvciIpOwogICAgICB9OwoKICAgICAgY29uc3QgZmFpbGluZ1NlcnZpY2UgPSBjcmVhdGVSZWNvbmNpbGlhdGlvblNlcnZpY2UoewogICAgICAgIHByaXNtYTogZGIucHJpc21hLAogICAgICAgIHN1Ym1pdEZuOiBmYWlsaW5nU3VibWl0Rm4sCiAgICAgICAgY2hlY2tDaGFpbkZuOiBhc3luYyAoKSA9PiAoeyBjb25maXJtZWQ6IGZhbHNlIH0pCiAgICAgIH0pOwoKICAgICAgYXdhaXQgZmFpbGluZ1NlcnZpY2UuY3JlYXRlT3JHZXRPdXRib3VuZEFjdGlvbih7CiAgICAgICAgYWN0aW9uS2V5OiAiZmFpbF90ZXN0XzEiLAogICAgICAgIGFjdGlvblR5cGU6ICJwYXlvdXQiLAogICAgICAgIHBheWxvYWQ6IHsgYW1vdW50OiAiMTAwIiB9LAogICAgICAgIG1heEF0dGVtcHRzOiAzCiAgICAgIH0pOwoKICAgICAgY29uc3QgcmVzdWx0ID0gYXdhaXQgZmFpbGluZ1NlcnZpY2Uuc3VibWl0T3V0Ym91bmRBY3Rpb24oImZhaWxfdGVzdF8xIik7CiAgICAgIGV4cGVjdChyZXN1bHQubmV3bHlTdWJtaXR0ZWQpLnRvQmUoZmFsc2UpOwogICAgICBleHBlY3QocmVzdWx0LnJlY29yZC5zdGF0dXMpLnRvQmUoImZhaWxlZCIpOwoKICAgICAgY29uc3QgcmVjb3JkID0gYXdhaXQgZmFpbGluZ1NlcnZpY2UuZ2V0T3V0Ym91bmRBY3Rpb24oImZhaWxfdGVzdF8xIik7CiAgICAgIGV4cGVjdChyZWNvcmQ/LmF0dGVtcHRzKS50b0JlKDEpOwogICAgICBleHBlY3QocmVjb3JkPy5zdGF0dXMpLnRvQmUoImZhaWxlZCIpOwogICAgICBleHBlY3QocmVjb3JkPy5lcnJvckNvZGUpLnRvQmUoIlNFVFRMRU1FTlRfU1VCTUlUX0ZBSUxFRCIpOwogICAgfSk7CgogICAgaXQuc2tpcCgidGhyb3dzIHdoZW4gbWF4IGF0dGVtcHRzIGV4Y2VlZGVkIiwgYXN5bmMgKCkgPT4gewogICAgICBjb25zdCBmYWlsaW5nU3VibWl0Rm4gPSBhc3luYyAoKSA9PiB7CiAgICAgICAgdGhyb3cgbmV3IEVycm9yKCJOZXR3b3JrIGVycm9yIik7CiAgICAgIH07CgogICAgICBjb25zdCBmYWlsaW5nU2VydmljZSA9IGNyZWF0ZVJlY29uY2lsaWF0aW9uU2VydmljZSh7CiAgICAgICAgcHJpc21hOiBkYi5wcmlzbWEsCiAgICAgICAgc3VibWl0Rm46IGZhaWxpbmdTdWJtaXRGbiwKICAgICAgICBjaGVja0NoYWluRm46IGFzeW5jICgpID0+ICh7IGNvbmZpcm1lZDogZmFsc2UgfSkKICAgICAgfSk7CgogICAgICBhd2FpdCBmYWlsaW5nU2VydmljZS5jcmVhdGVPckdldE91dGJvdW5kQWN0aW9uKHsKICAgICAgICBhY3Rpb25LZXk6ICJmYWlsX3Rlc3RfMiIsCiAgICAgICAgYWN0aW9uVHlwZTogInBheW91dCIsCiAgICAgICAgcGF5bG9hZDogeyBhbW91bnQ6ICIxMDAiIH0sCiAgICAgICAgbWF4QXR0ZW1wdHM6IDIKICAgICAgfSk7CgogICAgICBhd2FpdCBmYWlsaW5nU2VydmljZS5zdWJtaXRPdXRib3VuZEFjdGlvbigiZmFpbF90ZXN0XzIiKTsKICAgICAgYXdhaXQgZmFpbGluZ1NlcnZpY2Uuc3VibWl0T3V0Ym91bmRBY3Rpb24oImZhaWxfdGVzdF8yIik7CgogICAgICAvLyBWZXJpZnkgdGhhdCB0aGUgZnVuY3Rpb24gdGhyb3dzIGJ5IGNoZWNraW5nIHRoZSBlcnJvciBtZXNzYWdlIGluIHRoZSBwcm9taXNlIHJlamVjdGlvbgogICAgICBjb25zdCByZXN1bHQgPSBhd2FpdCBmYWlsaW5nU2VydmljZS5zdWJtaXRPdXRib3VuZEFjdGlvbigiZmFpbF90ZXN0XzIiKQogICAgICAgIC50aGVuKAogICAgICAgICAgKCkgPT4gKHsgc3VjY2VzczogdHJ1ZSBhcyBjb25zdCB9KSwKICAgICAgICAgIChlcnI6IEVycm9yKSA9PiAoeyBzdWNjZXNzOiBmYWxzZSBhcyBjb25zdCwgZXJyb3I6IGVyciB9KQogICAgICAgICk7CiAgICAgIAogICAgICBleHBlY3QocmVzdWx0LnN1Y2Nlc3MpLnRvQmUoZmFsc2UpOwogICAgICBleHBlY3QocmVzdWx0LmVycm9yKS50b0JlSW5zdGFuY2VPZihFcnJvcik7CiAgICAgIGV4cGVjdChyZXN1bHQuZXJyb3IubWVzc2FnZSkudG9Db250YWluKCJNYXggYXR0ZW1wdHMgKDIpIGV4Y2VlZGVkIik7CiAgICB9KTsKICB9KTsKCiAgZGVzY3JpYmUoInJlY29uY2lsZU91dGJvdW5kQWN0aW9uIiwgKCkgPT4gewogICAgaXQoImNvbmZpcm1zIGFjdGlvbiB3aGVuIGNoYWluIGNvbmZpcm1zIiwgYXN5bmMgKCkgPT4gewogICAgICBhd2FpdCBzZXJ2aWNlLmNyZWF0ZU9yR2V0T3V0Ym91bmRBY3Rpb24oewogICAgICAgIGFjdGlvbktleTogInJlY29uY2lsZV8xIiwKICAgICAgICBhY3Rpb25UeXBlOiAicGF5b3V0IiwKICAgICAgICBwYXlsb2FkOiB7IGFtb3VudDogIjEwMCIgfQogICAgICB9KTsKCiAgICAgIGNvbnN0IHN1Ym1pdFJlc3VsdCA9IGF3YWl0IHNlcnZpY2Uuc3VibWl0T3V0Ym91bmRBY3Rpb24oInJlY29uY2lsZV8xIik7CiAgICAgIGNvbnN0IHR4SGFzaCA9IHN1Ym1pdFJlc3VsdC5yZWNvcmQudHhIYXNoITsKICAgICAgY2hhaW5TdGF0ZS5zZXQodHhIYXNoLCB7IGNvbmZpcm1lZDogdHJ1ZSB9KTsKCiAgICAgIGNvbnN0IHJlY29uY2lsZWQgPSBhd2FpdCBzZXJ2aWNlLnJlY29uY2lsZU91dGJvdW5kQWN0aW9uKCJyZWNvbmNpbGVfMSIpOwoKICAgICAgZXhwZWN0KHJlY29uY2lsZWQ/LnN0YXR1cykudG9CZSgiY29uZmlybWVkIik7CiAgICAgIGV4cGVjdChyZWNvbmNpbGVkPy5jb25maXJtZWRBdCkudG9CZVRydXRoeSgpOwogICAgfSk7CgogICAgaXQoIm1hcmtzIGZhaWxlZCB3aGVuIGNoYWluIHJlcG9ydHMgZXJyb3IiLCBhc3luYyAoKSA9PiB7CiAgICAgIGF3YWl0IHNlcnZpY2UuY3JlYXRlT3JHZXRPdXRib3VuZEFjdGlvbih7CiAgICAgICAgYWN0aW9uS2V5OiAicmVjb25jaWxlXzIiLAogICAgICAgIGFjdGlvblR5cGU6ICJwYXlvdXQiLAogICAgICAgIHBheWxvYWQ6IHsgYW1vdW50OiAiMTAwIiB9CiAgICAgIH0pOwoKICAgICAgY29uc3Qgc3VibWl0UmVzdWx0ID0gYXdhaXQgc2VydmljZS5zdWJtaXRPdXRib3VuZEFjdGlvbigicmVjb25jaWxlXzIiKTsKICAgICAgY29uc3QgdHhIYXNoID0gc3VibWl0UmVzdWx0LnJlY29yZC50eEhhc2ghOwogICAgICBjaGFpblN0YXRlLnNldCh0eEhhc2gsIHsgY29uZmlybWVkOiBmYWxzZSwgZXJyb3JDb2RlOiAiUkVWRVJURURfT05fQ0hBSU4iLCBlcnJvckRldGFpbDogIkluc3VmZmljaWVudCBiYWxhbmNlIiB9KTsKCiAgICAgIGNvbnN0IHJlY29uY2lsZWQgPSBhd2FpdCBzZXJ2aWNlLnJlY29uY2lsZU91dGJvdW5kQWN0aW9uKCJyZWNvbmNpbGVfMiIpOwoKICAgICAgZXhwZWN0KHJlY29uY2lsZWQ/LnN0YXR1cykudG9CZSgiZmFpbGVkIik7CiAgICAgIGV4cGVjdChyZWNvbmNpbGVkPy5lcnJvckNvZGUpLnRvQmUoIlJFVkVSVEVEX09OX0NIQUlOIik7CiAgICB9KTsKCiAgICBpdCgicmV0dXJucyBudWxsIGZvciBub24tZXhpc3RlbnQgYWN0aW9uIiwgYXN5bmMgKCkgPT4gewogICAgICBjb25zdCByZXN1bHQgPSBhd2FpdCBzZXJ2aWNlLnJlY29uY2lsZU91dGJvdW5kQWN0aW9uKCJub25fZXhpc3RlbnQiKTsKICAgICAgZXhwZWN0KHJlc3VsdCkudG9CZU51bGwoKTsKICAgIH0pOwogIH0pOwoKICBkZXNjcmliZSgicmV0cnlGYWlsZWRBY3Rpb24iLCAoKSA9PiB7CiAgICBpdCgicmV0cmllcyBhIGZhaWxlZCBhY3Rpb24iLCBhc3luYyAoKSA9PiB7CiAgICAgIGNvbnN0IGZhaWxPbmNlU3VibWl0Rm4gPSBhc3luYyAocGF5bG9hZDogUmVjb3JkPHN0cmluZywgdW5rbm93bj4pID0+IHsKICAgICAgICBpZiAoc3VibWl0Q2FsbHMubGVuZ3RoID09PSAwKSB7CiAgICAgICAgICBzdWJtaXRDYWxscy5wdXNoKHsgcGF5bG9hZCB9KTsKICAgICAgICAgIHRocm93IG5ldyBFcnJvcigiVGVtcG9yYXJ5IGZhaWx1cmUiKTsKICAgICAgICB9CiAgICAgICAgc3VibWl0Q2FsbHMucHVzaCh7IHBheWxvYWQgfSk7CiAgICAgICAgY29uc3QgdHhIYXNoID0gYHR4X3JldHJ5XyR7RGF0ZS5ub3coKX1gOwogICAgICAgIGNoYWluU3RhdGUuc2V0KHR4SGFzaCwgeyBjb25maXJtZWQ6IHRydWUgfSk7CiAgICAgICAgcmV0dXJuIHsgdHhIYXNoIH07CiAgICAgIH07CgogICAgICBjb25zdCByZXRyeVNlcnZpY2UgPSBjcmVhdGVSZWNvbmNpbGlhdGlvblNlcnZpY2UoewogICAgICAgIHByaXNtYTogZGIucHJpc21hLAogICAgICAgIHN1Ym1pdEZuOiBmYWlsT25jZVN1Ym1pdEZuLAogICAgICAgIGNoZWNrQ2hhaW5GbjogYXN5bmMgKHR4SGFzaCkgPT4gY2hhaW5TdGF0ZS5nZXQodHhIYXNoKSA/PyB7IGNvbmZpcm1lZDogZmFsc2UgfQogICAgICB9KTsKCiAgICAgIGF3YWl0IHJldHJ5U2VydmljZS5jcmVhdGVPckdldE91dGJvdW5kQWN0aW9uKHsKICAgICAgICBhY3Rpb25LZXk6ICJyZXRyeV90ZXN0XzEiLAogICAgICAgIGFjdGlvblR5cGU6ICJwYXlvdXQiLAogICAgICAgIHBheWxvYWQ6IHsgYW1vdW50OiAiMTAwIiB9LAogICAgICAgIG1heEF0dGVtcHRzOiAzCiAgICAgIH0pOwoKICAgICAgY29uc3QgZmlyc3RSZXN1bHQgPSBhd2FpdCByZXRyeVNlcnZpY2Uuc3VibWl0T3V0Ym91bmRBY3Rpb24oInJldHJ5X3Rlc3RfMSIpOwogICAgICBleHBlY3QoZmlyc3RSZXN1bHQubmV3bHlTdWJtaXR0ZWQpLnRvQmUoZmFsc2UpOwogICAgICBleHBlY3QoZmlyc3RSZXN1bHQucmVjb3JkLnN0YXR1cykudG9CZSgiZmFpbGVkIik7CgogICAgICBsZXQgcmVjb3JkID0gYXdhaXQgcmV0cnlTZXJ2aWNlLmdldE91dGJvdW5kQWN0aW9uKCJyZXRyeV90ZXN0XzEiKTsKICAgICAgZXhwZWN0KHJlY29yZD8uc3RhdHVzKS50b0JlKCJmYWlsZWQiKTsKCiAgICAgIGNvbnN0IHJldHJ5UmVzdWx0ID0gYXdhaXQgcmV0cnlTZXJ2aWNlLnJldHJ5RmFpbGVkQWN0aW9uKCJyZXRyeV90ZXN0XzEiKTsKCiAgICAgIGV4cGVjdChyZXRyeVJlc3VsdC5uZXdseVN1Ym1pdHRlZCkudG9CZS h0cnVlKTsKICAgICAgZXhwZWN0KHJldHJ5UmVzdWx0LnJlY29yZC5zdGF0dXMpLnRvQmUoImNvbmZpcm1lZCIpOwogICAgfSk7CgogICAgaXQoInRocm93cyB3aGVuIHJldHJ5aW5nIG5vbi1mYWlsZWQgYWN0aW9uIiwgYXN5bmMgKCkgPT4gewogICAgICBhd2FpdCBzZXJ2aWNlLmNyZWF0ZU9yR2V0T3V0Ym91bmRBY3Rpb24oewogICAgICAgIGFjdGlvbktleTogInJldHJ5X3Rlc3RfMiIsCiAgICAgICAgYWN0aW9uVHlwZTogInBheW91dCIsCiAgICAgICAgcGF5bG9hZDogeyBhbW91bnQ6ICIxMDAiIH0KICAgICAgfSk7CgogICAgICBhd2FpdCBzZXJ2aWNlLnN1Ym1pdE91dGJvdW5kQWN0aW9uKCJyZXRyeV90ZXN0XzIiKTsKCiAgICAgIGF3YWl0IGV4cGVjdChzZXJ2aWNlLnJldHJ5RmFpbGVkQWN0aW9uKCJyZXRyeV90ZXN0XzIiKSkucmVqZWN0cy50b1Rocm93KCJub3QgaW4gZmFpbGVkIHN0YXRlIik7CiAgICB9KTsKICB9KTsKCiAgZGVzY3JpYmUoImdldE91dGJvdW5kQWN0aW9uIC8gbGlzdE91dGJvdW5kQWN0aW9ucyIsICgpID0+IHsKICAgIGl0KCJnZXRzIGFjdGlvbiBieSBrZXkiLCBhc3luYyAoKSA9PiB7CiAgICAgIGF3YWl0IHNlcnZpY2UuY3JlYXRlT3JHZXRPdXRib3VuZEFjdGlvbih7CiAgICAgICAgYWN0aW9uS2V5OiAiZ2V0X3Rlc3RfMSIsCiAgICAgICAgYWN0aW9uVHlwZTogInBheW91dCIsCiAgICAgICAgcGF5bG9hZDogeyBhbW91bnQ6ICIxMDAiIH0KICAgICAgfSk7CgogICAgICBjb25zdCByZWNvcmQgPSBhd2FpdCBzZXJ2aWNlLmdldE91dGJvdW5kQWN0aW9uKCJnZXRfdGVzdF8xIik7CiAgICAgIGV4cGVjdChyZWNvcmQpLnRvQmVUcnV0aHkoKTsKICAgICAgZXhwZWN0KHJlY29yZD8uYWN0aW9uS2V5KS50b0JlKCJnZXRfdGVzdF8xIik7CiAgICB9KTsKCiAgICBpdCgibGlzdHMgYWN0aW9ucyB3aXRoIHBhZ2luYXRpb24iLCBhc3luYyAoKSA9PiB7CiAgICAgIGZvciAobGV0IGkgPSAwOyBpIDwgNTsgaSsrKSB7CiAgICAgICAgYXdhaXQgc2VydmljZS5jcmVhdGVPckdldE91dGJvdW5kQWN0aW9uKHsKICAgICAgICAgIGFjdGlvbktleTogYGxpc3RfdGVzdF8ke2l9YCwKICAgICAgICAgIGFjdGlvblR5cGU6ICJwYXlvdXQiLAogICAgICAgICAgcGF5bG9hZDogeyBpbmRleDogaSB9CiAgICAgICAgfSk7CiAgICAgICAgLy8gU21hbGwgZGVsYXkgdG8gZW5zdXJlIGRpZmZlcmVudCBjcmVhdGVkQXQgdGltZXN0YW1wcyBmb3Igb3JkZXJpbmcKICAgICAgICBhd2FpdCBuZXcgUHJvbWlzZShyID0+IHNldFRpbWVvdXQociwgMTApKTsKICAgICAgfQoKICAgICAgY29uc3QgZmlyc3QgPSBhd2FpdCBzZXJ2aWNlLmxpc3RPdXRib3VuZEFjdGlvbnMoeyBsaW1pdDogMiB9KTsKICAgICAgZXhwZWN0KGZpcnN0Lml0ZW1zKS50b0hhdmVMZW5ndGgoMik7CiAgICAgIGV4cGVjdChmaXJzdC5uZXh0Q3Vyc29yKS50b0JlVHJ1dGh5KCk7CgogICAgICBjb25zdCBzZWNvbmQgPSBhd2FpdCBzZXJ2aWNlLmxpc3RPdXRib3VuZEFjdGlvbnMoeyBsaW1pdDogMiwgY3Vyc29yOiBmaXJzdC5uZXh0Q3Vyc29yISB9KTsKICAgICAgZXhwZWN0KHNlY29uZC5pdGVtcy5sZW5ndGgpLnRvQmVHcmVhdGVyVGhhbk9yRXF1YWwoMSk7CiAgICAgIGV4cGVjdChzZWNvbmQubmV4dEN1cnNvcikudG9CZVRydXRoeSgpOwoKICAgICAgY29uc3QgdGhpcmQgPSBhd2FpdCBzZXJ2aWNlLmxpc3RPdXRib3VuZEFjdGlvbnMoeyBsaW1pdDogMiwgY3Vyc29yOiBzZWNvbmQubmV4dEN1cnNvciEgfSk7CiAgICAgIGV4cGVjdCh0aGlyZC5pdGVtcy5sZW5ndGgpLnRvQmVHcmVhdGVyVGhhbk9yRXF1YWwoMSk7CiAgICB9KTsKICB9KTsKCiAgZGVzY3JpYmUoIkNvbmN1cnJlbnQgc3VibWlzc2lvbiBwcmV2ZW50aW9uIiwgKCkgPT4gewogICAgaXQoInByZXZlbnRzIGRvdWJsZSBzdWJtaXNzaW9uIHVuZGVyIGNvbmN1cnJlbnQgY2FsbHMiLCBhc3luYyAoKSA9PiB7CiAgICAgIGF3YWl0IHNlcnZpY2UuY3JlYXRlT3JHZXRPdXRib3VuZEFjdGlvbih7CiAgICAgICAgYWN0aW9uS2V5OiAiY29uY3VycmVudF90ZXN0IiwKICAgICAgICBhY3Rpb25UeXBlOiAicGF5b3V0IiwKICAgICAgICBwYXlsb2FkOiB7IGFtb3VudDogIjEwMDAiIH0KICAgICAgfSk7CgogICAgICBjb25zdCByZXN1bHRzID0gYXdhaXQgUHJvbWlzZS5hbGwoWwogICAgICAgIHNlcnZpY2Uuc3VibWl0T3V0Ym91bmRBY3Rpb24oImNvbmN1cnJlbnRfdGVzdCIpLAogICAgICAgIHNlcnZpY2Uuc3VibWl0T3V0Ym91bmRBY3Rpb24oImNvbmN1cnJlbnRfdGVzdCIpLAogICAgICAgIHNlcnZpY2Uuc3VibWl0T3V0Ym91bmRBY3Rpb24oImNvbmN1cnJlbnRfdGVzdCIpCiAgICAgIF0pOwoKICAgICAgY29uc3Qgc3VibWl0dGVkQ291bnQgPSByZXN1bHRzLmZpbHRlcihyID0+IHIubmV3bHlTdWJtaXR0ZWQpLmxlbmd0aDsKICAgICAgZXhwZWN0KHN1Ym1pdHRlZENvdW50KS50b0JlKDEpOwogICAgICBleHBlY3Qoc3VibWl0Q2FsbHMpLnRvSGF2ZUxlbmd0aCgxKTsKICAgIH0pOwogIH0pOwoKICBkZXNjcmliZSgiQ3Jhc2ggcmVjb3Zlcnkgc2ltdWxhdGlvbiIsICgpID0+IHsKICAgIGl0KCJyZWNvdmVycyBmcm9tIGNyYXNoIGFmdGVyIHN1Ym1pdCBidXQgYmVmb3JlIHJlc3BvbnNlIiwgYXN5bmMgKCkgPT4gewogICAgICBhd2FpdCBzZXJ2aWNlLmNyZWF0ZU9yR2V0T3V0Ym91bmRBY3Rpb24oewogICAgICAgIGFjdGlvbktleTogImNyYXNoX3JlY292ZXJ5XzEiLAogICAgICAgIGFjdGlvblR5cGU6ICJwYXlvdXQiLAogICAgICAgIHBheWxvYWQ6IHsgYW1vdW50OiAiNTAwIiB9CiAgICAgIH0pOwoKICAgICAgY29uc3QgZmlyc3RTdWJtaXQgPSBhd2FpdCBzZXJ2aWNlLnN1Ym1pdE91dGJvdW5kQWN0aW9uKCJjcmFzaF9yZWNvdmVyeV8xIik7CiAgICAgIGNvbnN0IHR4SGFzaCA9IGZpcnN0U3VibWl0LnJlY29yZC50eEhhc2ghOwoKICAgICAgLy8gU2ltdWxhdGUgY3Jhc2g6IG5ldyBzZXJ2aWNlIGluc3RhbmNlCiAgICAgIGNvbnN0IG5ld1NlcnZpY2UgPSBjcmVhdGVSZWNvbmNpbGlhdGlvblNlcnZpY2UoewogICAgICAgIHByaXNtYTogZGIucHJpc21hLAogICAgICAgIHN1Ym1pdEZuOiBhc3luYyAoKSA9PiB7IHRocm93IG5ldyBFcnJvcigic2hvdWxkIG5vdCByZXN1Ym1pdCIpOyB9LAogICAgICAgIGNoZWNrQ2hhaW5GbjogYXN5bmMgKHR4KSA9PiB0eCA9PT0gdHhIYXNoID8geyBjb25maXJtZWQ6IHRydWUgfSA6IHsgY29uZmlybWVkOiBmYWxzZSB9CiAgICAgIH0pOwoKICAgICAgY29uc3QgcmVjb3ZlcmVkID0gYXdhaXQgbmV3U2VydmljZS5yZWNvbmNpbGVPdXRib3VuZEFjdGlvbigiY3Jhc2hfcmVjb3ZlcnlfMSIpOwogICAgICBleHBlY3QocmVjb3ZlcmVkPy5zdGF0dXMpLnRvQmUoImNvbmZpcm1lZCIpOwogICAgICBleHBlY3QocmVjb3ZlcmVkPy50eEhhc2gpLnRvQmUodHhIYXNoKTsKICAgIH0pOwogIH0pOwoKICBkZXNjcmliZSgiUmVwYWlyIGNvbW1hbmQiLCAoKSA9PiB7CiAgICBpdCgicGVyZm9ybXMgbm8gd3JpdGVzIGluIGRyeS1ydW4gbW9kZSIsIGFzeW5jICgpID0+IHsKICAgICAgYXdhaXQgc2VydmljZS5jcmVhdGVPckdldE91dGJvdW5kQWN0aW9uKHsKICAgICAgICBhY3Rpb25LZXk6ICJyZXBhaXJfZHJ5XzEiLAogICAgICAgIGFjdGlvblR5cGU6ICJwYXlvdXQiLAogICAgICAgIHBheWxvYWQ6IHsgYW1vdW50OiAiMTAwIiB9CiAgICAgIH0pOwoKICAgICAgY29uc3QgYmVmb3JlID0gYXdhaXQgc2VydmljZS5nZXRPdXRib3VuZEFjdGlvbigicmVwYWlyX2RyeV8xIik7CiAgICAgIGNvbnN0IHJlcG9ydCA9IGF3YWl0IHNlcnZpY2UucmVwYWlyQWN0aW9ucyh7IG1vZGU6ICJkcnktcnVuIiB9KTsKICAgICAgY29uc3QgYWZ0ZXIgPSBhd2FpdCBzZXJ2aWNlLmdldE91dGJvdW5kQWN0aW9uKCJyZXBhaXJfZHJ5XzEiKTsKCiAgICAgIGV4cGVjdChyZXBvcnQubW9kZSkudG9CZSgiZHJ5LXJ1biIpOwogICAgICBleHBlY3QocmVwb3J0LmFwcGxpZWQpLnRvQmUoZmFsc2UpOwogICAgICBleHBlY3QoYWZ0ZXIpLnRvRXF1YWwoYmVmb3JlKTsKICAgIH0pOwoKICAgIGl0KCJhcHBsaWVzIHJlcGFpcnMgaW4gYXBwbHkgbW9kZSBhbmQgd3JpdGVzIGF1ZGl0IHJlY29yZHMiLCBhc3luYyAoKSA9PiB7CiAgICAgIGF3YWl0IHNlcnZpY2UuY3JlYXRlT3JHZXRPdXRib3VuZEFjdGlvbiggewogICAgICAgIGFjdGlvbktleTogInJlcGFpcl9hcHBseV8xIiwKICAgICAgICBhY3Rpb25UeXBlOiAicGF5b3V0IiwKICAgICAgICBwYXlsb2FkOiB7IGFtb3VudDogIjEwMCIgfQogICAgICB9KTsKCiAgICAgIC8vIEZvcmNlIGFuIGluY29uc2lzdGVudCBzdGF0ZTogc3VibWl0dGVkIHdpdGggbm8gdHhIYXNoCiAgICAgIGF3YWl0IGRiLnByaXNtYS5vdXRib3VuZEFjdGlvbi51cGRhdGUoewogICAgICAgIHdoZXJlOiB7IGFjdGlvbktleTogInJlcGFpcl9hcHBseV8xIiB9LAogICAgICAgIGRhdGE6IHsgc3RhdHVzOiAic3VibWl0dGVkIiwgdHhIYXNoOiBudWxsIH0KICAgICAgfSk7CgogICAgICBjb25zdCByZXBvcnQgPSBhd2FpdCBzZXJ2aWNlLnJlcGFpckFjdGlvbnMoeyBtb2RlOiAiYXBwbHkiIH0pOwogICAgICBleHBlY3QocmVwb3J0Lm1vZGUpLnRvQmUoImFwcGx5Iik7CiAgICAgIGV4cGVjdChyZXBvcnQuYXBwbGllZCkudG9CZSh0cnVlKTsKICAgICAgZXhwZWN0KHJlcG9ydC5yZXBhaXJlZCkudG9CZ3JlYXRlclRoYW5PckVxdWFsKDEpOwoKICAgICAgY29uc3QgcmVjb3JkID0gYXdhaXQgc2VydmljZS5nZXRPdXRib3VuZEFjdGlvbigicmVwYWlyX2FwcGx5XzEiKTsKICAgICAgZXhwZWN0KHJlY29yZD8uc3RhdHVzKS50b0JlKCJwZW5kaW5nIik7CiAgICAgIGV4cGVjdChyZWNvcmQ/LnR4SGFzaCkudG9CZU51bGwoKTsKCiAgICAgIGNvbnN0IGF1ZGl0UmVjb3JkcyA9IGF3YWl0IGRiLnByaXNtYS5yZXBhaXJBdWRpdC5maW5kTWFueSh7IHdoZXJlOiB7IGFjdGlvbktleTogInJlcGFpcl9hcHBseV8xIiB9IH0pOwogICAgICBleHBlY3QoYXVkaXRSZWNvcmRzLmxlbmd0aCkudG9CZ3JlYXRlclRoYW5PckVxdWFsKDEpOwogICAgICBleHBlY3QoYXVkaXRSZWNvcmRzWzBdLm1vZGUpLnRvQmUoImFwcGx5Iik7CiAgICB9KTsKCiAgICBpdCgicmVwb3J0cyBuby1vcCB3aGVuIG5vIGluY29uc2lzdGVuY2llcyBleGlzdCIsIGFzeW5jICgpID0+IHsKICAgICAgYXdhaXQgc2VydmljZS5jcmVhdGVPckdldE91dGJvdW5kQWN0aW9uKHsKICAgICAgICBhY3Rpb25LZXk6ICJyZXBhaXJfbm9vcF8xIiwKICAgICAgICBhY3Rpb25UeXBlOiAicGF5b3V0IiwKICAgICAgICBwYXlsb2FkOiB7IGFtb3VudDogIjEwMCIgfQogICAgICB9KTsKCiAgICAgIGNvbnN0IHJlcG9ydCA9IGF3YWl0IHNlcnZpY2UucmVwYWlyQWN0aW9ucyh7IG1vZGU6ICJkcnktcnVuIiB9KTsKICAgICAgZXhwZWN0KHJlcG9ydC5yZXBhaXJlZCkudG9CZSgwKTsKICAgICAgZXhwZWN0KHJlcG9ydC5jYW5kaWRhdGVzKS50b0hhdmVMZW5ndGgoMCk7CiAgICB9KTsKCiAgICBpdCgidGhyb3dzIG9uIGludmFsaWQgdGFyZ2V0IiwgYXN5bmMgKCkgPT4gewogICAgICBhd2FpdCBleHBlY3Qoc2VydmljZS5yZXBhaXJBY3Rpb25zKHsgbW9kZTogImFwcGx5IiwgdGFyZ2V0QWN0aW9uS2V5OiAibWlzc2luZ19rZXkiIH0pKS5yZWplY3RzLnRvVGhyb3coImludmFsaWQgdGFyZ2V0Iik7CiAgICB9KTsKCiAgICBpdCgicmVwYWlycyBvbmx5IHRhcmdldGVkIHJlY29yZHMiLCBhc3luYyAoKSA9PiB7CiAgICAgIGF3YWl0IHNlcnZpY2UuY3JlYXRlT3JHZXRPdXRib3VuZEFjdGlvbiggewogICAgICAgIGFjdGlvbktleTogInJlcGFpcl90YXJnZXRfMSIsCiAgICAgICAgYWN0aW9uVHlwZTogInBheW91dCIsCiAgICAgICAgcGF5bG9hZDogeyBhbW91bnQ6ICIxMDAiIH0KICAgICAgfSk7CiAgICAgIGF3YWl0IHNlcnZpY2UuY3JlYXRlT3JHZXRPdXRib3VuZEFjdGlvbiggewogICAgICAgIGFjdGlvbktleTogInJlcGFpcl90YXJnZXRfMiIsCiAgICAgICAgYWN0aW9uVHlwZTogInBheW91dCIsCiAgICAgICAgcGF5bG9hZDogeyBhbW91bnQ6ICIyMDAiIH0KICAgICAgfSk7CgogICAgICBhd2FpdCBkYi5wcmlzbWEub3V0Ym91bmRBY3Rpb24udXBkYXRlKHsKICAgICAgICB3aGVyZTogeyBhY3Rpb25LZXk6ICJyZXBhaXJfdGFyZ2V0XzEiIH0sCiAgICAgICAgZGF0YTogeyBzdGF0dXM6ICJzdWJtaXR0ZWQiLCB0eEhhc2g6IG51bGwgfQogICAgICB9KTsKICAgICAgYXdhaXQgZGIucHJpc21hLm91dGJvdW5kQWN0aW9uLnVwZGF0ZSh7CiAgICAgICAgd2hlcmU6IHsgYWN0aW9uS2V5OiAicmVwYWlyX3RhcmdldF8yIiB9LAogICAgICAgIGRhdGE6IHsgc3RhdHVzOiAic3VibWl0dGVkIiwgdHhIYXNoOiBudWxsIH0KICAgICAgfSk7CgogICAgICBjb25zdCByZXBvcnQgPSBhd2FpdCBzZXJ2aWNlLnJlcGFpckFjdGlvbnMoeyBtb2RlOiAiYXBwbHkiLCB0YXJnZXRBY3Rpb25LZXk6ICJyZXBhaXJfdGFyZ2V0XzEiIH0pOwogICAgICBleHBlY3QocmVwb3J0LnJlcGFpcmVkKS50b0JlKDEpOwoKICAgICAgY29uc3Qgb25lID0gYXdhaXQgc2VydmljZS5nZXRPdXRib3VuZEFjdGlvbigicmVwYWlyX3RhcmdldF8xIik7CiAgICAgIGNvbnN0IHR3byA9IGF3YWl0IHNlcnZpY2UuZ2V0T3V0Ym91bmRBY3Rpb24oInJlcGFpcl90YXJnZXRfMiIpOwogICAgICBleHBlY3Qob25lPy5zdGF0dXMpLnRvQmUoInBlbmRpbmciKTsKICAgICAgZXhwZWN0KHR3bz8uc3RhdHVzKS50b0JlKCJzdWJtaXR0ZWQiKTsKICAgIH0pOwogIH0pOwp9KQo=
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { startTestDb, resetDb, type TestDb } from "./helpers/db.js";
+import { ReconciliationService, createReconciliationService, type OutboundActionRecord } from "../src/services/reconciler.js";
+
+describe("ReconciliationService", () => {
+  let db: TestDb;
+  let service: ReconciliationService;
+  let submitCalls: Array<{ payload: Record<string, unknown> }> = [];
+  let chainState: Map<string, { confirmed: boolean; errorCode?: string; errorDetail?: string }> = new Map();
+
+  beforeAll(async () => {
+    db = await startTestDb();
+  });
+
+  afterAll(async () => {
+    await db.stop();
+  });
+
+  beforeEach(async () => {
+    await resetDb(db.prisma);
+    submitCalls = [];
+    chainState.clear();
+
+    const submitFn = async (payload: Record<string, unknown>) => {
+      submitCalls.push({ payload });
+      const txHash = `tx_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      chainState.set(txHash, { confirmed: false });
+      return { txHash };
+    };
+
+    const checkChainFn = async (txHash: string) => {
+      return chainState.get(txHash) ?? { confirmed: false };
+    };
+
+    service = createReconciliationService({
+      prisma: db.prisma,
+      submitFn,
+      checkChainFn
+    });
+  });
+
+  describe("createOrGetOutboundAction", () => {
+    it("creates a new outbound action", async () => {
+      const record = await service.createOrGetOutboundAction({
+        actionKey: "payout_vault_1",
+        actionType: "payout",
+        payload: { vaultId: "1", amount: "1000", recipient: "GRECIPIENT" }
+      });
+
+      expect(record.actionKey).toBe("payout_vault_1");
+      expect(record.actionType).toBe("payout");
+      expect(record.status).toBe("pending");
+      expect(record.attempts).toBe(0);
+      expect(record.txHash).toBeNull();
+    });
+
+    it("returns existing action on duplicate key", async () => {
+      const first = await service.createOrGetOutboundAction({
+        actionKey: "duplicate_key",
+        actionType: "payout",
+        payload: { amount: "100" }
+      });
+
+      const second = await service.createOrGetOutboundAction({
+        actionKey: "duplicate_key",
+        actionType: "payout",
+        payload: { amount: "200" }
+      });
+
+      expect(second.id).toBe(first.id);
+      expect(second.payload).toEqual(first.payload);
+    });
+  });
+
+  describe("submitOutboundAction", () => {
+    it("submits a pending action and marks as submitted", async () => {
+      await service.createOrGetOutboundAction({
+        actionKey: "submit_test_1",
+        actionType: "payout",
+        payload: { amount: "500" }
+      });
+
+      const result = await service.submitOutboundAction("submit_test_1");
+
+      expect(result.newlySubmitted).toBe(true);
+      expect(result.record.status).toBe("submitted");
+      expect(result.record.txHash).toBeTruthy();
+      expect(result.record.attempts).toBe(1);
+      expect(submitCalls).toHaveLength(1);
+    });
+
+    it("does not double-submit if already submitted", async () => {
+      await service.createOrGetOutboundAction({
+        actionKey: "submit_test_2",
+        actionType: "payout",
+        payload: { amount: "500" }
+      });
+
+      await service.submitOutboundAction("submit_test_2");
+      const result = await service.submitOutboundAction("submit_test_2");
+
+      expect(result.newlySubmitted).toBe(false);
+      expect(submitCalls).toHaveLength(1);
+    });
+
+    it("confirms action if chain reports confirmed", async () => {
+      await service.createOrGetOutboundAction({
+        actionKey: "submit_test_3",
+        actionType: "payout",
+        payload: { amount: "500" }
+      });
+
+      const firstSubmit = await service.submitOutboundAction("submit_test_3");
+      const txHash = firstSubmit.record.txHash!;
+      chainState.set(txHash, { confirmed: true });
+
+      const result = await service.submitOutboundAction("submit_test_3");
+
+      expect(result.record.status).toBe("confirmed");
+      expect(result.record.confirmedAt).toBeTruthy();
+    });
+
+    it("increments attempts on submit failure", async () => {
+      const failingSubmitFn = async () => {
+        throw new Error("Network error");
+      };
+
+      const failingService = createReconciliationService({
+        prisma: db.prisma,
+        submitFn: failingSubmitFn,
+        checkChainFn: async () => ({ confirmed: false })
+      });
+
+      await failingService.createOrGetOutboundAction({
+        actionKey: "fail_test_1",
+        actionType: "payout",
+        payload: { amount: "100" },
+        maxAttempts: 3
+      });
+
+      const result = await failingService.submitOutboundAction("fail_test_1");
+      expect(result.newlySubmitted).toBe(false);
+      expect(result.record.status).toBe("failed");
+
+      const record = await failingService.getOutboundAction("fail_test_1");
+      expect(record?.attempts).toBe(1);
+      expect(record?.status).toBe("failed");
+      expect(record?.errorCode).toBe("SETTLEMENT_SUBMIT_FAILED");
+    });
+
+    it.skip("throws when max attempts exceeded", async () => {
+      const failingSubmitFn = async () => {
+        throw new Error("Network error");
+      };
+
+      const failingService = createReconciliationService({
+        prisma: db.prisma,
+        submitFn: failingSubmitFn,
+        checkChainFn: async () => ({ confirmed: false })
+      });
+
+      await failingService.createOrGetOutboundAction({
+        actionKey: "fail_test_2",
+        actionType: "payout",
+        payload: { amount: "100" },
+        maxAttempts: 2
+      });
+
+      await failingService.submitOutboundAction("fail_test_2");
+      await failingService.submitOutboundAction("fail_test_2");
+
+      // Verify that the function throws by checking the error message in the promise rejection
+      const result = await failingService.submitOutboundAction("fail_test_2")
+        .then(
+          () => ({ success: true as const }),
+          (err: Error) => ({ success: false as const, error: err })
+        );
+      
+      expect(result.success).toBe(false);
+      expect(result.error).toBeInstanceOf(Error);
+      expect(result.error.message).toContain("Max attempts (2) exceeded");
+    });
+  });
+
+  describe("reconcileOutboundAction", () => {
+    it("confirms action when chain confirms", async () => {
+      await service.createOrGetOutboundAction({
+        actionKey: "reconcile_1",
+        actionType: "payout",
+        payload: { amount: "100" }
+      });
+
+      const submitResult = await service.submitOutboundAction("reconcile_1");
+      const txHash = submitResult.record.txHash!;
+      chainState.set(txHash, { confirmed: true });
+
+      const reconciled = await service.reconcileOutboundAction("reconcile_1");
+
+      expect(reconciled?.status).toBe("confirmed");
+      expect(reconciled?.confirmedAt).toBeTruthy();
+    });
+
+    it("marks failed when chain reports error", async () => {
+      await service.createOrGetOutboundAction({
+        actionKey: "reconcile_2",
+        actionType: "payout",
+        payload: { amount: "100" }
+      });
+
+      const submitResult = await service.submitOutboundAction("reconcile_2");
+      const txHash = submitResult.record.txHash!;
+      chainState.set(txHash, { confirmed: false, errorCode: "REVERTED_ON_CHAIN", errorDetail: "Insufficient balance" });
+
+      const reconciled = await service.reconcileOutboundAction("reconcile_2");
+
+      expect(reconciled?.status).toBe("failed");
+      expect(reconciled?.errorCode).toBe("REVERTED_ON_CHAIN");
+    });
+
+    it("returns null for non-existent action", async () => {
+      const result = await service.reconcileOutboundAction("non_existent");
+      expect(result).toBeNull();
+    });
+  });
+
+  describe("retryFailedAction", () => {
+    it("retries a failed action", async () => {
+      const failOnceSubmitFn = async (payload: Record<string, unknown>) => {
+        if (submitCalls.length === 0) {
+          submitCalls.push({ payload });
+          throw new Error("Temporary failure");
+        }
+        submitCalls.push({ payload });
+        const txHash = `tx_retry_${Date.now()}`;
+        chainState.set(txHash, { confirmed: true });
+        return { txHash };
+      };
+
+      const retryService = createReconciliationService({
+        prisma: db.prisma,
+        submitFn: failOnceSubmitFn,
+        checkChainFn: async (txHash) => chainState.get(txHash) ?? { confirmed: false }
+      });
+
+      await retryService.createOrGetOutboundAction({
+        actionKey: "retry_test_1",
+        actionType: "payout",
+        payload: { amount: "100" },
+        maxAttempts: 3
+      });
+
+      const firstResult = await retryService.submitOutboundAction("retry_test_1");
+      expect(firstResult.newlySubmitted).toBe(false);
+      expect(firstResult.record.status).toBe("failed");
+
+      let record = await retryService.getOutboundAction("retry_test_1");
+      expect(record?.status).toBe("failed");
+
+      const retryResult = await retryService.retryFailedAction("retry_test_1");
+
+      expect(retryResult.newlySubmitted).toBe(true);
+      expect(retryResult.record.status).toBe("confirmed");
+    });
+
+    it("throws when retrying non-failed action", async () => {
+      await service.createOrGetOutboundAction({
+        actionKey: "retry_test_2",
+        actionType: "payout",
+        payload: { amount: "100" }
+      });
+
+      await service.submitOutboundAction("retry_test_2");
+
+      await expect(service.retryFailedAction("retry_test_2")).rejects.toThrow("not in failed state");
+    });
+  });
+
+  describe("getOutboundAction / listOutboundActions", () => {
+    it("gets action by key", async () => {
+      await service.createOrGetOutboundAction({
+        actionKey: "get_test_1",
+        actionType: "payout",
+        payload: { amount: "100" }
+      });
+
+      const record = await service.getOutboundAction("get_test_1");
+      expect(record).toBeTruthy();
+      expect(record?.actionKey).toBe("get_test_1");
+    });
+
+    it("lists actions with pagination", async () => {
+      for (let i = 0; i < 5; i++) {
+        await service.createOrGetOutboundAction({
+          actionKey: `list_test_${i}`,
+          actionType: "payout",
+          payload: { index: i }
+        });
+        // Small delay to ensure different createdAt timestamps for ordering
+        await new Promise(r => setTimeout(r, 10));
+      }
+
+      const first = await service.listOutboundActions({ limit: 2 });
+      expect(first.items).toHaveLength(2);
+      expect(first.nextCursor).toBeTruthy();
+
+      const second = await service.listOutboundActions({ limit: 2, cursor: first.nextCursor! });
+      expect(second.items.length).toBeGreaterThanOrEqual(1);
+      expect(second.nextCursor).toBeTruthy();
+
+      const third = await service.listOutboundActions({ limit: 2, cursor: second.nextCursor! });
+      expect(third.items.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe("Concurrent submission prevention", () => {
+    it("prevents double submission under concurrent calls", async () => {
+      await service.createOrGetOutboundAction({
+        actionKey: "concurrent_test",
+        actionType: "payout",
+        payload: { amount: "1000" }
+      });
+
+      const results = await Promise.all([
+        service.submitOutboundAction("concurrent_test"),
+        service.submitOutboundAction("concurrent_test"),
+        service.submitOutboundAction("concurrent_test")
+      ]);
+
+      const submittedCount = results.filter(r => r.newlySubmitted).length;
+      expect(submittedCount).toBe(1);
+      expect(submitCalls).toHaveLength(1);
+    });
+  });
+
+  describe("Crash recovery simulation", () => {
+    it("recovers from crash after submit but before response", async () => {
+      await service.createOrGetOutboundAction({
+        actionKey: "crash_recovery_1",
+        actionType: "payout",
+        payload: { amount: "500" }
+      });
+
+      const firstSubmit = await service.submitOutboundAction("crash_recovery_1");
+      const txHash = firstSubmit.record.txHash!;
+
+      // Simulate crash: new service instance
+      const newService = createReconciliationService({
+        prisma: db.prisma,
+        submitFn: async () => { throw new Error("should not resubmit"); },
+        checkChainFn: async (tx) => tx === txHash ? { confirmed: true } : { confirmed: false }
+      });
+
+      const recovered = await newService.reconcileOutboundAction("crash_recovery_1");
+      expect(recovered?.status).toBe("confirmed");
+      expect(recovered?.txHash).toBe(txHash);
+    });
+  });
+
+  describe("Repair command", () => {
+    it("performs no writes in dry-run mode", async () => {
+      await service.createOrGetOutboundAction({
+        actionKey: "repair_dry_1",
+        actionType: "payout",
+        payload: { amount: "100" }
+      });
+
+      const before = await service.getOutboundAction("repair_dry_1");
+      const report = await service.repairActions({ mode: "dry-run" });
+      const after = await service.getOutboundAction("repair_dry_1");
+
+      expect(report.mode).toBe("dry-run");
+      expect(report.applied).toBe(false);
+      expect(after).toEqual(before);
+    });
+
+    it("applies repairs in apply mode and writes audit records", async () => {
+      await service.createOrGetOutboundAction( {
+        actionKey: "repair_apply_1",
+        actionType: "payout",
+        payload: { amount: "100" }
+      });
+
+      // Force an inconsistent state: submitted with no txHash
+      await db.prisma.outboundAction.update({
+        where: { actionKey: "repair_apply_1" },
+        data: { status: "submitted", txHash: null }
+      });
+
+      const report = await service.repairActions({ mode: "apply" });
+      expect(report.mode).toBe("apply");
+      expect(report.applied).toBe(true);
+      expect(report.repaired).toBeGreaterThanOrEqual(1);
+
+      const record = await service.getOutboundAction("repair_apply_1");
+      expect(record?.status).toBe("pending");
+      expect(record?.txHash).toBeNull();
+
+      const auditRecords = await db.prisma.repairAudit.findMany({ where: { actionKey: "repair_apply_1" } });
+      expect(auditRecords.length).toBeGreaterThanOrEqual(1);
+      expect(auditRecords[0].mode).toBe("apply");
+    });
+
+    it("reports no-op when no inconsistencies exist", async () => {
+      await service.createOrGetOutboundAction({
+        actionKey: "repair_noop_1",
+        actionType: "payout",
+        payload: { amount: "100" }
+      });
+
+      const report = await service.repairActions({ mode: "dry-run" });
+      expect(report.repaired).toBe(0);
+      expect(report.candidates).toHaveLength(0);
+    });
+
+    it("throws on invalid target", async () => {
+      await expect(service.repairActions({ mode: "apply", targetActionKey: "missing_key" })).rejects.toThrow("invalid target");
+    });
+
+    it("repairs only targeted records", async () => {
+      await service.createOrGetOutboundAction( {
+        actionKey: "repair_target_1",
+        actionType: "payout",
+        payload: { amount: "100" }
+      });
+      await service.createOrGetOutboundAction( {
+        actionKey: "repair_target_2",
+        actionType: "payout",
+        payload: { amount: "200" }
+      });
+
+      await db.prisma.outboundAction.update({
+        where: { actionKey: "repair_target_1" },
+        data: { status: "submitted", txHash: null }
+      });
+      await db.prisma.outboundAction.update({
+        where: { actionKey: "repair_target_2" },
+        data: { status: "submitted", txHash: null }
+      });
+
+      const report = await service.repairActions({ mode: "apply", targetActionKey: "repair_target_1" });
+      expect(report.repaired).toBe(1);
+
+      const one = await service.getOutboundAction("repair_target_1");
+      const two = await service.getOutboundAction("repair_target_2");
+      expect(one?.status).toBe("pending");
+      expect(two?.status).toBe("submitted");
+    });
+  });
+})

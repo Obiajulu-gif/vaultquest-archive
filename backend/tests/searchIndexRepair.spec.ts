@@ -71,6 +71,44 @@ describe("SearchIndexRepairService", () => {
   });
 
   describe("Anomaly Detection", () => {
+    it("does not let an older projection overwrite a newer indexed version", async () => {
+      const currentDoc = vaultToSearchDocument({
+        ...currentVaults[0],
+        version: 3,
+        updatedAt: new Date("2026-09-03T00:00:00.000Z"),
+      });
+      const olderDoc = vaultToSearchDocument({
+        ...currentVaults[0],
+        name: "Older indexed snapshot",
+        version: 2,
+        updatedAt: new Date("2026-09-02T00:00:00.000Z"),
+      });
+
+      await indexService.indexDocument(currentDoc);
+      await indexService.indexDocument(olderDoc);
+
+      expect((await indexService.getDocument("vault", "v1"))?.title).toBe(currentDoc.title);
+    });
+
+    it("does not purge an orphan snapshot if the index entry changed after detection", async () => {
+      const latest = vaultToSearchDocument({
+        ...currentVaults[0],
+        version: 2,
+        updatedAt: new Date("2026-09-02T00:00:00.000Z"),
+      });
+      await indexService.indexDocument(latest);
+
+      const removed = await indexService.removeDocumentIfUnchanged(
+        "vault",
+        "v1",
+        1,
+        new Date("2026-09-01T00:00:00.000Z"),
+      );
+
+      expect(removed).toBe(false);
+      expect(await indexService.getDocument("vault", "v1")).not.toBeNull();
+    });
+
     it("identifies missing records when index is completely empty", async () => {
       const anomalies = await repairService.detectAnomalies();
       expect(anomalies.length).toBe(3); // 2 vaults + 1 saved pool
@@ -89,11 +127,14 @@ describe("SearchIndexRepairService", () => {
       await indexService.indexDocument(savedPoolToSearchDocument(currentSavedPools[0]));
 
       const anomalies = await repairService.detectAnomalies();
-      expect(anomalies.length).toBe(1);
-      expect(anomalies[0].recordId).toBe("v2");
-      expect(anomalies[0].anomalyType).toBe("visibility_mismatch");
-      expect(anomalies[0].expectedVisibility).toBe("maintainer_only");
-      expect(anomalies[0].actualVisibility).toBe("public");
+      expect(anomalies).toMatchObject([
+        {
+          recordId: "v2",
+          anomalyType: "visibility_mismatch",
+          expectedVisibility: "maintainer_only",
+          actualVisibility: "public",
+        },
+      ]);
     });
 
     it("identifies stale records when title or content changed in source of truth", async () => {
@@ -110,6 +151,36 @@ describe("SearchIndexRepairService", () => {
         (a) => a.recordId === "v1" && a.anomalyType === "stale",
       );
       expect(staleAnomaly).toBeDefined();
+    });
+
+    it("detects projection metadata drift and recommends rebuilding from the source", async () => {
+      await indexService.indexDocument(vaultToSearchDocument({
+        ...currentVaults[0],
+        tvl: "100",
+      }));
+      currentVaults[0] = { ...currentVaults[0], tvl: "250" };
+
+      const anomaly = (await repairService.detectAnomalies()).find(
+        (item) => item.recordId === "v1",
+      );
+
+      expect(anomaly).toMatchObject({
+        anomalyType: "stale",
+        recommendation: "rebuild_from_source",
+      });
+    });
+
+    it("does not classify unscanned index records as orphaned in a bounded preview", async () => {
+      for (const vault of currentVaults) {
+        await indexService.indexDocument(vaultToSearchDocument(vault));
+      }
+
+      const anomalies = await repairService.detectAnomalies({
+        recordType: "vault",
+        limit: 1,
+      });
+
+      expect(anomalies).toHaveLength(0);
     });
 
     it("identifies orphaned entries that exist in index but were deleted in database", async () => {

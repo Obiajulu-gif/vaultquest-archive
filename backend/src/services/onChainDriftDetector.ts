@@ -30,7 +30,7 @@ export type DriftSeverity = "CRITICAL" | "WARNING" | "INFO";
 export type DriftEntityType = "vault" | "round" | "participant" | "escrow" | "quest";
 
 export interface OnChainPoolState {
-  totalDeposited: bigint;
+  totalDeposited:bigint;
   distributableYield: bigint;
   locked: boolean;
   isEmergency: boolean;
@@ -81,6 +81,106 @@ export interface DriftDetectionResult {
   durationMs: number;
   chainLedger: number;
   indexerWatermark: number | null;
+}
+
+/**
+ * Stale cache detection & repair types (#727).
+ *
+ * Cached/derived records (e.g. dashboard views, protocol reports, vault accounting
+ * rollups) are validated against their source records using a version/timestamp
+ * watermark. When the source has advanced past the cache watermark, the entry is
+ * considered stale and can be repaired by a deterministic, idempotent job.
+ */
+
+export type CacheEntityType = "vault_accounting" | "prize_draw" | "user_dashboard" | "protocol_report";
+
+export type CacheStatus = "fresh" | "stale" | "missing" | "orphaned";
+
+export interface CacheEntryRecord {
+  id: string;
+  entityType: CacheEntityType;
+  entityId: string;
+  /** Monotonically increasing source version (ledger sequence or action seq)*/
+  sourceVersion: number;
+  /** Wall-clock timestamp of the last source mutation */
+  sourceUpdatedAt: Date;
+  /** Version of the source at the time the cache was written */
+  cachedVersion: number;
+  cachedAt: Date;
+  payload: Record<string, unknown>;
+}
+
+export interface CacheStaleness {
+  entryId: string;
+  entityType: CacheEntityType;
+  entityId: string;
+  status: CacheStatus;
+  sourceVersion: number;
+  cachedVersion: number | null;
+  driftVersions: number;
+  driftMs: number;
+  severity: DriftSeverity;
+  reason: string;
+}
+
+export interface CacheRepairAction {
+  entryId: string;
+  entityType: CacheEntityType;
+  entityId: string;
+  status: CacheStatus;
+  action: "update" | "insert" | "delete" | "skip";
+  fromVersion: number | null;
+  toVersion: number;
+  reason: string;
+}
+
+export interface CacheRepairResult {
+  dryRun: boolean;
+  scannedEntries: number;
+  staleEntries: number;
+  missingEntries: number;
+  orphanedEntries: number;
+  actions: CacheRepairAction[];
+  failures: Array<{ entryId: string; error: string }>;
+  durationMs: number;
+  chainLedger: number;
+}
+
+/**
+ * Source of truth for cache reconciliation. Implementations derive the
+ * authoritative version + payload for a given cache entity from the ledger.
+ */
+export interface CacheSourceReader {
+  /** Returns the current authoritative source version for an entity, or null if the source no longer exists. */
+  getSourceVersion(entityType: CacheEntityType, entityId: string): Promise<number | null>;
+  /** Returns the authoritative payload for an entity, or null if the source no longer exists. */
+  getSourcePayload(entityType: CacheEntityType, entityId: string): Promise<Record<string, unknown> | null>;
+  /** Returns the list of entity ids that currently exist in the source of truth. */
+  listSourceEntityIds(entityType: CacheEntityType): Promise<string[]>;
+  /** Returns the current chain tip ledge for audit trailing. */
+  getChainTipLedge(): Promise<number>;
+}
+
+/**
+ * Persistence layer for cache entries. The repair job writes through this
+ * interface so that dry-run and apply modes share identical decision logic.
+ */
+export interface CacheStore {
+  listCacheEntries(entityType?: CacheEntityType): Promise<CacheEntryRecord[]>;
+  getCacheEntry(entityType: CacheEntityType, entityId: string): Promise<CacheEntryRecord | null>;
+  upsertCacheEntry(entry: CacheEntryRecord): Promise<void>;
+  deleteCacheEntry(entityType: CacheEntityType, entityId: string): Promise<void>;
+}
+
+export interface CacheRepairOptions {
+  /** When true, no writes are performed and only the planned actions are returned. */
+  dryRun?: boolean;
+  /** Optional filter to limit the job to specific entity types. */
+  entityTypes?: CacheEntityType[];
+  /** Maximum number of entries to process in a single run. */
+  limit?: number;
+  /** Optional absolute time threshold after which a cache entry is considered stale. */
+  maxStaleMs?: number;
 }
 
 export class OnChainDriftDetector {
@@ -279,6 +379,232 @@ export class OnChainDriftDetector {
 }
 
 /**
+ * Stale-cache detection and repair job (#727).
+ *
+ * This job compares each cached/derived record against its authoritative source
+ * version (ledger sequence or action seq). An entry is considered:
+ *   - fresh:    cachedVersion === sourceVersion
+ *   - stale:    cachedVersion < sourceVersion
+ *   - missing:  no cache entry exists for a live source entity
+ *   - orphaned: cache entry exists but the source entity no longer exists
+ *
+ * The repair job is idempotent: running it twice in a row produces the same
+ * final cache state and the second run reports zero actions.
+ */
+export class CacheRepairJob {
+  constructor(
+    private readonly sourceReader: CacheSourceReader,
+    private readonly cacheStore: CacheStore,
+    private readonly customLogger: Logger = logger,
+  ) {}
+
+  /**
+   * Scans all cache entries and returns the staleness report without mutating
+   * any state. Useful for dashboards and alerting.
+   */
+  async detectStale(
+    options: CacheRepairOptions = {},
+  ): Promise<CacheStaleness[]> {
+    const entityTypes = options.entityTypes ?? ["vault_accounting", "prize_draw", "user_dashboard", "protocol_report"];
+    const now = Date.now();
+    const staleness: CacheStaleness[] = [];
+
+    for (const entityType of entityTypes) {
+      const cacheEntries = await this.cacheStore.listCacheEntries(entityType);
+      const sourceIds = new Set(await this.sourceReader.listSourceEntityIds(entityType));
+      const cacheById = new Map<string, CacheEntryRecord>();
+      for (const entry of cacheEntries) {
+        cacheById.set(entry.entityId, entry);
+      }
+
+      // Detect stale and orphaned cache entries
+      for (const entry of cacheEntries) {
+        if (!sourceIds.has(entry.entityId)) {
+          staleness.push({
+            entryId: entry.id,
+            entityType: entry.entityType,
+            entityId: entry.entityId,
+            status: "orphaned",
+            sourceVersion: 0,
+            cachedVersion: entry.cachedVersion,
+            driftVersions: 0,
+            driftMs: now - entry.cachedAt.getTime(),
+            severity: "WARNING",
+            reason: "Cache entry has no corresponding source entity",
+          });
+          continue;
+        }
+
+        const sourceVersion = await this.sourceReader.getSourceVersion(entityType, entry.entityId);
+        if (sourceVersion === null) {
+          // Source vanished between list and read; treat as orphaned.
+          staleness.push({
+            entryId: entry.id,
+            entityType: entry.entityType,
+            entityId: entry.entityId,
+            status: "orphaned",
+            sourceVersion: 0,
+            cachedVersion: entry.cachedVersion,
+            driftVersions: 0,
+            driftMs: now - entry.cachedAt.getTime(),
+            severity: "WARNING",
+            reason: "Cache entry has no corresponding source entity",
+          });
+          continue;
+        }
+
+        const driftVersions = sourceVersion - entry.cachedVersion;
+        const driftMs = now - entry.cachedAt.getTime();
+        const exceedsTime = options.maxStaleMs !== undefined && driftMs > options.maxStaleMs;
+
+        if (driftVersions > 0 || exceedsTime) {
+          staleness.push({
+            entryId: entry.id,
+            entityType: entry.entityType,
+            entityId: entry.entityId,
+            status: "stale",
+            sourceVersion: sourceVersion,
+            cachedVersion: entry.cachedVersion,
+            driftVersions: driftVersions > 0 ? driftVersions : 0,
+            driftMs: driftMs,
+            severity: driftVersions > 1 ? "CRITICAL" : "WARNING",
+            reason: driftVersions > 0
+              ? `Source version advanced by ${driftVersions} behind cache`
+              : `Cache exceeded maxStaleMs (${driftMs}ms > ${options.maxStaleMs}ms)`,
+          });
+        }
+      }
+
+      // Detect missing cache entries for live source entities
+      for (const sourceId of sourceIds) {
+        if (!cacheById.has(sourceId)) {
+          const sourceVersion = await this.sourceReader.getSourceVersion(entityType, sourceId);
+          staleness.push({
+            entryId: `${entityType}:${sourceId}`,
+            entityType,
+            entityId: sourceId,
+            status: "missing",
+            sourceVersion: sourceVersion ?? 0,
+            cachedVersion: null,
+            driftVersions: 0,
+            driftMs: 0,
+            severity: "WARNING",
+            reason: "Source entity exists but no cache entry was found",
+          });
+        }
+      }
+    }
+
+    return staleness;
+  }
+
+  /**
+   * Runs the repair job. When dryRun is true (default), no writes are performed
+   * and the planned actions are returned for review. When dryRun is false,
+   * each action is applied idempotently.
+   */
+  async runRepair(
+    options: CacheRepairOptions = {},
+  ): Promise<CacheRepairResult> {
+    const startTime = Date.now();
+    const dryRun = options.dryRun ?? true;
+    const chainLedger = await this.sourceReader.getChainTipLedge();
+    const staleness = await this.detectStale(options);
+    const limited = options.limit !== undefined ? staleness.slice(0, options.limit) : staleness;
+
+    const actions: CacheRepairAction[] = [];
+    const failures: Array<{ entryId: string; error: string }> = [];
+
+    for (const item of limited) {
+      try {
+        const action = await this.planRepair(item, dryRun);
+        actions.push(action);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        failures.push({ entryId: item.entryId, error: message });
+        this.customLogger.error({ item, err }, "Cache repair failed for entry");
+      }
+    }
+
+    const result: CacheRepairResult = {
+      dryRun,
+      scannedEntries: staleness.length,
+      staleEntries: staleness.filter((s) => s.status === "stale").length,
+      missingEntries: staleness.filter((s) => s.status === "missing").length,
+      orphanedEntries: staleness.filter((s) => s.status === "orphaned").length,
+      actions,
+      failures,
+      durationMs: Date.now() - startTime,
+      chainLedger,
+    };
+
+    this.customLogger.info(
+      { dryRun, scanned: result.scannedEntries, actions: actions.length, failures: failures.length },
+      dryRun ? "Cache repair dry-run completed" : "Cache repair applied",
+    );
+
+    return result;
+  }
+
+  /**
+   * Builds and (optionally) applies a single repair action. The action is
+   * derived from the staleness report and the current source payload, making
+   * the operation idempotent: repeated runs produce the same final state.
+   */
+  private async planRepair(
+    item: CacheStaleness,
+    dryRun: boolean,
+  ): Promise<CacheRepairAction> {
+    const base: Omit<CacheRepairAction, "action"> = {
+      entryId: item.entryId,
+      entityType: item.entityType,
+      entityId: item.entityId,
+      status: item.status,
+      fromVersion: item.cachedVersion,
+      toVersion: item.sourceVersion,
+      reason: item.reason,
+    };
+
+    if (item.status === "orphaned") {
+      if (!dryRun) {
+        await this.cacheStore.deleteCacheEntry(item.entityType, item.entityId);
+      }
+      return { ...base, action: "delete" };
+    }
+
+    const payload = await this.sourceReader.getSourcePayload(item.entityType, item.entityId);
+    if (payload === null) {
+      // Source disappeared between detect and repair; delete the cache entry.
+      if (!dryRun) {
+        await this.cacheStore.deleteCacheEntry(item.entityType, item.entityId);
+      }
+      return { ...base, action: "delete", reason: "Source entity disappeared during repair" };
+    }
+
+    const now = new Date();
+    const entry: CacheEntryRecord = {
+      id: item.entryId,
+      entityType: item.entityType,
+      entityId: item.entityId,
+      sourceVersion: item.sourceVersion,
+      sourceUpdatedAt: now,
+      cachedVersion: item.sourceVersion,
+      cachedAt: now,
+      payload,
+    };
+
+    if (!dryRun) {
+      await this.cacheStore.upsertCacheEntry(entry);
+    }
+
+    return {
+      ...base,
+      action: item.status === "missing" ? "insert" : "update",
+    };
+  }
+}
+
+/**
  * Production OnChainReader backed by real Soroban RPC server endpoints.
  * Supports multiple endpoints with automatic failover.
  */
@@ -359,17 +685,16 @@ export class SorobanRpcOnChainReader implements OnChainReader {
   async getParticipantDeposit(poolAddress: string, roundId: number, participant: string): Promise<bigint> {
     for (const server of this.servers) {
       try {
-        const addr = Address.fromString(participant);
         const key = StellarXdr.ScVal.scvVec([
-          StellarXdr.ScVal.scvSymbol("RoundDeposit"),
-          addr.toScVal(),
+          StellarXdr.ScVal.scvSymbol("Participant"),
           StellarXdr.ScVal.scvU32(roundId),
+          new Address(participant).toScVal(),
         ]);
         const entry = await server.getContractData(poolAddress, key, StellarRpc.Durability.Persistent).catch(() => null);
         if (entry && entry.val) {
           const raw = entry.val.contractData().val();
-          const decoded = scValToNative(raw);
-          return BigInt(String(decoded ?? "0"));
+          const decoded = scValToNative(raw) as Record<string, unknown>;
+          return BigInt(String(decoded.deposit ?? decoded.amount ?? "0"));
         }
       } catch {
         // failover
@@ -378,4 +703,3 @@ export class SorobanRpcOnChainReader implements OnChainReader {
     return 0n;
   }
 }
-

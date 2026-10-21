@@ -1,0 +1,7 @@
+{
+  "id": "stale-orphan",
+  "recordType": "action_ledger",
+  "driftType": "stale_orphan",
+  "state": { "status": "orphaned", "updatedAt": "2025-01-01T00:00:00.000Z" },
+  "repair": { "action": "quarantine", "operatorSteps": ["Confirm the transaction is absent on chain", "Quarantine the stale action", "Record the incident reference"] }
+}

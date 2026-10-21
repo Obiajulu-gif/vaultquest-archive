@@ -95,7 +95,7 @@ break anything else. Run the relevant commands for your area:
 | Contracts | `cargo fmt --check && cargo clippy -- -D warnings` | Format + lint |
 | Security | `pnpm audit` | Dependency vulnerabilities |
 | Security | `trufflehog filesystem .` | Secret scanning |
-| Docs | manual preview | Markdown renders correctly on GitHub |
+| Docs | `pnpm docs:validate` | Local documentation validation |
 
 ### Auto-fixing lint errors locally
 

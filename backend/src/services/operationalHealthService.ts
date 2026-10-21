@@ -8,6 +8,20 @@ const logger = createLogger(process.env.LOG_LEVEL ?? "info");
  * Covers unresolved failures, stale jobs, reconciliation drift, and user-impacting incidents.
  */
 
+export type HealthSeverity = "healthy" | "warning" | "critical";
+
+export type HealthCategory =
+  | "Orphaned Actions"
+  | "Stale Pending Events"
+  | "Failed Background Jobs"
+  | "Stale Action Leases"
+  | "Unresolved Vault Settlements"
+  | "Detected Reconciliation Drift"
+  | "Pending Repair Proposals"
+  | "Indexer Lag"
+  | "Poison Events"
+  | "Stale Orphans (>7 days)";
+
 export interface HealthIndicator {
   category: string;
   status: "healthy" | "warning" | "critical";
@@ -26,6 +40,13 @@ export interface OperationalHealthReport {
     criticalCount: number;
     warningCount: number;
   };
+}
+
+export interface HealthCategoryDetails {
+  category: string;
+  total: number;
+  items: Array<Record<string, unknown>>;
+  redacted: boolean;
 }
 
 /**

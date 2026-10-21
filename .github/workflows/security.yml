@@ -38,4 +38,4 @@ jobs:
         with:
           run_install: false
       - name: Run pnpm audit
-        run: pnpm audit --audit-level=critical || true
+        run: pnpm audit --audit-level=critical

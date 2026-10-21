@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DrawProofService } from "../src/services/drawProofService.js";
 import type { RpcClient } from "../src/services/drawProofService.js";
 import { canonicalize, canonicalHash, canonicalStringify } from "../src/utils/canonicalJson.js";
+import canonicalLegacyFixture from "../docs/fixtures/canonical-legacy-payload.json";
 
 function b64Json(value: unknown): string {
   return Buffer.from(JSON.stringify(value)).toString("base64");
@@ -11,9 +12,9 @@ function b64Json(value: unknown): string {
 function makeRpc(overrides: Partial<RpcClient> = {}): RpcClient {
   return {
     getLedger: vi.fn(),
-    getTransaction: vi.fn().mockResolved({ hash: "tx_hash_abc", ledger: 1000, successful: true, status: "success" }),
-    getContractData: vi.fn().mockRejected(new Error("not found")),
-    getEvents: vi.fn().mockResolved({
+    getTransaction: vi.fn().mockResolvedValue({ hash: "tx_hash_abc", ledger: 1000, successful: true, status: "success" }),
+    getContractData: vi.fn().mockRejectedValue(new Error("not found")),
+    getEvents: vi.fn().mockResolvedValue({
       events: [
         {
           id: "evt-1",
@@ -34,22 +35,27 @@ function makeRpc(overrides: Partial<RpcClient> = {}): RpcClient {
   } as RpcClient;
 }
 
+function makeDrawProofService(prisma: any, rpc: RpcClient | null) {
+  const featureFlags = { isEnabled: vi.fn().mockResolvedValue(true) };
+  return new DrawProofService(prisma, rpc, undefined, featureFlags);
+}
+
 function makeMockPrisma(overrides: Record<string, any> = {}) {
   return {
     actionLedger: {
-      findUnique: vi.fn().mockResolved(overrides.action ?? null),
-      findMany: vi.fn().mockResolved(overrides.actions ?? []),
+      findUnique: vi.fn().mockResolvedValue(overrides.action ?? null),
+      findMany: vi.fn().mockResolvedValue(overrides.actions ?? []),
     },
     drawProof: {
-      findUnique: vi.fn().mockResolved(overrides.existingProof ?? null),
-      findFirst: vi.fn().mockResolved(null),
+      findUnique: vi.fn().mockResolvedValue(overrides.existingProof ?? null),
+      findFirst: vi.fn().mockResolvedValue(null),
       create: vi.fn().mockImplementation(({ data }) =>
         Promise.resolve({ id: "proof-uuid", createdAt: new Date(), ...data })
       ),
       update: vi.fn().mockImplementation(({ where, data }) =>
         Promise.resolve({ id: where.drawId, ...data })
       ),
-      findMany: vi.fn().mockResolved(overrides.proofs ?? []),
+      findMany: vi.fn().mockResolvedValue(overrides.proofs ?? []),
     },
   } as any;
 }
@@ -89,38 +95,46 @@ function makeSelectWinnerAction(overrides: Record<string, any> = {}) {
 
 describe("DrawProofService", () => {
   describe("generateProof", () => {
+    it("does not generate when the prize draw feature flag is unavailable", async () => {
+      const prisma = makeMockPrisma({ action: makeSelectWinnerAction() });
+      const svc = new DrawProofService(prisma, makeRpc());
+
+      await expect(svc.generateProof({ actionId: "action-123" })).resolves.toBe(null);
+      expect(prisma.actionLedger.findUnique).not.toHaveBeenCalled();
+    });
+
     it("returns null if action not found", async () => {
       const prisma = makeMockPrisma({ action: null });
-      const svc = new DrawProofService(prisma, null);
+      const svc = makeDrawProofService(prisma, null);
       const result = await svc.generateProof({ actionId: "nonexistent" });
-      expect(result).toBe(Null);
+      expect(result).toBe(null);
     });
 
     it("returns null if action is not select_winner", async () => {
       const prisma = makeMockPrisma({
         action: makeSelectWinnerAction({ actionType: "deposit" }),
       });
-      const svc = new DrawProofService(prisma, null);
+      const svc = makeDrawProofService(prisma, null);
       const result = await svc.generateProof({ actionId: "action-123" });
-      expect(result).toBe(Null);
+      expect(result).toBe(null);
     });
 
     it("returns null if action is not confirmed", async () => {
       const prisma = makeMockPrisma({
         action: makeSelectWinnerAction({ status: "pending" }),
       });
-      const svc = new DrawProofService(prisma, null);
+      const svc = makeDrawProofService(prisma, null);
       const result = await svc.generateProof({ actionId: "action-123" });
-      expect(result).toBe(Null);
+      expect(result).toBe(null);
     });
 
     it("refuses to generate a proof when no RPC client is configured (no fabricated randomness)", async () => {
       const prisma = makeMockPrisma({
         action: makeSelectWinnerAction(),
       });
-      const svc = new DrawProofService(prisma, null);
+      const svc = makeDrawProofService(prisma, null);
       const result = await svc.generateProof({ actionId: "action-123" });
-      expect(result).toBe(Null);
+      expect(result).toBe(null);
       expect(prisma.drawProof.create).not.toHaveBeenCalled();
     });
 
@@ -128,10 +142,10 @@ describe("DrawProofService", () => {
       const prisma = makeMockPrisma({
         action: makeSelectWinnerAction(),
       });
-      const rpc = makeRpc({ getEvents: vi.fn().mockResolved({ events: [] }) });
-      const svc = new DrawProofService(prisma, rpc);
+      const rpc = makeRpc({ getEvents: vi.fn().mockResolvedValue({ events: [] }) });
+      const svc = makeDrawProofService(prisma, rpc);
       const result = await svc.generateProof({ actionId: "action-123" });
-      expect(result).toBe(Null);
+      expect(result).toBe(null);
       expect(prisma.drawProof.create).not.toHaveBeenCalled();
     });
 
@@ -139,7 +153,7 @@ describe("DrawProofService", () => {
       const prisma = makeMockPrisma({
         action: makeSelectWinnerAction(),
       });
-      const svc = new DrawProofService(prisma, makeRpc());
+      const svc = makeDrawProofService(prisma, makeRpc());
       const result = await svc.generateProof({ actionId: "action-123" });
 
       expect(result).not.toBeNull();
@@ -147,8 +161,8 @@ describe("DrawProofService", () => {
       expect(result!.roundId).toBe(1);
       expect(result!.contractId).toBe("CDRYPPOOL123");
       expect(result!.proofJson).toBeDefined();
-      expect(result!.prooeJson.randomness.source).toBe("soroban_prng");
-      expect(result!.prooeJson.randomness.seed).toBe("onchain-seed");
+      expect(result!.proofJson.randomness.source).toBe("soroban_prng");
+      expect(result!.proofJson.randomness.seed).toBe("onchain-seed");
       expect(prisma.drawProof.create).toHaveBeenCalled();
     });
 
@@ -164,11 +178,11 @@ describe("DrawProofService", () => {
           return Promise.reject(new Error("not found"));
         }),
       });
-      const svc = new DrawProofService(prisma, rpc);
+      const svc = makeDrawProofService(prisma, rpc);
       const result = await svc.generateProof({ actionId: "action-123" });
 
       expect(result).not.toBeNull();
-      expect(result!.prooeJson.snapshot.roundPrincipalSnapshot).toBe("3500000");
+      expect(result!.proofJson.snapshot.roundPrincipalSnapshot).toBe("3500000");
     });
 
     it("omits roundPrincipalSnapshot (never fabricates one) when the contract round data can't be fetched", async () => {
@@ -176,7 +190,7 @@ describe("DrawProofService", () => {
         action: makeSelectWinnerAction(),
       });
       // Default makeRpc() rejects every getContractData call.
-      const svc = new DrawProofService(prisma, makeRpc());
+      const svc = makeDrawProofService(prisma, makeRpc());
       const result = await svc.generateProof({ actionId: "action-123" });
 
       expect(result).not.toBeNull();
@@ -201,7 +215,7 @@ describe("DrawProofService", () => {
         action: makeSelectWinnerAction(),
         existingProof,
       });
-      const svc = new DrawProofService(prisma, makeRpc());
+      const svc = makeDrawProofService(prisma, makeRpc());
       const result = await svc.generateProof({ actionId: "action-123" });
 
       expect(result).not.toBeNull();
@@ -215,15 +229,15 @@ describe("DrawProofService", () => {
           actionPayload: { contract_id: "C123", round_id: 1 },
         }),
       });
-      const svc = new DrawProofService(prisma, null);
+      const svc = makeDrawProofService(prisma, null);
       const result = await svc.generateProof({ actionId: "action-123" });
-      expect(result).toBe(Null);
+      expect(result).toBe(null);
     });
 
     it("produces the same canonical proof hash for equivalent payloads with different key ordering", async () => {
       const action = makeSelectWinnerAction();
       const prismaA = makeMockPrisma({ action });
-      const svcA = new DrawProofService(prismaA, makeRpc());
+      const svcA = makeDrawProofService(prismaA, makeRpc());
       const resultA = await svcA.generateProof({ actionId: "action-123" });
 
       const reordered = {
@@ -240,7 +254,7 @@ describe("DrawProofService", () => {
       const prismaB = makeMockPrisma({
         action: makeSelectWinnerAction({ actionPayload: reordered }),
       });
-      const svcB = new DrawProofService(prismaB, makeRpc());
+      const svcB = makeDrawProofService(prismaB, makeRpc());
       const resultB = await svcB.generateProof({ actionId: "action-123" });
 
       expect(resultA).not.toBeNull();
@@ -251,7 +265,7 @@ describe("DrawProofService", () => {
     it("normalizes numeric precision and casing when computing the canonical proof hash", async () => {
       const action = makeSelectWinnerAction();
       const prismaA = makeMockPrisma({ action });
-      const svcA = new DrawProofService(prismaA, makeRpc());
+      const svcA = makeDrawProofService(prismaA, makeRpc());
       const resultA = await svcA.generateProof({ actionId: "action-123" });
 
       const nonCanonical = makeSelectWinnerAction();
@@ -262,7 +276,7 @@ describe("DrawProofService", () => {
         asset: "usdc",
       };
       const prismaB = makeMockPrisma({ action: nonCanonical });
-      const svcB = new DrawProofService(prismaB, makeRpc());
+      const svcB = makeDrawProofService(prismaB, makeRpc());
       const resultB = await svcB.generateProof({ actionId: "action-123" });
 
       expect(resultA).not.toBeNull();
@@ -274,18 +288,33 @@ describe("DrawProofService", () => {
       const action = makeSelectWinnerAction();
       action.actionPayload = { ...action.actionPayload, prize: "-500000" };
       const prisma = makeMockPrisma({ action });
-      const svc = new DrawProofService(prisma, makeRpc());
+      const svc = makeDrawProofService(prisma, makeRpc());
       const result = await svc.generateProof({ actionId: "action-123" });
-      expect(result).toBe(Null);
+      expect(result).toBe(null);
+    });
+
+    const invalidPayloads: Array<[string, Record<string, unknown>]> = [
+      ["malformed prize", { prize: "5e99999" }],
+      ["zero prize", { prize: "0.000" }],
+      ["unsafe round number", { round_id: Number.MAX_SAFE_INTEGER + 1 }],
+    ];
+    it.each(invalidPayloads)("refuses %s before requesting chain evidence", async (_name, invalidFields) => {
+      const action = makeSelectWinnerAction();
+      action.actionPayload = { ...action.actionPayload, ...invalidFields };
+      const rpc = makeRpc();
+      const svc = makeDrawProofService(makeMockPrisma({ action }), rpc);
+
+      await expect(svc.generateProof({ actionId: "action-123" })).resolves.toBe(null);
+      expect(rpc.getEvents).not.toHaveBeenCalled();
     });
   });
 
   describe("verifyProof", () => {
     it("returns null if proof not found", async () => {
       const prisma = makeMockPrisma();
-      const svc = new DrawProofService(prisma, null);
+      const svc = makeDrawProofService(prisma, null);
       const result = await svc.verifyProof("nonexistent");
-      expect(result).toBe(Null);
+      expect(result).toBe(null);
     });
 
     it("verifies a proof and updates verification status", async () => {
@@ -294,7 +323,7 @@ describe("DrawProofService", () => {
         drawId: "draw-test-001",
         roundId: 1,
         contractId: "C123",
-        prooeJson: {
+        proofJson: {
           version: "1.0.0",
           drawId: "draw-test-001",
           roundId: 1,
@@ -345,7 +374,7 @@ describe("DrawProofService", () => {
 
       const prisma = makeMockPrisma({ existingProof: storedProof });
       prisma.drawProof.findUnique.mockResolvedValue(storedProof);
-      const svc = new DrawProofService(prisma, null);
+      const svc = makeDrawProofService(prisma, null);
       const result = await svc.verifyProof("draw-test-001");
 
       expect(result).not.toBeNull();
@@ -381,7 +410,7 @@ describe("DrawProofService", () => {
 
       const prisma = makeMockPrisma({ existingProof: legacyProof });
       prisma.drawProof.findUnique.mockResolvedValue(legacyProof);
-      const svc = new DrawProofService(prisma, null);
+      const svc = makeDrawProofService(prisma, null);
       const result = await svc.verifyProof("draw-legacy-001");
 
       expect(result).not.toBeNull();
@@ -392,9 +421,9 @@ describe("DrawProofService", () => {
   describe("getProof", () => {
     it("returns null if not found", async () => {
       const prisma = makeMockPrisma();
-      const svc = new DrawProofService(prisma, null);
+      const svc = makeDrawProofService(prisma, null);
       const result = await svc.getProof("nonexistent");
-      expect(result).toBe(Null);
+      expect(result).toBe(null);
     });
 
     it("returns proof record if found", async () => {
@@ -412,7 +441,7 @@ describe("DrawProofService", () => {
         createdAt: new Date(),
       };
       const prisma = makeMockPrisma({ existingProof: storedProof });
-      const svc = new DrawProofService(prisma, null);
+      const svc = makeDrawProofService(prisma, null);
       const result = await svc.getProof("draw-123");
       expect(result).not.toBeNull();
       expect(result!.drawId).toBe("draw-123");
@@ -426,9 +455,9 @@ describe("DrawProofService", () => {
         { id: "2", drawId: "d2", roundId: 2, contractId: "C1", proofJson: {}, proofHash: "h2", signature: null, verified: true, verifiedAt: new Date(), verificationError: null, createdAt: new Date() },
       ];
       const prisma = makeMockPrisma({ proofs });
-      const svc = new DrawProofService(prisma, null);
+      const svc = makeDrawProofService(prisma, null);
       const result = await svc.listProofs({ contractId: "C1", limit: 10 });
-      expect(result).toHaveLength(2);
+      expect(result.items).toHaveLength(2);
     });
   });
 });
@@ -478,8 +507,35 @@ describe("canonicalJSON", () => {
     expect(canonicalStringify(legacy)).toBe(canonicalStringify(normalized));
   });
 
+  it("keeps the documented legacy payload fixture stable", () => {
+    expect(canonicalStringify(canonicalLegacyFixture.legacyPayload)).toBe(canonicalLegacyFixture.canonical);
+  });
+
   it("rejects unsupported numeric values consistently", () => {
     expect(() => canonicalize({ amount: NaN })).toThrow();
     expect(() => canonicalize({ amount: Infinity })).toThrow();
+  });
+
+  it("rejects unsafe integer values rather than hashing rounded data", () => {
+    expect(() => canonicalize({ roundId: Number.MAX_SAFE_INTEGER + 1 })).toThrow(/unsafe integer/i);
+    expect(() => canonicalize({ amount: Number.MAX_SAFE_INTEGER + 1 })).toThrow(/unsafe integer/i);
+  });
+
+  it("bounds exponent expansion and rejects key collisions after trimming", () => {
+    expect(() => canonicalize({ amount: "1e1025" })).toThrow(/exponent/i);
+    expect(() => canonicalize({ " wallet ": "a", wallet: "b" })).toThrow(/duplicate key/i);
+  });
+
+  it("preserves a JSON __proto__ property as ordinary payload data", () => {
+    const value = JSON.parse('{"__proto__":{"signed":true}}');
+    expect(canonicalStringify(value)).toBe('{"__proto__":{"signed":true}}');
+    expect(Object.prototype).not.toHaveProperty("signed");
+  });
+
+  it("applies field allowlists only at the top level and rejects unknown keys in strict mode", () => {
+    expect(canonicalStringify({ a: 1, nested: { keep: 2, drop: 3 } }, { allowedKeys: ["a", "nested"] }))
+      .toBe('{"a":"1","nested":{"drop":"3","keep":"2"}}');
+    expect(() => canonicalize({ a: 1, extra: 2 }, { allowedKeys: ["a"], strict: true }))
+      .toThrow(/unknown top-level key/i);
   });
 });

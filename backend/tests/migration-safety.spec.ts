@@ -12,7 +12,7 @@ import {
   listMigrationIds,
   readMigrationPlan,
   type MigrationDatabase,
-} from "../src/scripts/migrationSafety";
+} from "../src/scripts/migrationSafety.js";
 
 /**
  * Migration safety framework (#790): preview before writes, post-checks that
@@ -68,6 +68,7 @@ function emptyState(): FakeState {
     columns: new Set(),
     rowCounts: {},
     nullCounts: {},
+    failOn: "",
   };
 }
 
@@ -119,17 +120,17 @@ describe("migration planning (#790)", () => {
 
   it("flags a backfill with no WHERE clause as rewriting every row", () => {
     const plan = parseMigrationSql("x", 'UPDATE "users" SET "tier" = \'free\';');
-    expect(plan.dataChanges[0].rewritesAllRows).toBe(true);
+    expect(plan.dataChanges).toMatchObject([{ rewritesAllRows: true }]);
   });
 
   it("does not flag a targeted backfill as a full rewrite", () => {
     const plan = parseMigrationSql("x", 'UPDATE "users" SET "tier" = \'free\' WHERE "tier" IS NULL;');
-    expect(plan.dataChanges[0].rewritesAllRows).toBe(false);
+    expect(plan.dataChanges).toMatchObject([{ rewritesAllRows: false }]);
   });
 
   it("treats an unrecognised statement as other rather than guessing", () => {
     const plan = parseMigrationSql("x", "VACUUM ANALYZE;");
-    expect(plan.actions[0].kind).toBe("other");
+    expect(plan.actions).toMatchObject([{ kind: "other" }]);
   });
 });
 
@@ -318,7 +319,7 @@ describe("post-checks — failed / partial migration (#790)", () => {
 describe("release readiness checklist (#791)", () => {
   const ROOT = path.resolve(__dirname, "../..");
   const checklistPath = path.join(ROOT, "docs/release-readiness-checklist.md");
-  const validatorPath = path.join(ROOT, "backend/src/scripts/releaseReadiness.ts");
+  const validatorPath = path.join(ROOT, "scripts/release-readiness.cjs");
 
   it("ships a checklist template covering all required areas", () => {
     expect(fs.existsSync(checklistPath)).toBe(true);
@@ -346,7 +347,7 @@ describe("release readiness checklist (#791)", () => {
   it("provides an automated validator that runs locally and in CI", () => {
     expect(fs.existsSync(validatorPath)).toBe((true));
     const source = fs.readFileSync(validatorPath, "utf-8");
-    expect(source).toMatch(/export function validateReleaseReadiness/);
-    expect(source).toMatch(/export function formatReport/);
+    expect(source).toMatch(/function validateEvidence/);
+    expect(source).toMatch(/function formatReport/);
   });
 });

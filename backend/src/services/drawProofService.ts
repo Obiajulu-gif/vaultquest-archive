@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import type { Logger } from "pino";
 import { withTelemetry } from "./telemetry.js";
-import { canonicalize, canonicalJson, canonicalHash } from "../../../lib/canonical.js";
+import { canonicalize, canonicalJson, canonicalHash } from "../utils/canonicalJson.js";
 import {
   assembleDrawProof,
   verifyProofIntegrity,
@@ -134,22 +134,22 @@ export class DrawProofService {
       return null;
     }
 
-    // Canonicalize the action payload before extracting fields so that
-    // equivalent payloads (key order, whitespace, casing, numeric precision)
-    // produce identical downstream hashes/signatures. Legacy payloads that
-    // don't canonicalize cleanly fall back to the raw payload.
+    // Canonicalize before extracting signed and hashed fields. Invalid legacy
+    // payloads must fail closed instead of being interpreted differently by
+    // downstream code.
+    const rawPayload = (action.actionPayload ?? {}) as Record<string, unknown>;
     let canonicalPayload: Record<string, unknown>;
     try {
-      canonicalPayload = canonicalize(payload) as Record<string, unknown>;
+      canonicalPayload = canonicalize(rawPayload) as Record<string, unknown>;
     } catch (err) {
       this.logger?.warn(
         { err, actionId: options.actionId },
-        "draw proof: payload canonicalization failed, using raw payload",
+        "draw proof: payload canonicalization failed, refusing to generate proof",
       );
-      canonicalPayload = payload;
+      return null;
     }
 
-    const payload = (action.actionPayload ?? {}) as Record<string, unknown>;
+    const payload = canonicalPayload;
     const contractId = String(
       payload.contract_id || payload.pool_id || "unknown",
     );
@@ -162,7 +162,25 @@ export class DrawProofService {
 
     // Normalize numeric precision on the prize amount so that equivalent
     // values (e.g. "1.50" vs "1.5" vs "1.500") hash identically.
-    const normalizedPrizeAmount = normalizeDecimalString(prizeAmount);
+    const normalizedPrizeAmount = this.normalizeDecimalString(prizeAmount);
+    if (
+      !/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(normalizedPrizeAmount) ||
+      /^0(?:\.0*)?$/.test(normalizedPrizeAmount)
+    ) {
+      this.logger?.warn(
+        { actionId: options.actionId },
+        "draw proof: invalid or non-positive prize amount",
+      );
+      return null;
+    }
+
+    if (!Number.isSafeInteger(roundId) || roundId < 0 || !Number.isSafeInteger(drawLedger) || drawLedger <= 0) {
+      this.logger?.warn(
+        { actionId: options.actionId },
+        "draw proof: round or ledger identifier is outside the safe integer range",
+      );
+      return null;
+    }
 
     if (!winnerAddress) {
       this.logger?.warn(
@@ -188,7 +206,7 @@ export class DrawProofService {
 
     // Normalize the contract spec hash casing so equivalent hashes compare
     // and sign consistently regardless of input casing.
-    const normalizedContractSpecHash = normalizeHex(
+    const normalizedContractSpecHash = this.normalizeHex(
       options.contractSpecHash || "unknown",
     );
 

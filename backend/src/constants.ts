@@ -94,7 +94,65 @@ export const ERROR_CODES = {
   WEBHOOK_TIMESTAMP_MISSING: "WEBHOOK_TIMESTAMP_MISSING",
   WEBHOOK_DUPLICATE_EVENT: "WEBHOOK_DUPLICATE_EVENT",
   WEBHOOK_EVENT_MALFORMED: "WEBHOOK_EVENT_MALFORMED",
-  WEBHOOK_PROVIDER_UNSUPPORTED: "WEBHOOK_PROVIDER_UNSUPPORTED"
+  WEBHOOK_PROVIDER_UNSUPPORTED: "WEBHOOK_PROVIDER_UNSUPPORTED",
+  // Queue backpressure (#974)
+  QUEUE_BACKPRESSURE: "QUEUE_BACKPRESSURE",
+  // Invariant checks (#979)
+  INVARIANT_VIOLATION: "INVARIANT_VIOLATION",
+  BALANCE_INVARIANT_VIOLATION: "BALANCE_INVARIANT_VIOLATION",
+  OWNERSHIP_INVARIANT_VIOLATION: "OWNERSHIP_INVARIANT_VIOLATION",
+  ENTITLEMENT_INVARIANT_VIOLATION: "ENTITLEMENT_INVARIANT_VIOLATION",
+  // Degraded mode & dependency unavailable (#978)
+  SERVICE_DEGRADED: "SERVICE_DEGRADED",
+  DEPENDENCY_UNAVAILABLE: "DEPENDENCY_UNAVAILABLE",
+  // Problem Details Taxonomy additions (#946)
+  // Vault deposits
+  VAULT_DEPOSIT_BELOW_MIN: "VAULT_DEPOSIT_BELOW_MIN",
+  VAULT_DEPOSIT_REVERTED: "VAULT_DEPOSIT_REVERTED",
+  // Prize rounds
+  ROUND_NOT_OPEN: "ROUND_NOT_OPEN",
+  ROUND_LOCKED: "ROUND_LOCKED",
+  ROUND_RANDOMNESS_PENDING: "ROUND_RANDOMNESS_PENDING",
+  ROUND_ALREADY_DRAWN: "ROUND_ALREADY_DRAWN",
+  ROUND_REVEAL_TIMEOUT: "ROUND_REVEAL_TIMEOUT",
+  DRAW_PROOF_INVALID: "DRAW_PROOF_INVALID",
+  // Quests
+  QUEST_NOT_FOUND: "QUEST_NOT_FOUND",
+  QUEST_NOT_JOINABLE: "QUEST_NOT_JOINABLE",
+  QUEST_UNFUNDED: "QUEST_UNFUNDED",
+  QUEST_ALREADY_COMPLETED: "QUEST_ALREADY_COMPLETED",
+  QUEST_PROGRESS_INVALID: "QUEST_PROGRESS_INVALID",
+  // Wallet flows
+  WALLET_UNSUPPORTED_NETWORK: "WALLET_UNSUPPORTED_NETWORK",
+  WALLET_INSUFFICIENT_FUNDS: "WALLET_INSUFFICIENT_FUNDS",
+  WALLET_SESSION_EXPIRED: "WALLET_SESSION_EXPIRED",
+  WALLET_SIGNATURE_INVALID: "WALLET_SIGNATURE_INVALID",
+  // Indexer reconciliation
+  INDEXER_CURSOR_STALE: "INDEXER_CURSOR_STALE",
+  INDEXER_REORG_DETECTED: "INDEXER_REORG_DETECTED",
+  RECONCILIATION_MISMATCH: "RECONCILIATION_MISMATCH",
+  EVENT_QUARANTINED: "EVENT_QUARANTINED",
+  POISON_EVENT_DETECTED: "POISON_EVENT_DETECTED",
+  // Expiring capability tokens (#984)
+  CAPABILITY_TOKEN_REQUIRED: "CAPABILITY_TOKEN_REQUIRED",
+  CAPABILITY_TOKEN_EXPIRED: "CAPABILITY_TOKEN_EXPIRED",
+  CAPABILITY_TOKEN_INVALID: "CAPABILITY_TOKEN_INVALID",
+  CAPABILITY_TOKEN_CONSUMED: "CAPABILITY_TOKEN_CONSUMED",
+  CAPABILITY_TOKEN_SCOPE_MISMATCH: "CAPABILITY_TOKEN_SCOPE_MISMATCH",
+  CAPABILITY_TOKEN_ACTOR_MISMATCH: "CAPABILITY_TOKEN_ACTOR_MISMATCH",
+  CAPABILITY_TOKEN_REVOKED: "CAPABILITY_TOKEN_REVOKED",
+  // Strict allowlist validation (#990)
+  URL_NOT_ALLOWED: "URL_NOT_ALLOWED",
+  FILE_TYPE_NOT_ALLOWED: "FILE_TYPE_NOT_ALLOWED",
+  DESTINATION_NOT_ALLOWED: "DESTINATION_NOT_ALLOWED",
+  // Safe cancellation (#987)
+  OPERATION_CANCELLED: "OPERATION_CANCELLED",
+  CANCELLATION_NOT_ALLOWED: "CANCELLATION_NOT_ALLOWED",
+  // Deterministic sorting (#997)
+  INVALID_SORT_KEY: "INVALID_SORT_KEY",
+  CURSOR_ORDER_MISMATCH: "CURSOR_ORDER_MISMATCH",
+  // Versioned projection rebuild (#989): the indexer lease is held right now.
+  PROJECTION_REBUILD_BUSY: "PROJECTION_REBUILD_BUSY"
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
@@ -168,3 +226,121 @@ export const FINALITY_POLICY = {
 } as const;
 
 export type FinalityPolicy = typeof FINALITY_POLICY;
+
+/**
+ * Schema stamps for the versioned API and the deployment preflight check (#803).
+ *
+ * Both stamps are derived from Prisma migration names: the 14-digit prefix of a
+ * migration directory (e.g. `20260725000002_add_wallet_auth` -> `20260725000002`).
+ * Because they share one coordinate system, the database stamp and the stamp the
+ * indexer reports can be compared directly.
+ *
+ * - `DATABASE` – migration stamp this build expects the database to be at.
+ * - `INDEXER`  – stamp the indexer writes into its checkpoint on startup.
+ * - `OLDEST`   – oldest migration stamp this build can still serve. Anything
+ *   older predates a schema the current code depends on and must be migrated first.
+ * - `SUPPORTED_*` – the migration stamps inside the supported window, published
+ *   through `GET /schema-version` so integrators can see what is servable.
+ *   Compatibility itself is a range check (see `getVersionMismatch`), so a stamp
+ *   inside the window that is not enumerated here is still compatible.
+ *
+ * Versioning rules:
+ * - Adding a migration that changes the shape of read/write paths bumps
+ *   `DATABASE` and `INDEXER` together and appends the stamp to `SUPPORTED_*`.
+ * - Extending the window backwards (raising `OLDEST`) is a breaking change for
+ *   anyone pinned to an older deployment and must be announced in
+ *   `backend/docs/SCHEMA_VERSIONS.md`.
+ */
+export const SCHEMA_VERSIONS = {
+  DATABASE: "20261001000001",
+  INDEXER: "20261001000001",
+  OLDEST: "20260725000002",
+  SUPPORTED_DATABASE_VERSIONS: [
+    "20260725000002",
+    "20260728000000",
+    "20260728000001",
+    "20260728010000",
+    "20260729000000",
+    "20260729000001",
+    "20260729000002",
+    "20260825000000",
+    "20260830000000",
+    "20260924000000",
+    "20260925000000",
+    "20260926000000",
+    "20260926000001",
+    "20260926000002",
+    "20260927000000",
+    "20260927000001",
+    "20260929000000",
+    "20260930000000",
+    "20261001000000",
+    "20261001000001",
+  ],
+  SUPPORTED_INDEXER_VERSIONS: [
+    "20260725000002",
+    "20260728000000",
+    "20260728000001",
+    "20260728010000",
+    "20260729000000",
+    "20260729000001",
+    "20260729000002",
+    "20260825000000",
+    "20260830000000",
+    "20260924000000",
+    "20260925000000",
+    "20260926000000",
+    "20260926000001",
+    "20260926000002",
+    "20260927000000",
+    "20260927000001",
+    "20260929000000",
+    "20260930000000",
+    "20261001000000",
+    "20261001000001",
+  ],
+} as const;
+
+/**
+ * Compare a reported schema stamp against the window this build supports.
+ *
+ * Both stamps live on the same 14-digit migration coordinate system, so the
+ * window check is a lexicographic range check. `unknown` means the stamp could
+ * not be read at all (no migrations applied / no indexer checkpoint yet) and is
+ * reported as its own issue so a deployment never guesses.
+ */
+export function getVersionMismatch(
+  databaseVersion: string,
+  indexerVersion: string,
+): { compatible: boolean; issues: string[] } {
+  const issues: string[] = [];
+
+  const check = (
+    label: "Database" | "Indexer",
+    version: string,
+    expected: string,
+  ): void => {
+    if (version === "unknown") {
+      issues.push(
+        `${label} schema version could not be determined; apply pending migrations or start the indexer before deploying.`,
+      );
+      return;
+    }
+    if (version < SCHEMA_VERSIONS.OLDEST) {
+      issues.push(
+        `${label} schema version ${version} is not supported: it is older than the oldest supported version ${SCHEMA_VERSIONS.OLDEST}.`,
+      );
+      return;
+    }
+    if (version > expected) {
+      issues.push(
+        `${label} schema version ${version} is not supported by this build (expected ${expected}); roll the deployment back to a build that understands it.`,
+      );
+    }
+  };
+
+  check("Database", databaseVersion, SCHEMA_VERSIONS.DATABASE);
+  check("Indexer", indexerVersion, SCHEMA_VERSIONS.INDEXER);
+
+  return { compatible: issues.length === 0, issues };
+}

@@ -13,6 +13,14 @@ import { JOB_STATUSES } from "../worker/types.js";
  *
  * Object schemas are `.strict()` on purpose: an added, removed or renamed
  * field is a contract change and must be reflected here and in the docs.
+ *
+ * ##1000 — Versioned API response contracts.
+ *
+ * Every contract is published with a semantic version and a deprecation
+ * window. Breaking changes must bump the major version and add a new
+ * entry to `CONTRACT_VERSIONS`; the contract tests enforce that the
+ * version matches the documented version and that deprecated contracts
+ * carry a replacement pointer.
  */
 
 const iso = z.string().datetime({ offset: true });
@@ -134,6 +142,70 @@ export const job = z
   .strict();
 
 /**
+ * Schema version information returned by `GET /schema-version`
+ * (service: `src/services/schemaVersionService.ts`).
+ *
+ * `version` is the response envelope version, `contractVersion` the API
+ * contract version this deployment serves (#803). Both are additive metadata:
+ * the supported stamps are unchanged.
+ */
+export const schemaVersionInfo = z
+  .object({
+    version: z.number().int().positive(),
+    contractVersion: z.string(),
+    database: z
+      .object({
+        current: z.string(),
+        expected: z.string(),
+        supported: z.array(z.string())
+      })
+      .strict(),
+    indexer: z
+      .object({
+        current: z.string(),
+        expected: z.string(),
+        supported: z.array(z.string())
+      })
+      .strict()
+  })
+  .strict();
+
+/**
+ * Preflight validation result returned by `GET /schema-version/validate`.
+ */
+export const schemaValidation = z
+  .object({
+    version: z.number().int().positive(),
+    valid: z.boolean(),
+    databaseVersion: z.string(),
+    indexerVersion: z.string(),
+    issues: z.array(z.string())
+  })
+  .strict();
+
+/**
+ * Semantic version of each public contract. Major bumps are breaking.
+ * The documented version in `docs/API_RESPONSES.md` must match this map.
+ */
+export const CONTRACT_VERSIONS = {
+  action: "1.0.0",
+  "action-list": "1.0.0",
+  error: "1.0.0",
+  health: "1.0.0",
+  job: "1.0.0",
+  "job-list": "1.0.0",
+  "schema-version": "1.1.0",
+  "schema-validation": "1.1.0"
+} as const;
+
+/**
+ * Deprecation metadata for contracts that are still served but will be
+ * removed. A contract with an entry here must name a replacement contract
+ * that exists in `CONTRACTS`.
+ */
+export const DEPRECATED_CONTRACTS = {} as Record<string, { replacedBy: string; sunset: string }>;
+
+/**
  * Schemas addressable from documentation code fences:
  * ```json contract=action
  */
@@ -143,7 +215,9 @@ export const CONTRACTS = {
   error: errorEnvelope,
   health: success(health),
   job: success(job),
-  "job-list": success(z.array(job))
+  "job-list": success(z.array(job)),
+  "schema-version": success(schemaVersionInfo),
+  "schema-validation": success(schemaValidation)
 } as const;
 
 export type ContractName = keyof typeof CONTRACTS;

@@ -2585,6 +2585,114 @@ fn round_claim_rounding_never_over_distributes() {
         "distributed total must never exceed realized_yield"
     );
     assert_eq!(client.round(&round_id).claimed, a + b + c);
+    assert_eq!(
+        client.round_rounding_remainder(&round_id),
+        RoundingRemainder {
+            whole_units: 1,
+            numerator: 0,
+            denominator: 3,
+        }
+    );
+}
+
+#[test]
+fn round_claim_handles_wide_intermediate_products() {
+    let (env, client, admin) = setup();
+    let round_id = client.open_round(&admin);
+    let alice = Address::generate(&env);
+
+    client.round_deposit(&alice, &round_id, &i128::MAX);
+    client.lock_round(&admin, &round_id);
+    assert_eq!(
+        client.try_settle_round(&admin, &round_id, &i128::MAX, &i128::MAX),
+        Err(Ok(Error::InvalidAmount))
+    );
+    client.settle_round(&admin, &round_id, &i128::MAX, &0);
+
+    assert_eq!(client.round_claim(&alice, &round_id), i128::MAX);
+    assert_eq!(
+        client.round_rounding_remainder(&round_id),
+        RoundingRemainder {
+            whole_units: 0,
+            numerator: 0,
+            denominator: i128::MAX,
+        }
+    );
+}
+
+#[test]
+fn round_claim_stress_simulates_adversarial_depositors_and_rounds() {
+    const DEPOSITORS: usize = 2_000;
+    const ROUNDS: u32 = 300;
+    let env = Env::default();
+
+    for round_index in 0..ROUNDS {
+        let mut seed = round_index.wrapping_add(0x9e37_79b9);
+        let deposits: std::vec::Vec<i128> = (0..DEPOSITORS)
+            .map(|index| match round_index % 3 {
+                0 => 1,
+                1 if index == 0 => 1_000_000,
+                1 => 1,
+                _ => {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    (seed % 10_000 + 1) as i128
+                }
+            })
+            .collect();
+        let denominator = deposits.iter().sum::<i128>();
+        let total_pool = (round_index as i128 * 7_919) % 100_003 + 1;
+        let mut claim_order: std::vec::Vec<usize> = (0..DEPOSITORS).collect();
+        claim_order.rotate_left((round_index as usize * 137) % DEPOSITORS);
+        let mut remainder = RoundingRemainder {
+            whole_units: 0,
+            numerator: 0,
+            denominator,
+        };
+        let mut distributed = 0i128;
+
+        for index in claim_order {
+            let (share, claim_numerator) =
+                mul_div_rem(&env, total_pool, deposits[index], denominator).unwrap();
+            distributed += share;
+            remainder =
+                accumulate_rounding_remainder(&remainder, claim_numerator, denominator).unwrap();
+
+            assert!(
+                distributed + remainder.whole_units <= total_pool,
+                "round {round_index}: claims and accrued dust exceeded the settled pool"
+            );
+        }
+
+        assert_eq!(remainder.numerator, 0, "round {round_index}");
+        assert_eq!(distributed + remainder.whole_units, total_pool);
+    }
+}
+
+#[test]
+fn round_claim_reports_remainder_after_round_is_pruned() {
+    let (env, client, admin) = setup();
+    let round_id = client.open_round(&admin);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let carol = Address::generate(&env);
+    client.round_deposit(&alice, &round_id, &1);
+    client.round_deposit(&bob, &round_id, &1);
+    client.round_deposit(&carol, &round_id, &1);
+    client.lock_round(&admin, &round_id);
+    client.settle_round(&admin, &round_id, &1, &0);
+    client.round_claim(&alice, &round_id);
+    client.round_claim(&bob, &round_id);
+    client.round_claim(&carol, &round_id);
+
+    let remainder = client.round_rounding_remainder(&round_id);
+    assert_eq!(remainder.whole_units, 1);
+    assert_eq!(remainder.numerator, 0);
+
+    let claimed_participants = vec![&env, alice, bob, carol];
+    client.prune_round(&admin, &round_id, &claimed_participants);
+    assert_eq!(client.round_rounding_remainder(&round_id), remainder);
 }
 
 #[test]

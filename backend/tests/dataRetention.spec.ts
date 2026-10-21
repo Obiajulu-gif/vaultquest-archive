@@ -7,7 +7,11 @@ describe("DataRetentionService", () => {
 
   beforeEach(() => {
     mockPrisma = {
-      actionLedger: { count: vi.fn(async () => 0), deleteMany: vi.fn(async () => ({ count: 0 })) },
+      actionLedger: {
+        count: vi.fn(async () => 0),
+        deleteMany: vi.fn(async () => ({ count: 0 })),
+        findMany: vi.fn(async () => []),
+      },
       chainEvent: { count: vi.fn(async () => 0), deleteMany: vi.fn(async () => ({ count: 0 })) },
       poisonEvent: {
         count: vi.fn(async () => 0),
@@ -313,5 +317,148 @@ describe("DataRetentionService", () => {
 
       expect(report.protected).toBe(5);
     });
+  });
+});
+
+describe("DataRetentionService.previewCleanup", () => {
+  let mockPrisma: any;
+  let service: DataRetentionService;
+
+  beforeEach(() => {
+    mockPrisma = {
+      backgroundJob: {
+        findMany: vi.fn(async () => []),
+        deleteMany: vi.fn(async (args: { where: { id: { in: string[] } } }) => ({ count: args.where.id.in.length })),
+      },
+      actionLease: {
+        findMany: vi.fn(async () => []),
+        deleteMany: vi.fn(async (args: { where: { actionId: { in: string[] } } }) => ({ count: args.where.actionId.in.length })),
+      },
+      chainEvent: {
+        findMany: vi.fn(async () => []),
+        deleteMany: vi.fn(async (args: { where: { id: { in: string[] } } }) => ({ count: args.where.id.in.length })),
+      },
+      actionLedger: { findMany: vi.fn(async () => []) },
+    };
+    service = new DataRetentionService(mockPrisma);
+  });
+
+  it("preview classifies eligible vs protected records and deletes nothing", async () => {
+    mockPrisma.backgroundJob.findMany = vi.fn(async () => [
+      { id: "job-done", status: "completed" },
+      { id: "job-fail", status: "failed" },
+      { id: "job-run", status: "in_progress" },
+      { id: "job-queued", status: "queued" },
+    ]);
+
+    const preview = await service.previewCleanup("BACKGROUND_JOB");
+
+    expect(preview.mode).toBe("preview");
+    expect(preview.counts).toEqual({ eligible: 2, skipped: 2, held: 0, failed: 0 });
+    expect(preview.applied).toBe(0);
+    expect(mockPrisma.backgroundJob.deleteMany).not.toHaveBeenCalled();
+
+    const byId = Object.fromEntries(preview.records.map((r) => [r.id, r]));
+    expect(byId["job-done"].outcome).toBe("eligible");
+    expect(byId["job-run"].outcome).toBe("skipped");
+    expect(byId["job-run"].reason).toMatch(/still running/);
+    // counts always sum to the number of records classified
+    const { eligible, skipped, held, failed } = preview.counts;
+    expect(eligible + skipped + held + failed).toBe(preview.records.length);
+  });
+
+  it("expired leases are eligible, valid leases are skipped", async () => {
+    const now = Date.now();
+    mockPrisma.actionLease.findMany = vi.fn(async () => [
+      { actionId: "lease-expired", expiresAt: new Date(now - 60_000) },
+      { actionId: "lease-valid", expiresAt: new Date(now + 60_000) },
+    ]);
+
+    const preview = await service.previewCleanup("ACTION_LEASE");
+    const byId = Object.fromEntries(preview.records.map((r) => [r.id, r.outcome]));
+    expect(byId["lease-expired"]).toBe("eligible");
+    expect(byId["lease-valid"]).toBe("skipped");
+    expect(preview.counts.eligible).toBe(1);
+    expect(preview.counts.skipped).toBe(1);
+  });
+
+  it("held records are reported with a reason and never deleted, even in apply mode", async () => {
+    mockPrisma.backgroundJob.findMany = vi.fn(async () => [
+      { id: "job-a", status: "completed" },
+      { id: "job-held", status: "completed" },
+    ]);
+    const holds = {
+      heldReason: (_table: string, id: string) =>
+        id === "job-held" ? "legal hold: dispute #42" : null,
+    };
+
+    const preview = await service.previewCleanup("BACKGROUND_JOB", { apply: true, holds });
+
+    expect(preview.counts).toEqual({ eligible: 1, skipped: 0, held: 1, failed: 0 });
+    const held = preview.records.find((r) => r.id === "job-held");
+    expect(held.outcome).toBe("held");
+    expect(held.reason).toContain("legal hold");
+    // Only the eligible id is deleted; the held id is excluded.
+    expect(mockPrisma.backgroundJob.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ["job-a"] } },
+    });
+    expect(preview.applied).toBe(1);
+  });
+
+  it("apply mode deletes only the eligible set and reports the applied count", async () => {
+    mockPrisma.backgroundJob.findMany = vi.fn(async () => [
+      { id: "j1", status: "completed" },
+      { id: "j2", status: "queued" },
+      { id: "j3", status: "failed" },
+    ]);
+
+    const preview = await service.previewCleanup("BACKGROUND_JOB", { apply: true });
+
+    expect(preview.mode).toBe("apply");
+    expect(mockPrisma.backgroundJob.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ["j1", "j3"] } },
+    });
+    expect(preview.applied).toBe(2);
+  });
+
+  it("a classification error is recorded as failed and that record is never deleted", async () => {
+    mockPrisma.backgroundJob.findMany = vi.fn(async () => [
+      { id: "j-ok", status: "completed" },
+      { id: "j-bad", status: "completed" },
+    ]);
+    const holds = {
+      heldReason: (_table: string, id: string) => {
+        if (id === "j-bad") throw new Error("hold store unavailable");
+        return null;
+      },
+    };
+
+    const preview = await service.previewCleanup("BACKGROUND_JOB", { apply: true, holds });
+
+    const bad = preview.records.find((r) => r.id === "j-bad");
+    expect(bad.outcome).toBe("failed");
+    expect(bad.reason).toContain("hold store unavailable");
+    expect(preview.counts.failed).toBe(1);
+    expect(mockPrisma.backgroundJob.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ["j-ok"] } },
+    });
+  });
+
+  it("protects chain events linked to a pending/submitted action", async () => {
+    mockPrisma.actionLedger.findMany = vi.fn(async () => [{ txHash: "tx-pending" }]);
+    mockPrisma.chainEvent.findMany = vi.fn(async () => [
+      { id: "ce-old", txHash: "tx-old" },
+      { id: "ce-pending", txHash: "tx-pending" },
+    ]);
+
+    const preview = await service.previewCleanup("CHAIN_EVENT");
+    const byId = Object.fromEntries(preview.records.map((r) => [r.id, r.outcome]));
+    expect(byId["ce-old"]).toBe("eligible");
+    expect(byId["ce-pending"]).toBe("skipped");
+  });
+
+  it("rejects unknown and never-delete categories", async () => {
+    await expect(service.previewCleanup("NOPE")).rejects.toThrow(/Unknown retention category/);
+    await expect(service.previewCleanup("USER")).rejects.toThrow(/not subject to cleanup/);
   });
 });

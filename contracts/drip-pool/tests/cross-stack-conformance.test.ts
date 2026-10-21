@@ -112,6 +112,7 @@ describe("Cross-stack: Contract Methods", () => {
       "join", "deposit", "drip", "deposit_with_duration", "claim",
       "claim_reward", "withdraw", "withdraw_locked", "add_yield",
       "credit_yield", "draw_winner", "pool", "savings", "admins", "threshold",
+      "round_rounding_remainder",
     ];
 
     for (const method of expectedMethods) {
@@ -539,7 +540,7 @@ describe("Cross-stack: Proxy Contract", () => {
 
 describe("Cross-stack: Fixture Regeneration", () => {
   it("canonical spec version is semver compliant", () => {
-    const specVersion = "1.0.0";
+    const specVersion = "1.1.0";
     expect(specVersion).toMatch(/^\d+\.\d+\.\d+$/);
   });
 

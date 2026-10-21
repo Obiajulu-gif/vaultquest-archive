@@ -172,7 +172,7 @@ export function checkNodeVersion(version = process.versions.node): CheckResult {
 }
 
 export function checkPackageManager(): CheckResult {
-  const hasPnpm = existsSync(resolve(REPLI_ROOT, "pnpm-lock.yaml"));
+  const hasPnpm = existsSync(resolve(REPL_ROOT, "pnpm-lock.yaml"));
   const hasNpm = existsSync(resolve(REPL_ROOT, "package-lock.json"));
   if (hasPnpm) {
     return {

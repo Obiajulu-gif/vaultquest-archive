@@ -10,9 +10,12 @@
  * (`redacted: true`) because the archive is a public, aggregate record.
  */
 
+import { provenanceManager, type RecordProvenance, type RecordProvenanceReport } from "./record-provenance";
+
 export type ArchiveClaimStatus = "claimed" | "partially_claimed" | "expired";
 
 export interface ArchiveRoundInput {
+  provenance?: RecordProvenance;
   id: string;
   vaultId: number | string;
   vaultName: string;
@@ -66,6 +69,8 @@ export interface ArchiveWinnerRecord {
 }
 
 export interface ArchiveDocument {
+  /** Opt-in maintainer report; provenance actor metadata is private by default. */
+  provenance?: RecordProvenanceReport;
   schema: "vaultquest.archive.v1";
   id: string;
   source: string;
@@ -79,6 +84,7 @@ export interface ArchiveDocument {
 }
 
 export interface ArchiveExportOptions {
+  includeProvenance?: boolean;
   /** Explicit timestamp keeps output byte-for-byte deterministic in tests. */
   generatedAt?: string;
   /** Label identifying the data source. */
@@ -182,6 +188,13 @@ export function createArchiveExport(
 
   return {
     schema: "vaultquest.archive.v1",
+    ...(options.includeProvenance ? {
+      provenance: provenanceManager.exportProvenanceReport(rounds.map((round) =>
+        provenanceManager.attachDerivedProvenance(
+          { id: `archive:${round.id}` }, [round], "vaultquest.archive.v1", "archive-export",
+        ),
+      )),
+    } : {}),
     id: options.id ?? `archive-${generatedAt}`,
     source: options.source ?? "vaultquest.mock",
     generatedAt,

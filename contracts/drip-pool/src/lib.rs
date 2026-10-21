@@ -72,7 +72,7 @@ fn decimals_to_val(decimals: u32) -> u32 {
 
 use soroban_sdk::{
     bytes, contract, contracterror, contractimpl, contracttype, symbol_short, vec, Address, Bytes,
-    BytesN, Env, Vec,
+    BytesN, Env, Vec, U256,
 };
 use vaultquest_common::YieldStrategyClient;
 
@@ -183,6 +183,7 @@ pub enum DataKey {
     // ── Draw auditability (#718) ───────────────────────────────────────────
     RoundDrawCommit(u32), // RoundDrawCommit — seed commitment + snapshot Merkle root, frozen at lock (#718)
     RoundDrawResult(u32), // RoundDrawResult — revealed seed, winner index, and winner (#718)
+    RoundRoundingRemainder(u32), // cumulative pro-rata claim remainder, by round id
 }
 
 // ── Errors ─────────────────────────────────────────────────────────────────
@@ -387,6 +388,17 @@ pub struct Round {
     pub claimed: i128,            // running total paid out via round_claim
 }
 
+/// Cumulative fractional share dust left in the vault after round claims.
+/// `whole_units` is already-rounded-down token dust; the fractional part is
+/// `numerator / denominator`. The denominator is the frozen round snapshot.
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct RoundingRemainder {
+    pub whole_units: i128,
+    pub numerator: i128,
+    pub denominator: i128,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 #[contracttype]
 pub enum RenewalKey {
@@ -501,6 +513,82 @@ pub struct RoundRandomness {
     pub winning_ticket: i128, // in [0, round.principal_snapshot) at resolution time
     pub source: RandomnessSource,
     pub resolved_at: u64,
+}
+
+/// Computes `value * multiplier / denominator` without losing precision to
+/// intermediate overflow. All arguments are non-negative and division rounds
+/// down; the second result is the exact numerator remainder.
+fn mul_div_rem(
+    env: &Env,
+    value: i128,
+    multiplier: i128,
+    denominator: i128,
+) -> Result<(i128, i128), Error> {
+    if value < 0 || multiplier < 0 || denominator <= 0 {
+        return Err(Error::RoundAccountingViolation);
+    }
+
+    if let Some(product) = value.checked_mul(multiplier) {
+        return Ok((product / denominator, product % denominator));
+    }
+
+    let denominator_wide = U256::from_u128(env, denominator as u128);
+    let product =
+        U256::from_u128(env, value as u128).mul(&U256::from_u128(env, multiplier as u128));
+    let quotient = product
+        .div(&denominator_wide)
+        .to_u128()
+        .and_then(|amount| i128::try_from(amount).ok())
+        .ok_or(Error::RoundAccountingViolation)?;
+    let remainder = product
+        .rem_euclid(&denominator_wide)
+        .to_u128()
+        .and_then(|amount| i128::try_from(amount).ok())
+        .ok_or(Error::RoundAccountingViolation)?;
+
+    Ok((quotient, remainder))
+}
+
+fn accumulate_rounding_remainder(
+    current: &RoundingRemainder,
+    claim_numerator: i128,
+    denominator: i128,
+) -> Result<RoundingRemainder, Error> {
+    if denominator <= 0
+        || current.denominator != denominator
+        || current.whole_units < 0
+        || current.numerator < 0
+        || current.numerator >= denominator
+        || claim_numerator < 0
+        || claim_numerator >= denominator
+    {
+        return Err(Error::RoundAccountingViolation);
+    }
+
+    let units_until_carry = denominator - claim_numerator;
+    let (whole_units, numerator) = if current.numerator >= units_until_carry {
+        (
+            current
+                .whole_units
+                .checked_add(1)
+                .ok_or(Error::RoundAccountingViolation)?,
+            current.numerator - units_until_carry,
+        )
+    } else {
+        (
+            current.whole_units,
+            current
+                .numerator
+                .checked_add(claim_numerator)
+                .ok_or(Error::RoundAccountingViolation)?,
+        )
+    };
+
+    Ok(RoundingRemainder {
+        whole_units,
+        numerator,
+        denominator,
+    })
 }
 
 // ── Contract ───────────────────────────────────────────────────────────────
@@ -2551,7 +2639,14 @@ impl DripPool {
         }
 
         let payout = if pool.total_deposited > 0 && pool.emergency_assets > 0 {
-            (unwithdrawn.saturating_mul(pool.emergency_assets)) / pool.total_deposited
+            // Round down; any unallocated asset units remain in emergency_assets.
+            mul_div_rem(
+                &env,
+                unwithdrawn,
+                pool.emergency_assets,
+                pool.total_deposited,
+            )?
+            .0
         } else {
             0
         };
@@ -2696,11 +2791,14 @@ impl DripPool {
                 / (ROUND_TICKET_WEIGHT_WINDOW_SECONDS as u128);
             core::cmp::max(bps as u32, ROUND_MIN_TICKET_WEIGHT_BPS)
         };
-        let weighted: i128 = amount.saturating_mul(weight_bps as i128) / (BPS_DENOMINATOR as i128);
+        // Ticket weights are integer units and conservatively round down.
+        let weighted = mul_div_rem(&env, amount, weight_bps as i128, BPS_DENOMINATOR as i128)?.0;
 
         let key = DataKey::RoundDeposit(who.clone(), round_id);
         let existing: i128 = env.storage().persistent().get(&key).unwrap_or(0);
-        let updated = existing.saturating_add(weighted);
+        let updated = existing
+            .checked_add(weighted)
+            .ok_or(Error::RoundAccountingViolation)?;
         env.storage().persistent().set(&key, &updated);
         Self::bump_round(&env, &key);
 
@@ -2721,7 +2819,10 @@ impl DripPool {
             Self::bump_round(&env, &nonce_key);
         }
 
-        round.principal_snapshot = round.principal_snapshot.saturating_add(weighted);
+        round.principal_snapshot = round
+            .principal_snapshot
+            .checked_add(weighted)
+            .ok_or(Error::RoundAccountingViolation)?;
         Self::save_round(&env, &round);
 
         env.events().publish(
@@ -2751,6 +2852,16 @@ impl DripPool {
         round.status = RoundStatus::Locked;
         round.locked_at = Some(env.ledger().timestamp());
         Self::save_round(&env, &round);
+        let remainder_key = DataKey::RoundRoundingRemainder(round_id);
+        env.storage().persistent().set(
+            &remainder_key,
+            &RoundingRemainder {
+                whole_units: 0,
+                numerator: 0,
+                denominator: round.principal_snapshot,
+            },
+        );
+        Self::bump_round(&env, &remainder_key);
 
         env.events().publish(
             (symbol_short!("round"), symbol_short!("locked")),
@@ -2777,6 +2888,9 @@ impl DripPool {
         Self::require_signer(&env, &caller)?;
         Self::require_compatible_config(&env)?;
         if realized_yield < 0 || prize_reserve < 0 {
+            return Err(Error::InvalidAmount);
+        }
+        if realized_yield.checked_add(prize_reserve).is_none() {
             return Err(Error::InvalidAmount);
         }
 
@@ -2835,11 +2949,9 @@ impl DripPool {
 
     /// Claim a participant's pro-rata share of a Settled round's
     /// `realized_yield + prize_reserve`, proportional to their frozen
-    /// per-round deposit vs. `principal_snapshot`. Enforces
-    /// `round.claimed <= round.realized_yield + round.prize_reserve` inline
-    /// rather than trusting the division, returning
-    /// `Error::RoundAccountingViolation` if a claim would ever push the
-    /// round over its settled total (#508).
+    /// per-round deposit vs. `principal_snapshot`. Enforces that paid claims
+    /// plus accumulated whole-unit dust never exceed the settled total; the
+    /// fractional remainder is exposed through `round_rounding_remainder`.
     pub fn round_claim(env: Env, who: Address, round_id: u32) -> Result<i128, Error> {
         who.require_auth();
         Self::require_compatible_config(&env)?;
@@ -2858,19 +2970,46 @@ impl DripPool {
             return Ok(0);
         }
 
-        let total_pool = round.realized_yield.saturating_add(round.prize_reserve);
-        // Integer division: any dust remainder is left unclaimed in the
-        // round rather than distributed, so total payouts can never exceed
-        // `total_pool` (checked explicitly below regardless).
-        let share = (total_pool.saturating_mul(deposit)) / round.principal_snapshot;
+        let total_pool = round
+            .realized_yield
+            .checked_add(round.prize_reserve)
+            .ok_or(Error::RoundAccountingViolation)?;
+        let (share, claim_numerator) =
+            mul_div_rem(&env, total_pool, deposit, round.principal_snapshot)?;
 
-        let new_claimed = round.claimed.saturating_add(share);
-        if new_claimed > total_pool {
+        let new_claimed = round
+            .claimed
+            .checked_add(share)
+            .ok_or(Error::RoundAccountingViolation)?;
+        let remainder_key = DataKey::RoundRoundingRemainder(round_id);
+        let current_remainder: RoundingRemainder = env
+            .storage()
+            .persistent()
+            .get(&remainder_key)
+            .unwrap_or(RoundingRemainder {
+                whole_units: 0,
+                numerator: 0,
+                denominator: round.principal_snapshot,
+            });
+        let new_remainder = accumulate_rounding_remainder(
+            &current_remainder,
+            claim_numerator,
+            round.principal_snapshot,
+        )?;
+        if new_claimed
+            .checked_add(new_remainder.whole_units)
+            .ok_or(Error::RoundAccountingViolation)?
+            > total_pool
+        {
             return Err(Error::RoundAccountingViolation);
         }
 
         round.claimed = new_claimed;
         Self::save_round(&env, &round);
+        env.storage()
+            .persistent()
+            .set(&remainder_key, &new_remainder);
+        Self::bump_round(&env, &remainder_key);
 
         // Zero out this participant's per-round deposit so a second call
         // for the same round pays nothing (idempotent claim).
@@ -3216,7 +3355,9 @@ impl DripPool {
                 .get(&DataKey::RoundDeposit(who.clone(), round_id))
                 .unwrap_or(0);
             if deposit > 0 {
-                let segment_end = cursor.saturating_add(deposit);
+                let segment_end = cursor
+                    .checked_add(deposit)
+                    .ok_or(Error::RoundAccountingViolation)?;
                 if randomness.winning_ticket >= cursor && randomness.winning_ticket < segment_end {
                     winner = Some(who.clone());
                 }
@@ -3303,7 +3444,7 @@ impl DripPool {
                 .remove(&DataKey::RoundDeposit(who, round_id));
         }
 
-        // Remove the round entry itself to reclaim storage.
+        // Keep the rounding report after pruning the larger round record.
         env.storage().persistent().remove(&DataKey::Round(round_id));
         Self::bump_instance(&env);
 
@@ -3528,6 +3669,25 @@ impl DripPool {
     /// View a round's full state (#508).
     pub fn round(env: Env, round_id: u32) -> Result<Round, Error> {
         Self::load_round(&env, round_id)
+    }
+
+    /// View cumulative round-claim dust as whole token units plus a fractional
+    /// numerator over the frozen snapshot. The report survives round pruning.
+    pub fn round_rounding_remainder(env: Env, round_id: u32) -> RoundingRemainder {
+        let key = DataKey::RoundRoundingRemainder(round_id);
+        let remainder = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(RoundingRemainder {
+                whole_units: 0,
+                numerator: 0,
+                denominator: 0,
+            });
+        if env.storage().persistent().has(&key) {
+            Self::bump_round(&env, &key);
+        }
+        remainder
     }
 
     /// View a participant's frozen deposit for a specific round (#508).

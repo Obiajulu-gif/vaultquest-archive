@@ -2,15 +2,18 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { randomUUID } from "node:crypto";
 import { startTestDb, resetDb, type TestDb } from "./helpers/db.js";
 import { buildApp } from "../src/app.js";
+import { createRequester, type Requester } from "./helpers/request.js";
 import type { FastifyInstance } from "fastify";
 
 describe("GET /dashboard/summary (#14)", () => {
   let db: TestDb;
   let app: FastifyInstance;
+  let inject: Requester;
 
   beforeAll(async () => {
     db = await startTestDb();
     app = buildApp({ prisma: db.prisma, internalSecret: "test-secret" });
+    inject = createRequester(app);
   });
   afterAll(async () => {
     await app.close();
@@ -21,7 +24,7 @@ describe("GET /dashboard/summary (#14)", () => {
   });
 
   async function postAction(wallet: string, type = "deposit"): Promise<string> {
-    const res = await app.inject({
+    const res = await inject({
       method: "POST",
       url: "/actions",
       headers: { "idempotency-key": randomUUID(), "content-type": "application/json" },
@@ -36,12 +39,12 @@ describe("GET /dashboard/summary (#14)", () => {
   }
 
   it("rejects requests without ?wallet=", async () => {
-    const res = await app.inject({ method: "GET", url: "/dashboard/summary" });
+    const res = await inject({ method: "GET", url: "/dashboard/summary" });
     expect(res.statusCode).toBe(400);
   });
 
   it("returns zeroed summary for an unknown wallet", async () => {
-    const res = await app.inject({
+    const res = await inject({
       method: "GET",
       url: "/dashboard/summary?wallet=GUNKNOWN"
     });
@@ -72,18 +75,18 @@ describe("GET /dashboard/summary (#14)", () => {
     await postAction(wallet);
 
     // Move two actions through pending → submitted with tx hashes.
-    await app.inject({
+    await inject({
       method: "PATCH",
       url: `/actions/${a}/submitted`,
       payload: { tx_hash: "TX_A_HASH" }
     });
-    await app.inject({
+    await inject({
       method: "PATCH",
       url: `/actions/${b}/submitted`,
       payload: { tx_hash: "TX_B_HASH" }
     });
 
-    const res = await app.inject({
+    const res = await inject({
       method: "GET",
       url: `/dashboard/summary?wallet=${wallet}`
     });
@@ -103,7 +106,7 @@ describe("GET /dashboard/summary (#14)", () => {
     const wallet = "GSTALE";
     await postAction(wallet);
 
-    const res = await app.inject({
+    const res = await inject({
       method: "GET",
       url: `/dashboard/summary?wallet=${wallet}&stale_after_ms=0`
     });
@@ -116,7 +119,7 @@ describe("GET /dashboard/summary (#14)", () => {
     await postAction("GA");
     await postAction("GB");
 
-    const res = await app.inject({
+    const res = await inject({
       method: "GET",
       url: "/dashboard/summary?wallet=GA"
     });

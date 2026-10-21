@@ -462,7 +462,7 @@ export class QuestService {
    * the unique constraint make this idempotent under concurrency and
    * retries.
    */
-  private async createRewareGrantIfAbsent(
+  private async createRewardGrantIfAbsent(
     tx: Prisma.TransactionClient,
     walletAddress: string,
     questId: string

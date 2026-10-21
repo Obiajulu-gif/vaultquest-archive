@@ -1,19 +1,33 @@
-import { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
-import { PrismaClient } from "@prisma/client";
+import type { PrismaClient } from "@prisma/client";
 import { safeText } from "../schemas/safeContent.js";
+import { sensitiveAccessLogger, type SensitiveFieldAccessLogger } from "../../../lib/sensitive-field-access.js";
+import { sensitiveAccessId } from "../utils/sensitiveAccessId.js";
 
-export const usersRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async (
+export const usersRoutes: FastifyPluginAsync<{ prisma: PrismaClient; accessLogger?: SensitiveFieldAccessLogger }> = async (
   fastify,
   opts
 ) => {
   const { prisma } = opts;
+  const accessLogger = opts.accessLogger ?? sensitiveAccessLogger;
+  const profileGuard = async (request: FastifyRequest, reply: FastifyReply) => {
+    await requireAuth(request, reply);
+    const user = (request as FastifyRequest & { user?: { id: string } }).user;
+    accessLogger.logAccess({
+      actor: user ? sensitiveAccessId(user.id) : "anonymous",
+      purpose: request.method === "GET" ? "profile_read" : "profile_update",
+      resourceType: "user_profile", resourceId: user ? sensitiveAccessId(user.id) : "unspecified",
+      fieldNames: request.method === "GET" ? ["email", "wallet_address"] : ["email"],
+      authorized: !reply.sent,
+    });
+  };
 
   fastify.get(
     "/me",
     {
-      preHandler: [requireAuth],
+      preHandler: [profileGuard],
     },
     async (request, reply) => {
       const userPayload = (request as any).user;
@@ -50,7 +64,7 @@ export const usersRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async (
   fastify.put(
     "/me",
     {
-      preHandler: [requireAuth],
+      preHandler: [profileGuard],
     },
     async (request, reply) => {
       const userPayload = (request as any).user;

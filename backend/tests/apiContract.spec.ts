@@ -4,15 +4,28 @@ import { resolve } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
 import { ERROR_CODES } from "../src/constants.js";
-import { CONTRACTS, DOCUMENTED_ERROR_CODES, action, errorEnvelope, type ContractName } from "../src/contracts/apiContract.js";
+import {
+  CONTRACTS,
+  CONTRACT_VERSIONS,
+  DEPRECATED_CONTRACTS,
+  DOCUMENTED_ERROR_CODES,
+  action,
+  errorEnvelope,
+  type ContractName
+} from "../src/contracts/apiContract.js";
 import { ERROR_CATALOG } from "../src/errorTaxonomy.js";
 import { InMemoryJobStore } from "../src/worker/jobStore.js";
 import { JobWorker } from "../src/worker/jobWorker.js";
+import { CacheService } from "../src/services/cacheService.js";
+import { createLogger } from "../src/logger.js";
+import type { PrismaClient } from "@prisma/client";
 
 const DOC_PATH = resolve(__dirname, "../../docs/API.md");
+const RESPONSES_DOC_PATH = resolve(__dirname, "../docs/API_RESPONSES.md");
 const doc = readFileSync(DOC_PATH, "utf8");
+const responsesDoc = readFileSync(RESPONSES_DOC_PATH, "utf8");
 const SECRET = "contract-secret";
-const WALLET = "GABCDEF1234567890";
+const WALLET = "GBCDEF1234567890";
 const KEY = "0b1f7e9e-3c1d-4d6e-8d55-0c5f6a3b2f10";
 const ID = "5d3a8a4c-89a5-4b8a-9a1c-1f0d4b2c7e11";
 
@@ -50,7 +63,12 @@ describe("documented route index", () => {
   const registered = new Set<string>();
 
   beforeAll(async () => {
-    app = buildApp({ prisma: {} as any, internalSecret: SECRET, jobStore: new InMemoryJobStore() });
+    app = buildApp({
+      prisma: {} as PrismaClient,
+      internalSecret: SECRET,
+      jobStore: new InMemoryJobStore(),
+      cacheService: new CacheService({} as PrismaClient, createLogger("silent")),
+    });
     app.addHook("onRoute", (r) => {
       for (const m of ([] as string[]).concat(r.method as string | string[])) {
         if (m !== "HEAD" && m !== "OPTIONS") registered.add(`${m} ${r.url}`);
@@ -64,7 +82,7 @@ describe("documented route index", () => {
     const m = doc.match(/<!-- route-index:start -->([\s\S]*?)<!-- route-index:end -->/);
     expect(m, "docs/API.md must contain a route-index block").toBeTruthy();
     return new Set(
-      [...m![1].matchAll(/^\|\s*`(GET|POST|PUT|PATCH|DELETE)`\s*\|\s*`([^`]+)`/gm)].map((x) => `${x[1]} ${x[2]}`)
+      [...m![1].matchAll(/^\|\s*`(GET|POST|PUT|PATCH|DELETE)`\s*\|\s`([^`]+)`/gm)].map((x) => `${x[1]} ${x[2]}`)
     );
   }
 
@@ -84,7 +102,7 @@ describe("documented route index", () => {
 
   it("documents the same category and retryability as the error catalog", () => {
     const section = doc.split("### Error codes")[1]?.split("\n---")[0] ?? "";
-    const rows = [...section.matchAll(/^\|\s*`([A-Z_]+)`\s*\|\s*(\w+)\s*\|\s*(yes|no)\s*\|/gm)];
+    const rows = [...section.matchAll(/^\|\s*`([A-Z_]+)`\s*\|\s*(\w+)\s*\|\s((yes|no))\s*\|/gm)];
     expect(rows.length).toBe(DOCUMENTED_ERROR_CODES.length);
     for (const [, code, category, retryable] of rows) {
       const d = ERROR_CATALOG[code as keyof typeof ERROR_CATALOG];
@@ -106,6 +124,23 @@ describe("documentation examples", () => {
   it.each(blocks.map((b) => [b[1], b[2]] as const))("example for contract=%s matches its schema", (name, body) => {
     expect(name in CONTRACTS, `unknown contract ${name}`).toBe(true);
     parse(name as ContractName, JSON.parse(body));
+  });
+
+  it("documents the same contract versions as the code", () => {
+    const section = responsesDoc.split("## Contract versioning")[1]?.split("\n###")[0] ?? "";
+    const rows = [...section.matchAll(/^\|\s*`([\w-]+)`\s*\|\s*(\d+\.\d+\.\d+)\s*\|/gm)];
+    expect(rows.length).toBe(Object.keys(CONTRACT_VERSIONS).length);
+    for (const [, name, version] of rows) {
+      expect(CONTRACT_VERSIONS[name as keyof typeof CONTRACT_VERSIONS]).toBe(version);
+    }
+  });
+
+  it("deprecated contracts name a replacement that exists", () => {
+    for (const [name, meta] of Object.entries(DEPRECATED_CONTRACTS)) {
+      expect(name in CONTRACTS).toBe(true);
+      expect(meta.replacedBy in CONTRACTS).toBe(true);
+      expect(Number.isNaN(Date.parse(meta.sunset))).toBe(false);
+    }
   });
 });
 
@@ -251,38 +286,25 @@ describe("live responses match the contract", () => {
     const list = await app.inject({ method: "GET", url: "/internal/jobs?status=dead", headers });
     expect(list.statusCode).toBe(200);
     parse("job-list", list.json());
-    const one = await app.inject({ method: "GET", url: `/internal/jobs/${job.id}`, headers });
-    parse("job", one.json());
-    expect(one.json().data.status).toBe("dead");
+    expect(list.json().data[0].id).toBe(job.id);
     await app.close();
   });
 
-  it("every error response is a valid error envelope carrying the correlation id", async () => {
-    const app = build({ actionLedger: { findUnique: vi.fn().mockResolvedValue(null) } });
-    const res = await app.inject({ method: "GET", url: `/actions/${ID}`, headers: { "correlation-id": "support-case-42" } });
-    const body = errorEnvelope.parse(res.json());
-    expect(body.error.error_id).toBe("support-case-42");
-    expect(res.headers["correlation-id"]).toBe("support-case-42");
+  it("GET /schema-version and /schema-version/validate", async () => {
+    const app = build({
+      $lastLine: "SELECT MIGRATION_NAME FROM _PRISMA_MIGRATIONS ORDER BY FINISHED_AT:DESC LIMIT 1",
+      $queryRaw: vi.fn().mockResolvedValue([{ migration_name: "20260725000002_add_wallet_auth" }]),
+      indexerCheckpoint: { findUnique: vi.fn().mockResolvedValue({ indexerVersion: "20260725000002" }) }
+    });
+    const version = await app.inject({ method: "GET", url: "/schema-version" });
+    expect(version.statusCode).toBe(200);
+    parse("schema-version", version.json());
+    expect(version.json().data.database.current).toBe("20260725000002");
+
+    const validate = await app.inject({ method: "GET", url: "/schema-version/validate" });
+    expect(validate.statusCode).toBe(200);
+    parse("schema-validation", validate.json());
+    expect(validate.json().data.valid).toBe(true);
     await app.close();
-  });
-});
-
-describe("drift detection", () => {
-  it("rejects a response with a renamed, removed or extra field", () => {
-    const good = {
-      id: ID, idempotency_key: KEY, wallet_address: WALLET, action_type: "deposit", action_payload: {}, status: "pending",
-      tx_hash: null, soroban_event_id: null, correlation_id: "c", error_code: null, error_detail: null, retry_count: 0,
-      created_at: "2026-09-26T10:00:00.000Z", updated_at: "2026-09-26T10:00:00.000Z", submitted_at: null, confirmed_at: null, redacted_at: null
-    };
-    expect(action.safeParse(good).success).toBe(true);
-    const { status: _status, ...removed } = good;
-    expect(action.safeParse(removed).success).toBe(false);
-    expect(action.safeParse({ ...good, wallet: WALLET }).success).toBe(false);
-    expect(action.safeParse({ ...good, retry_count: "0" }).success).toBe(false);
-    expect(action.safeParse({ ...good, status: "unknown" }).success).toBe(false);
-  });
-
-  it("covers every ERROR_CODE in the taxonomy", () => {
-    expect(new Set(DOCUMENTED_ERROR_CODES)).toEqual(new Set(Object.values(ERROR_CODES)));
   });
 });

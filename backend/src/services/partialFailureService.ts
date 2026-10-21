@@ -15,7 +15,7 @@
  * Every state transition is audited. Secrets are never stored in `metadata`.
  */
 
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import type { AuditActor, AuditRecorder } from "./auditTrail.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -114,7 +114,7 @@ export class PartialFailureService {
         state: "unresolved",
         retryable: input.retryable ?? false,
         description: input.description,
-        metadata: input.metadata ?? undefined,
+        metadata: (input.metadata ?? undefined) as Prisma.InputJsonValue | undefined,
         staleSinceAt: input.staleSinceAt ?? null,
       },
       update: {},
@@ -129,7 +129,7 @@ export class PartialFailureService {
           state: "unresolved",
           retryable: input.retryable ?? false,
           description: input.description,
-          metadata: input.metadata ?? undefined,
+          metadata: (input.metadata ?? undefined) as Prisma.InputJsonValue | undefined,
           staleSinceAt: input.staleSinceAt ?? null,
         },
       }),
@@ -148,7 +148,7 @@ export class PartialFailureService {
         state: "unresolved",
         retryable: input.retryable ?? false,
         description: input.description,
-        metadata: input.metadata ?? undefined,
+        metadata: (input.metadata ?? undefined) as Prisma.InputJsonValue | undefined,
         staleSinceAt: input.staleSinceAt ?? null,
       },
     });
@@ -162,7 +162,7 @@ export class PartialFailureService {
   }> {
     const limit = Math.min(query.limit ?? 50, 200);
 
-    const where: Record<string, unknown> = {};
+    const where: Prisma.PartialFailureWhereInput = {};
     if (query.operationType) where["operationType"] = query.operationType;
     if (query.severity) where["severity"] = query.severity;
     if (query.state) where["state"] = query.state;
@@ -170,7 +170,7 @@ export class PartialFailureService {
     if (query.since) where["detectedAt"] = { gte: new Date(query.since) };
 
     const rows = await this.prisma.partialFailure.findMany({
-      where: where as Parameters<typeof this.prisma.partialFailure.findMany>[0]["where"],
+      where,
       orderBy: [{ detectedAt: "desc" }, { id: "desc" }],
       take: limit + 1,
       ...(query.cursor != null ? { cursor: { id: query.cursor }, skip: 1 } : {}),

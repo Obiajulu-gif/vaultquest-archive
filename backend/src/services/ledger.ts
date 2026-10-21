@@ -1,13 +1,14 @@
 import { Prisma } from "@prisma/client";
 import type { PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
-import { ERROR_CODES, FINALITY_POLICY } from "../constants.js";
+import { ERROR_CODES, FINALITY_POLICY, canTransition, type ActionStatus } from "../constants.js";
 import { AppError } from "../errors.js";
 import { withTelemetry } from "./telemetry.js";
 import type { IntentInput, ActionRecord } from "../types.js";
 import type { CacheService, IndexerCheckpoint } from "./cacheService.js";
 import { Amount, InvalidAmountError } from "../amount.js";
 import type { RawHorizonEvent } from "./stellarIndexer.js";
+import { appendEventLog } from "./eventLogIntegrity.js";
 
 // #504 — getPortfolioSummary previously read payload.token/asset with a
 // hardcoded "USDC" fallback whenever it was missing. Today there is
@@ -177,6 +178,22 @@ export class LedgerService {
     this.onActionConfirmedCallback = callback;
   }
 
+  async appendChainEvents(events: RawHorizonEvent[]): Promise<void> {
+    await this.runSerializable((tx) => appendEventLog(tx, events));
+  }
+
+  async quarantineEvent(input: { sorobanEventId: string; ledger: number; contractId: string; txHash: string;
+    rawEvent: Record<string, unknown>; reason: string }): Promise<void> {
+    await this.prisma.poisonEvent.upsert({ where: { sorobanEventId: input.sorobanEventId },
+      create: { ...input, rawEvent: input.rawEvent as Prisma.InputJsonValue }, update: {} });
+  }
+
+  async upsertPoolRegistryEntry(input: { salt: string; poolAddress: string; factoryAddress: string;
+    admin: string; asset: string; wasmHash: string; deployedLedger: number }): Promise<void> {
+    await this.prisma.poolRegistry.upsert({ where: { poolAddress: input.poolAddress }, create: input,
+      update: { ...input } });
+  }
+
   /**
    * Runs `fn` inside a `Serializable` transaction, retrying on
    * serialization failures/deadlocks. This is the single choke point every
@@ -286,20 +303,20 @@ export class LedgerService {
     const expiresAt = new Date(Date.now() + (ttlMs ?? this.defaultLeaseTtlMs));
     try {
       await this.prisma.actionLease.create({
-        data: { actionId: input.actionId, workerId: input.workerId, expiresAt }
+        data: { actionId, workerId, expiresAt }
       });
       return true;
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
-        const owned = await this.prisma.actionLease.findUnique({ where: { actionId: input.actionId } });
+        const owned = await this.prisma.actionLease.findUnique({ where: { actionId } });
         if (!owned || owned.expiresAt.getTime() <= Date.now()) {
           const replaced = await this.prisma.actionLease.updateMany({
-            where: { actionId: input.actionId, expiresAt: { lte: new Date() } },
-            data: { workerId: input.workerId, acquiredAt: new Date(), expiresAt }
+            where: { actionId, expiresAt: { lte: new Date() } },
+            data: { workerId, acquiredAt: new Date(), expiresAt }
           });
           return replaced.count > 0;
         }
-        return owned.workerId === input.workerId;
+        return owned.workerId === workerId;
       }
       throw err;
     }
@@ -657,52 +674,55 @@ export class LedgerService {
   }
 
   private async reconcileEventImpl(input: ReconcileEventInput): Promise<{ matched: boolean }> {
-    let shouldFireCallback = false;
-    let actionIdToCallback: string | null = null;
-    let actionTypeToCallback: string | null = null;
-    const outcome = await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      const row = await tx.actionLedger.findFirst({ where: { txHash: input.txHash } });
-      if (!row) {
-        const eventPayloadWithLedger = input.ledger ? { ...(input.eventPayload as object), ledger: input.ledger } : input.eventPayload;
-        await tx.pendingEvent.upsert({ where: { txHash: input.txHash }, create: { txHash: input.txHash, sorobanEventId: input.sorobanEventId, eventPayload: eventPayloadWithLedger as object, statusHint: input.statusHint, ledgerClosedAt: input.ledgerClosedAt ?? null }, update: {} });
-        if (this.cacheService) await this.cacheService.setPendingEvent({ txHash: input.txHash, sorobanEventId: input.sorobanEventId, eventPayload: eventPayloadWithLedger, statusHint: input.statusHint, ledgerClosedAt: input.ledgerClosedAt ?? null, receivedAt: new Date(), consumedAt: null });
-        return { matched: false };
-      }
-      if (row.status === "confirmed" || row.status === "reverted") return { matched: true };
-      const ledger = input.ledger ?? row.observedLedger;
-      const confirmationDepth = row.confirmationDepth ?? FINALITY_POLICY.defaultConfirmationDepth;
-      const finalizedLedger = ledger && ledger > 0 ? ledger + confirmationDepth : null;
-      const finalityStatus = ledger && ledger > 0 ? "provisional" : "finalized";
+    return (await this.reconcileEvents([input]))[0]!;
+  }
 
-      await tx.actionLedger.update({
-        where: { id: row.id },
-        data: {
-          status: input.statusHint === "reverted" ? "reverted" : "confirmed",
-          recoveryCheckpoint: {
-            stage: input.statusHint === "reverted" ? "reverted" : "confirmed",
-            checkpointed_at: (input.ledgerClosedAt ?? new Date()).toISOString()
-          },
-          sorobanEventId: input.sorobanEventId,
-          confirmedAt: new Date(),
-          errorCode: input.statusHint === "reverted" ? ERROR_CODES.REVERTED_ON_CHAIN : null,
-          observedLedger: ledger ?? row.observedLedger,
-          finalizedLedger,
-          finalityStatus
+  /** Commit one ordered batch atomically; callbacks and cache writes follow the commit. */
+  async reconcileEvents(inputs: ReconcileEventInput[]): Promise<Array<{ matched: boolean }>> {
+    if (!inputs.length) return [];
+    const result = await this.runSerializable(async (tx) => {
+      const outcomes: Array<{ matched: boolean }> = [];
+      const callbacks: Array<{ id: string; type: string }> = [];
+      const parked: Array<Awaited<ReturnType<typeof tx.pendingEvent.upsert>>> = [];
+      for (const input of inputs) {
+        const row = await tx.actionLedger.findFirst({ where: { txHash: input.txHash } });
+        if (!row) {
+          const eventPayload = input.ledger ? { ...(input.eventPayload as object), ledger: input.ledger } : input.eventPayload;
+          parked.push(await tx.pendingEvent.upsert({ where: { txHash: input.txHash }, create: {
+            txHash: input.txHash, sorobanEventId: input.sorobanEventId, eventPayload: eventPayload as Prisma.InputJsonValue,
+            statusHint: input.statusHint, ledgerClosedAt: input.ledgerClosedAt ?? null,
+            ...(input.ledgerClosedAt ? { receivedAt: input.ledgerClosedAt } : {}),
+          }, update: {} }));
+          outcomes.push({ matched: false });
+          continue;
         }
-      });
-
-      const confirmed = input.statusHint === "confirmed";
-      if (confirmed && row.actionType === "select_winner") {
-        shouldFireCallback = true;
-        actionIdToCallback = row.id;
-        actionTypeToCallback = row.actionType;
+        if (row.status === "confirmed" || row.status === "reverted") { outcomes.push({ matched: true }); continue; }
+        const ledger = input.ledger ?? row.observedLedger;
+        const confirmationDepth = row.confirmationDepth ?? FINALITY_POLICY.defaultConfirmationDepth;
+        const confirmedAt = input.ledgerClosedAt ?? row.submittedAt ?? row.createdAt;
+        await tx.actionLedger.update({ where: { id: row.id }, data: {
+          status: input.statusHint === "reverted" ? "reverted" : "confirmed",
+          recoveryCheckpoint: { stage: input.statusHint === "reverted" ? "reverted" : "confirmed", checkpointed_at: confirmedAt.toISOString() },
+          sorobanEventId: input.sorobanEventId, verifiedPayload: (input.eventPayload ?? undefined) as Prisma.InputJsonValue,
+          confirmedAt, errorCode: input.statusHint === "reverted" ? ERROR_CODES.REVERTED_ON_CHAIN : null,
+          observedLedger: ledger ?? row.observedLedger,
+          finalizedLedger: ledger && ledger > 0 ? ledger + confirmationDepth : null,
+          finalityStatus: ledger && ledger > 0 ? "provisional" : "finalized",
+        } });
+        if (input.statusHint === "confirmed" && row.actionType === "select_winner") callbacks.push({ id: row.id, type: row.actionType });
+        await tx.actionLease.deleteMany({ where: { actionId: row.id } });
+        outcomes.push({ matched: true });
       }
-
-      await tx.actionLease.deleteMany({ where: { actionId: row.id } });
-      return { matched: true };
+      return { outcomes, callbacks, parked };
     });
-    if (shouldFireCallback && actionIdToCallback && actionTypeToCallback) { try { this.onActionConfirmedCallback?.(actionIdToCallback, actionTypeToCallback); } catch { /* callback errors must not break reconciliation */ } }
-    return outcome;
+    for (const callback of result.callbacks) {
+      try { this.onActionConfirmedCallback?.(callback.id, callback.type); }
+      catch { /* Committed reconciliation survives callback failures. */ }
+    }
+    for (const row of result.parked) await this.cacheService?.setPendingEvent({
+      ...row, statusHint: row.statusHint === "reverted" ? "reverted" : "confirmed",
+    });
+    return result.outcomes;
   }
 
   /**

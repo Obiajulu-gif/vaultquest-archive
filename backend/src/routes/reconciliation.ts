@@ -63,7 +63,7 @@ export const reconciliationRoutes = (prisma: PrismaClient, secret: string): Fast
         return ok(result);
       } catch (err) {
         if (err instanceof InvalidRepairTargetError) {
-          returk reply.code(400).send(fail("INVALID_REPAIR_TARGET", err.message));
+          return reply.code(400).send(fail("INVALID_REPAIR_TARGET", err.message));
         }
         throw err;
       }

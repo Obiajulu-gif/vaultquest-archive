@@ -23,6 +23,7 @@ import type { PrismaClient } from "@prisma/client";
 import { ERROR_CODES } from "../constants.js";
 import { AppError } from "../errors.js";
 import type { LedgerService } from "./ledger.js";
+import { RetentionHoldService } from "./retentionHoldService.js";
 import { createLogger } from "../logger.js";
 import { getPrometheusMetrics } from "./prometheusMetrics.js";
 
@@ -788,6 +789,7 @@ export async function sweepOrphans(
 ): Promise<SweepResult> {
   const cutoff = new Date(Date.now() - opts.ttlMinutes * 60 * 1000);
   const eventCutoff = new Date(Date.now() - 60 * 60 * 1000);
+  const holds = new RetentionHoldService(prisma);
 
   const staleActions = await prisma.actionLedger.findMany({
     where: {
@@ -809,6 +811,15 @@ export async function sweepOrphans(
   const expiredActions = staleActions.filter((action) => !activelyLeasedIds.has(action.id));
 
   let orphaned = 0;
+  const heldActionIds = new Set<string>();
+  for (const action of staleActions) {
+    if (await holds.isHeld("action_ledger", action.id)) heldActionIds.add(action.id);
+  }
+  const orphanableActionIds = staleActions.map((a) => a.id).filter((id) => !heldActionIds.has(id));
+  if (orphanableActionIds.length > 0) {
+    const result = await prisma.actionLedger.updateMany({
+      where: {
+        id: { in: orphanableActionIds },
   if (expiredActions.length > 0) {
     const result = await prisma.actionLedger.updateMany({
       where: {
@@ -829,6 +840,10 @@ export async function sweepOrphans(
     orphaned = result.count;
   }
 
+  const staleEvents = await prisma.pendingEvent.findMany({ where: { consumedAt: null, receivedAt: { lt: eventCutoff } }, select: { txHash: true } });
+  const heldEventIds = new Set<string>();
+  for (const event of staleEvents) if (await holds.isHeld("pending_event", event.txHash)) heldEventIds.add(event.txHash);
+  const pruned = await prisma.pendingEvent.deleteMany({ where: { txHash: { in: staleEvents.map((e) => e.txHash).filter((id) => !heldEventIds.has(id)) } } });
   const interruptedPending = await prisma.actionLedger.updateMany({
     where: {
       status: "pending",
@@ -887,6 +902,8 @@ async function pruneStalePendingEvents(prisma: PrismaClient, cutoff: Date) {
   });
 }
 
+  return { recovered: result.recovered, prunedEvents: pruned.count };
+}
 // ─── Manual repair command ────────────────────────────────────────────────────
 
 /**

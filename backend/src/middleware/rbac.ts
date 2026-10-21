@@ -2,6 +2,8 @@ import type { FastifyRequest, preHandlerHookHandler } from "fastify";
 import { AppError } from "../errors.js";
 import { timingSafeStringEqual } from "../utils/timingSafeCompare.js";
 import { hasPermission, type Permission, type Role } from "../../../lib/rbac.js";
+import type { SensitiveFieldAccessLogger } from "../../../lib/sensitive-field-access.js";
+import { sensitiveAccessId } from "../utils/sensitiveAccessId.js";
 
 /** The authenticated caller, attached to `req.principal` by `requirePermission`. */
 export type Principal = {
@@ -72,6 +74,7 @@ export function serviceSecretResolver(secret: string, subject = "internal-servic
 export function requirePermission(
   permission: Permission,
   resolvers: readonly PrincipalResolver[],
+  accessLogger?: SensitiveFieldAccessLogger,
 ): preHandlerHookHandler {
   return async function permissionGuard(req: FastifyRequest): Promise<void> {
     let principal: Principal | null = null;
@@ -79,8 +82,14 @@ export function requirePermission(
       principal = await resolve(req);
       if (principal) break;
     }
-    if (!principal) throw AppError.unauthorized();
+    if (!principal) {
+      accessLogger?.logAccess({ actor: "anonymous", purpose: "data_export", resourceType: "wallet_export",
+        resourceId: "unspecified", fieldNames: ["wallet_address", "amount"], authorized: false });
+      throw AppError.unauthorized();
+    }
     if (!hasPermission([principal.role], permission)) {
+      accessLogger?.logAccess({ actor: sensitiveAccessId(principal.subject), purpose: "data_export", resourceType: "wallet_export",
+        resourceId: "unspecified", fieldNames: ["wallet_address", "amount"], authorized: false });
       req.log.warn(
         { event: "permission_denied", permission, role: principal.role, subject: principal.subject },
         "permission denied",

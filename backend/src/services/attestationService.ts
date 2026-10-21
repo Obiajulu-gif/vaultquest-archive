@@ -58,7 +58,7 @@ export class AttestationService {
    * non-UTC offset).
    */
   private normalizeTimestamp(value: Date | string | number): string {
-    const date = value instandanceof Date ? value : new Date(value);
+    const date = value instanceof Date ? value : new Date(value);
     if (Number.isNaN(date.getTime())) {
       throw new Error(`Invalid timestamp: ${String(value)}`);
     }

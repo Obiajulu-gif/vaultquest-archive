@@ -1,3 +1,4 @@
+
 /**
  * Tamper-evident change history for critical domain records (#787).
  *
@@ -28,6 +29,7 @@
  * the in-memory store used in tests and a database-backed store in production.
  */
 
+
 import { createHash } from "node:crypto";
 import { stableStringify } from "./ledger.js";
 
@@ -49,6 +51,7 @@ export const CRITICAL_RECORD_TYPES = [
 export type CriticalRecordType = (typeof CRITICAL_RECORD_TYPES)[number];
 
 export type ChangeAction =
+
   | "CREATE"
   | "UPDATE"
   | "DELETE"
@@ -56,6 +59,7 @@ export type ChangeAction =
   | "ROLE_CHANGE"
   | "SETTLEMENT"
   | "REVOKE";
+
 
 export interface ChangeHistoryEntry {
   id: string;
@@ -66,6 +70,7 @@ export interface ChangeHistoryEntry {
   action: ChangeAction;
   /** Wallet address, admin id, or "system". */
   actor: string;
+
   /** Why the change was made — required for destructive/permission changes. */
   reason: string;
   /** Field-level previous state; null on create. */
@@ -76,6 +81,7 @@ export interface ChangeHistoryEntry {
   prevHash: string;
   entryHash: string;
 }
+
 
 export interface AppendChangeInput {
   recordType: CriticalRecordType;
@@ -88,12 +94,14 @@ export interface AppendChangeInput {
   timestamp?: string;
 }
 
+
 export type VerificationProblemCode =
   | "ALTERED"
   | "MISSING"
   | "OUT_OF_ORDER"
   | "BROKEN_LINK"
   | "GENESIS_MISMATCH";
+
 
 export interface VerificationProblem {
   code: VerificationProblemCode;
@@ -102,6 +110,7 @@ export interface VerificationProblem {
   detail: string;
 }
 
+
 export interface VerificationResult {
   ok: boolean;
   recordType: CriticalRecordType;
@@ -109,6 +118,7 @@ export interface VerificationResult {
   entryCount: number;
   problems: VerificationProblem[];
 }
+
 
 export interface ChangeHistoryStore {
   /** Entries for a record, oldest first. */
@@ -119,6 +129,7 @@ export interface ChangeHistoryStore {
   lastHash(recordType: CriticalRecordType, recordId: string): Promise<string>;
   insert(entry: ChangeHistoryEntry): Promise<void>;
 }
+
 
 export class InMemoryChangeHistoryStore implements ChangeHistoryStore {
   private readonly entries: ChangeHistoryEntry[] = [];
@@ -143,6 +154,7 @@ export class InMemoryChangeHistoryStore implements ChangeHistoryStore {
     this.entries.push(entry);
   }
 
+
   /** Test helper: write a raw entry, bypassing the chain, to simulate tampering. */
   async insertRaw(entry: ChangeHistoryEntry): Promise<void> {
     this.entries.push(entry);
@@ -152,6 +164,7 @@ export class InMemoryChangeHistoryStore implements ChangeHistoryStore {
     this.entries.length = 0;
   }
 }
+
 
 /** Canonical, order-independent serialization used for hashing. */
 export function canonicalizePayload(entry: Omit<ChangeHistoryEntry, "entryHash">): string {
@@ -170,6 +183,7 @@ export function canonicalizePayload(entry: Omit<ChangeHistoryEntry, "entryHash">
   });
 }
 
+
 export function computeEntryHash(entry: Omit<ChangeHistoryEntry, "entryHash">): string {
   return createHash("sha256").update(canonicalizePayload(entry)).digest("hex");
 }
@@ -182,6 +196,7 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<ChangeAction> = new Set([
   "REVOKE",
 ]);
 
+
 export class ChangeHistoryService {
   private counter = 0;
 
@@ -191,6 +206,7 @@ export class ChangeHistoryService {
   ) {}
 
   private now(): Date {
+
     return this.options.now ? this.options.now() : new Date();
   }
 
@@ -199,6 +215,7 @@ export class ChangeHistoryService {
     this.counter += 1;
     return `chg_${this.now().getTime().toString(36)}_${this.counter.toString(36)}`;
   }
+
 
   /**
    * Appends a change to the record's chain. Serialised per record so two
@@ -217,6 +234,7 @@ export class ChangeHistoryService {
     if (input.action === "DELETE" && input.after !== null) {
       throw new Error("DELETE must not carry a new state");
     }
+
 
     return this.withRecordLock(input.recordType, input.recordId, async () => {
       const sequence = (await this.store.lastSequence(input.recordType, input.recordId)) + 1;
@@ -241,6 +259,7 @@ export class ChangeHistoryService {
         entryHash: computeEntryHash(withoutHash),
       };
       await this.store.insert(entry);
+
       return entry;
     });
   }
@@ -248,6 +267,7 @@ export class ChangeHistoryService {
   async history(recordType: CriticalRecordType, recordId: string): Promise<ChangeHistoryEntry[]> {
     return this.store.list(recordType, recordId);
   }
+
 
   /**
    * Recomputes the whole chain and reports every problem found. A clean result
@@ -259,6 +279,7 @@ export class ChangeHistoryService {
     recordId: string,
   ): Promise<VerificationResult> {
     const entries = await this.store.list(recordType, recordId);
+
     const problems: VerificationProblem[] = [];
 
     if (entries.length === 0) {
@@ -266,6 +287,7 @@ export class ChangeHistoryService {
     }
 
     let expectedPrev = GENESIS_HASH;
+
 
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
@@ -302,6 +324,7 @@ export class ChangeHistoryService {
         });
       }
 
+
       expectedPrev = entryHash;
     }
 
@@ -313,6 +336,7 @@ export class ChangeHistoryService {
       problems,
     };
   }
+
 
   /**
    * Verifies every record that has history. Use in a maintenance job or a
@@ -327,6 +351,7 @@ export class ChangeHistoryService {
     }
     return results;
   }
+
 
   private async withRecordLock<T>(
     recordType: CriticalRecordType,
@@ -351,7 +376,10 @@ export class ChangeHistoryService {
       if (locks.get(key) === undefined) locks.delete(key);
     }
   }
+
 }
 
 /** Per-record serialisation, keyed by `recordType:recordId`. */
 const locks = new Map<string, Promise<void>>();
+
+

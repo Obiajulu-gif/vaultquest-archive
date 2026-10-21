@@ -66,6 +66,54 @@ guards, so after correcting a migration you simply re-run it; there is rarely
 anything to undo by hand. Roll back from a dump only when a statement already
 destroyed data.
 
+### Verifying a rollback or failed migration (#1000)
+
+After a migration fails part-way, or after you roll one back, confirm where the
+database actually landed:
+
+```bash
+npx tsx src/scripts/migrationSafety.ts --verify-rollback <migration-id>                   # expect fully reverted
+npx tsx src/scripts/migrationSafety.ts --verify-rollback <migration-id> --expect applied  # expect fully applied
+```
+
+Every table, index and column the migration creates or drops is probed and
+classified as evidence that the migration is *applied* or *reverted*. The state
+is one of:
+
+| State | Meaning | Exit |
+| --- | --- | --- |
+| `reverted` | Everything the migration created is gone and everything it dropped is back | 0 when `--expect reverted` |
+| `applied` | Everything is in its post-migration state | 0 when `--expect applied` |
+| `partial` | Some objects are migrated and some are not; the report names both groups | 1 |
+| `unverifiable` | No reliable evidence (data-only migration, only `DROP ... IF EXISTS` of absent objects) or a probe could not run | 1 |
+
+The report also reads Prisma's `_prisma_migrations` ledger. A failed migration
+leaves an unfinished record that blocks every later `prisma migrate deploy`, so
+a clean schema with a `failed` ledger fails verification and prints the
+`prisma migrate resolve --rolled-back <id>` command to run. The reverse
+mismatches (schema migrated, ledger not; schema reverted, ledger still
+`applied`) are flagged the same way. If the ledger cannot be queried the schema
+classification still runs and the ledger is reported as `unknown`.
+
+Edge cases:
+
+- **Row data is never inspected.** A `reverted` schema only proves the objects
+  are back. After a destructive migration, compare row counts and checksums
+  against the pre-migration dump before reopening writes.
+- **`partial` is not safe to re-run blindly.** Either finish the rollback by hand
+  using the rollback notes above, or fix forward by re-applying the missing
+  statements; statements are guarded, so a re-run is the normal fix-forward path.
+- **A migration that creates then drops the same object** is judged by its final
+  statement.
+- A dropped object that is absent proves the drop only when the statement was
+  not `IF EXISTS`; otherwise it could never have existed and is ignored.
+
+For a failed *deployment*, roll the application back first so nothing writes
+against the wrong schema, run `--verify-rollback` for each migration in that
+release (newest first), then run the deployment preflight
+(`backend/scripts/validate-deployment.ts`) to confirm the schema versions the
+rolled-back build expects.
+
 ## 4. Adding a migration
 
 1. Create the folder `prisma/migrations/<timestamp>_<phase>_<description>/migration.sql`.
@@ -82,6 +130,10 @@ covers parsing (including every real migration folder in the repo), preview
 (create vs skip, affected counts, unknown-count degradation, no-op detection),
 and post-checks across successful, partially-failed, incomplete-backfill and
 unverifiable scenarios.
+[`backend/tests/rollback-verification.spec.ts`](../backend/tests/rollback-verification.spec.ts)
+covers rollback verification: reverted, applied, partial and unverifiable
+schemas, `IF EXISTS` and create-then-drop handling, and Prisma ledger
+agreement.
 
 ```bash
 pnpm --filter backend test -- migration-safety

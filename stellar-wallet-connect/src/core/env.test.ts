@@ -9,7 +9,7 @@ const BASE_ENV = {
   NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015",
   NEXT_PUBLIC_HORIZON_URL: "https://horizon-testnet.stellar.org",
   NEXT_PUBLIC_SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org",
-  NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID: "CA1234DRIPPOOL",
+  NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
   NEXT_PUBLIC_VAULT_ASSET_CODE: "USDC",
   NEXT_PUBLIC_VAULT_ASSET_ISSUER: VALID_ISSUER,
 };
@@ -18,7 +18,7 @@ describe("parseFrontendEnv", () => {
   it("accepts valid env", () => {
     const env = parseFrontendEnv(BASE_ENV);
     expect(env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID).toBe("wallet-id-123");
-    expect(env.NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID).toBe("CA1234DRIPPOOL");
+    expect(env.NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID).toBe("CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
     expect(env.NEXT_PUBLIC_VAULT_ASSET_CODE).toBe("USDC");
     expect(env.NEXT_PUBLIC_VAULT_ASSET_ISSUER).toBe(VALID_ISSUER);
   });
@@ -442,5 +442,35 @@ describe("Mock Stellar Horizon Network Suite", () => {
       expect(realNetworkCallDetected).toBe(false);
       expect(data.mocked).toBe(true);
     });
+  });
+});
+
+describe("secure frontend environment", () => {
+  it.each([
+    { NEXT_PUBLIC_HORIZON_URL: "file:///private" },
+    { NEXT_PUBLIC_SOROBAN_RPC_URL: "https://user:password@rpc.example.org" },
+    { NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID: "Cinvalid" },
+    { NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE: "unknown" },
+    { NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE: "Public Global Stellar Network ; September 2015" },
+    { APP_ENV: "staging", NEXT_PUBLIC_HORIZON_URL: "http://rpc.example.org" },
+    { NEXT_PUBLIC_API_KEY: "sensitive-key" },
+  ])("rejects unsafe configuration %#", (override) => {
+    expect(() => parseFrontendEnv({ ...BASE_ENV, ...override })).toThrow(/Invalid frontend env/);
+  });
+});
+
+describe("frontend error redaction", () => {
+  it("reports URL credentials and public secret names without their values", () => {
+    try { parseFrontendEnv({ ...BASE_ENV, NEXT_PUBLIC_SOROBAN_RPC_URL: "https://user:private-password@rpc.example.org", NEXT_PUBLIC_SIGNING_SECRET: "sensitive-value" }); }
+    catch (error) {
+      expect(String(error)).toContain("NEXT_PUBLIC_SIGNING_SECRET");
+      expect(String(error)).not.toContain("sensitive-value");
+      expect(String(error)).not.toContain("private-password");
+      return;
+    }
+    throw new Error("Expected configuration rejection");
+  });
+  it("accepts explicitly selected mainnet in production", () => {
+    expect(parseFrontendEnv({ ...BASE_ENV, APP_ENV: "production", NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE: "Public Global Stellar Network ; September 2015" }).NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE).toContain("Public Global");
   });
 });

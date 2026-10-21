@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -11,6 +11,7 @@ import {
   Wallet,
 } from "lucide-react";
 import { toast } from "react-hot-toast";
+import { usePrefersReducedMotion } from "@/lib/usePrefersReducedMotion";
 
 const ASSETS = ["XLM", "USDC", "USDT", "BTC"];
 const LOCKUP_OPTIONS = [
@@ -19,6 +20,26 @@ const LOCKUP_OPTIONS = [
   { label: "8–14 days", value: 14 },
   { label: "15+ days", value: 90 },
 ];
+
+// Validation order = visual order, so focus lands on the first invalid field on screen.
+const FIELD_IDS = {
+  name: "pool-name",
+  minDeposit: "pool-min",
+  maxDeposit: "pool-max",
+  maxParticipants: "pool-participants",
+  startDate: "pool-start",
+  endDate: "pool-end",
+};
+const REQUIRED_FIELDS = new Set(["name", "startDate", "endDate"]);
+
+/** Wires a field to its error text for assistive tech. */
+function fieldA11y(field, error) {
+  return {
+    "aria-invalid": error ? true : undefined,
+    "aria-describedby": error ? `${FIELD_IDS[field]}-error` : undefined,
+    "aria-required": REQUIRED_FIELDS.has(field) ? true : undefined,
+  };
+}
 
 const VALIDATION = {
   name: { minLength: 3, maxLength: 64 },
@@ -82,19 +103,25 @@ function FieldError({ id, message }) {
   if (!message) return null;
   return (
     <p id={id} className="mt-1 flex items-center gap-1 text-xs text-red-500" role="alert">
+// Not a live region: the summary alert announces failures once, and each
+// message is read with its field through aria-describedby.
+function FieldError({ id, message }) {
+  if (!message) return null;
+  return (
+    <p id={id} className="mt-1 flex items-center gap-1 text-xs text-red-500">
       <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
       {message}
     </p>
   );
 }
 
-function StepIndicator({ current, total }) {
+function StepIndicator({ current, total, reducedMotion }) {
   return (
-    <div className="flex items-center gap-1.5" aria-label={`Step ${current + 1} of ${total}`}>
+    <div className="flex items-center gap-1.5" role="img" aria-label={`Step ${Math.min(current + 1, total)} of ${total}`}>
       {Array.from({ length: total }).map((_, i) => (
         <span
           key={i}
-          className={`h-1.5 rounded-full transition-all duration-300 ${
+          className={`h-1.5 rounded-full ${reducedMotion ? "" : "transition-all duration-300 "}${
             i <= current ? "bg-red-500 w-6" : "bg-vault-border w-1.5"
           }`}
           aria-hidden="true"
@@ -108,6 +135,10 @@ export default function PoolCreationForm({ onSubmit }) {
   const [step, setStep] = useState(0); // 0=form, 1=review, 2=submitting, 3=success
   const [pending, setPending] = useState(false);
   const [errors, setErrors] = useState({});
+  const [submitError, setSubmitError] = useState(null);
+  const reducedMotion = usePrefersReducedMotion();
+  const headingRef = useRef(null);
+  const isFirstRender = useRef(true);
   const [form, setForm] = useState({
     name: "",
     asset: "XLM",
@@ -127,20 +158,36 @@ export default function PoolCreationForm({ onSubmit }) {
   }, []);
 
   const fieldError = useMemo(() => (field) => errors[field] || null, [errors]);
-  const hasErrors = Object.keys(errors).length > 0;
+  // Fixed fields are cleared to `undefined`, so count only live messages.
+  const errorCount = Object.values(errors).filter(Boolean).length;
+  const hasErrors = errorCount > 0;
+
+  // Each step swaps out the control that had focus; move focus to the new
+  // step's heading so keyboard and screen-reader users land in context.
+  useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    headingRef.current?.focus();
+  }, [step]);
 
   const handleNext = useCallback(() => {
     const errs = validateForm(form);
     if (Object.keys(errs).length > 0) {
       setErrors(errs);
+      const first = Object.keys(FIELD_IDS).find((f) => errs[f]);
+      if (first) document.getElementById(FIELD_IDS[first])?.focus();
       return;
     }
+    setSubmitError(null);
     setStep(1);
   }, [form]);
 
   const handleSubmit = useCallback(async () => {
     if (pending) return;
     setPending(true);
+    setSubmitError(null);
     setStep(2);
     try {
       await onSubmit?.(form);
@@ -148,6 +195,7 @@ export default function PoolCreationForm({ onSubmit }) {
       toast.success("Pool created successfully!", { duration: 5000 });
     } catch {
       toast.error("Failed to create pool. Please try again.");
+      setSubmitError("Pool creation failed. Your settings were kept — review them and sign again.");
       setStep(1);
     } finally {
       setPending(false);
@@ -162,7 +210,7 @@ export default function PoolCreationForm({ onSubmit }) {
           <p className="text-xs font-medium uppercase tracking-[0.22em] text-vault-muted">
             Pool creation
           </p>
-          <h2 className="mt-1 text-xl font-semibold text-vault-text">
+          <h2 ref={headingRef} tabIndex={-1} className="mt-1 text-xl font-semibold text-vault-text outline-none">
             {step === 0
               ? "Configure pool parameters"
               : step === 1
@@ -172,12 +220,17 @@ export default function PoolCreationForm({ onSubmit }) {
                   : "Pool created"}
           </h2>
         </div>
-        <StepIndicator current={step} total={3} />
+        <StepIndicator current={step} total={3} reducedMotion={reducedMotion} />
       </div>
 
       {/* Step 0: Form */}
       {step === 0 && (
         <div className="space-y-5">
+          {hasErrors && (
+            <p role="alert" className="sr-only">
+              {errorCount === 1 ? "1 field needs attention." : `${errorCount} fields need attention.`}
+            </p>
+          )}
           {/* Pool name */}
           <div>
             <label htmlFor="pool-name" className="block text-sm font-medium text-vault-text">
@@ -185,6 +238,7 @@ export default function PoolCreationForm({ onSubmit }) {
             </label>
             <input
               id="pool-name"
+              {...fieldA11y("name", fieldError("name"))}
               value={form.name}
               onChange={(e) => update("name", e.target.value)}
               className="mt-1 w-full rounded-xl border border-vault-border bg-vault-surface px-4 py-2.5 text-sm text-vault-text outline-none transition focus:border-red-400 focus:ring-2 focus:ring-red-400/25"
@@ -238,6 +292,7 @@ export default function PoolCreationForm({ onSubmit }) {
               </label>
               <input
                 id="pool-min"
+              {...fieldA11y("minDeposit", fieldError("minDeposit"))}
                 type="number"
                 min={VALIDATION.minDeposit.min}
                 value={form.minDeposit}
@@ -254,6 +309,7 @@ export default function PoolCreationForm({ onSubmit }) {
               </label>
               <input
                 id="pool-max"
+              {...fieldA11y("maxDeposit", fieldError("maxDeposit"))}
                 type="number"
                 min={VALIDATION.maxDeposit.min}
                 value={form.maxDeposit}
@@ -274,6 +330,7 @@ export default function PoolCreationForm({ onSubmit }) {
               </label>
               <input
                 id="pool-participants"
+              {...fieldA11y("maxParticipants", fieldError("maxParticipants"))}
                 type="number"
                 min={VALIDATION.maxParticipants.min}
                 max={VALIDATION.maxParticipants.max}
@@ -310,6 +367,7 @@ export default function PoolCreationForm({ onSubmit }) {
               </label>
               <input
                 id="pool-start"
+              {...fieldA11y("startDate", fieldError("startDate"))}
                 type="date"
                 value={form.startDate}
                 onChange={(e) => update("startDate", e.target.value)}
@@ -325,6 +383,7 @@ export default function PoolCreationForm({ onSubmit }) {
               </label>
               <input
                 id="pool-end"
+              {...fieldA11y("endDate", fieldError("endDate"))}
                 type="date"
                 value={form.endDate}
                 onChange={(e) => update("endDate", e.target.value)}
@@ -370,6 +429,13 @@ export default function PoolCreationForm({ onSubmit }) {
             Confirm pool configuration
           </p>
 
+          {submitError && (
+            <div role="alert" className="flex items-start gap-2 rounded-2xl border border-red-400/40 bg-red-500/10 p-4 text-sm text-red-600 dark:text-red-400">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+              {submitError}
+            </div>
+          )}
+
           <div className="divide-y divide-vault-border rounded-2xl border border-vault-border/40 bg-vault-surface/40 px-5 py-1 space-y-1">
             <ReviewRow label="Pool name" value={form.name} />
             <ReviewRow label="Asset" value={form.asset} />
@@ -409,9 +475,9 @@ export default function PoolCreationForm({ onSubmit }) {
 
       {/* Step 2: Submitting */}
       {step === 2 && (
-        <div className="flex flex-col items-center justify-center py-12 space-y-4">
+        <div role="status" aria-busy="true" className="flex flex-col items-center justify-center py-12 space-y-4">
           <div className="flex h-16 w-16 items-center justify-center rounded-full border-2 border-red-500/30">
-            <Loader2 className="h-8 w-8 animate-spin text-red-400" />
+            <Loader2 className={`h-8 w-8 text-red-400 ${reducedMotion ? "" : "animate-spin"}`} aria-hidden="true" data-testid="pool-submit-spinner" />
           </div>
           <h3 className="text-lg font-semibold text-vault-text">Creating pool...</h3>
           <p className="text-sm text-vault-muted max-w-xs text-center">
@@ -424,7 +490,7 @@ export default function PoolCreationForm({ onSubmit }) {
       {step === 3 && (
         <div className="flex flex-col items-center justify-center py-12 space-y-4 max-w-md mx-auto">
           <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
-            <CheckCircle2 className="h-10 w-10" />
+            <CheckCircle2 className="h-10 w-10" aria-hidden="true" />
           </div>
           <h3 className="text-2xl font-bold text-vault-text">Pool Created!</h3>
           <p className="text-sm text-vault-muted text-center">

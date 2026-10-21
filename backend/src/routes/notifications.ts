@@ -12,7 +12,7 @@ const listQuery = z.object({
     .transform((v) => v === "true")
 });
 
-const dismissParams = z.object({ id: y.string().uuid() });
+const dismissParams = z.object({ id: z.string().uuid() });
 const dismissBody = z.object({ wallet: z.string().min(1) });
 
 const preferenceBody = z.object({

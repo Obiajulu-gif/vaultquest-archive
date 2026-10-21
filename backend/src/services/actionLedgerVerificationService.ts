@@ -1,1 +1,397 @@
-aW1wb3J0IGNyeXB0byBmcm9tICJjcnlwdG8iOwppbXBvcnQgdHlwZSB7IFByaXNtYUNsaWVudCwgQWN0aW9uTGVkZ2VyIH0gZnJvbSAiQHByaXNtYS9jbGllbnQiOwoKZXhwb3J0IGludGVyZmFjZSBDaGFpbmVkUmVjb3JkIHsKICBpZDogc3RyaW5nOwogIHByZXZpb3VzSGFzaDogc3RyaW5nOwogIGN1cnJlbnRIYXNoOiBzdHJpbmc7CiAgYWN0b3I6IHN0cmluZzsKICBhdXRob3JpemF0aW9uOiBzdHJpbmc7CiAgaW50ZW50SGFzaDogc3RyaW5nOwogIHJlc3VsdDogdW5rbm93bjsKICByZWZlcmVuY2VkRXZlbnRzOiBzdHJpbmdbXTsKICB0aW1lc3RhbXA6IERhdGU7CiAgc2lnbmF0dXJlOiBzdHJpbmc7Cn0KCi8qKgogKiBDYW5vbmljYWwgc2VyaWFsaXphdGlvbiB1dGlsaXRpZXMuCiAqCiAqIFBheWxvYWRzIHRoYXQgYXJlIGhhc2hlZCwgc2lnbmVkLCBjb21wYXJlZCwgb3IgdmVyaWZpZWQgbXVzdCBiZQogKiBzZXJpYWxpemVkIGRldGVybWluaXN0aWNhbGx5LiBUaGUgcnVsZXMgYmVsb3cgZW5zdXJlIHRoYXQgZXF1aXZhbGVudAogKiBwYXlsb2FkcyAoZGlmZmVyaW5nIG9ubHkgaW4ga2V5IG9yZGVyLCB3aGl0ZXNwYWNlLCBjYXNpbmcgb2Yga25vd24KICogZW51bXMsIG9yIG51bWVyaWMgcHJlY2lzaW9uKSBwcm9kdWNlIHRoZSBzYW1lIGNhbm9uaWNhbCBvdXRwdXQuCiAqLwoKZXhwb3J0IGNvbnN0IENBTk9OSUNBTF9WRVJTSU9OID0gMTsKCi8qKgogKiBOdW1iZXJzIGFyZSBub3JtYWxpemVkIHRvIGEgZml4ZWQgZGVjaW1hbCBwcmVjaXNpb24gYW5kIHRyaW1tZWQgb2YKCiAqIHRyYWlsaW5nIHplcm9zIHNvIHRoYXQgMSwgMS4wLCAxLjAwIGFuZCAxLjAwMDAwMDAwIGFsbCBtYXAgdG8gdGhlCiAqIHNhbWUgc3RyaW5nLiBOdW1iZXJzIGFyZSByZW5kZXJlZCBhcyBzdHJpbmdzIHRvIGF2b2lkIEpTT04gZmxvYXQKICogcmVwcmVzZW50YXRpb24gZGlmZmVyZW5jZXMgYWNyb3NzIHJ1bnRpbWVzLgogKi8KZXhwb3J0IGNvbnN0IE5VTUVSSUNfUFJFQ0lTSU9OID0gODsKCi8qKgogKiBLbm93biBlbnVtLWxpa2UgZmllbGRzIGFyZSBub3JtYWxpemVkIHRvIGxvd2VyY2FzZSBzbyB0aGF0IGNhc2luZwogKiBkaWZmZXJlbmNlcyAoZS5nLiAiU1VDQ0VTUyIgdnMgInN1Y2Nlc3MiKSBkbyBub3QgY2hhbmdlIHRoZSBoYXNoLgogKi8KY29uc3QgQ0FTRV9JTlNFTlNJVElWRV9LRVlTID0gbmV3IFNldChbInN0YXR1cyIsICJhY3Rpb25UeXBlIiwgImFjdG9yIiwgImF1dGhvcml6YXRpb24iXSk7CgpmdW5jdGlvbiBub3JtYWxpemVTdHJpbmcodmFsdWU6IHN0cmluZyk6IHN0cmluZyB7CiAgcmV0dXJuIHZhbHVlLm5vcm1hbGl6ZSgiTkZDIikudHJpbSgpOwp9CgpmdW5jdGlvbiBub3JtYWxpemVOdW1iZXIodmFsdWU6IG51bWJlcik6IHN0cmluZyB7CiAgaWYgKCFOdW1iZXIuZmluaXRlKHZhbHVlKSkgewogICAgdGhyb3cgbmV3IEVycm9yKGBDYW5ub3QgY2Fub25pY2FsaXplIG5vbi1maW5pdGUgbnVtYmVyOiAke3ZhbHVlfWApOwogIH0KICBjb25zdCBmaXhlZCA9IHZhbHVlLnRvRml4ZWQoTlVNRVJJQ19QUkVDSVNJT04pOwogIGNvbnN0IHRyaW1tZWQgPSBmaXhlZC5yZXBsYWNlKC8wKyQvLCAiIikucmVwbGFjZSgvXC4kLywgIiIpOwogIHJldHVybiB0cmltbWVkID09PSAiLTAiID8gIjAiIDogdHJpbW1lZDsKfQoKLyoqCiAqIFJlY3Vyc2l2ZWx5IGNhbm9uaWNhbGl6ZSBhIHZhbHVlOgogKiAgLSBvYmplY3Qga2V5cyBhcmUgc29ydGVkIGxleGljb2dyYXBoaWNhbGx5CiAqICAtIGFycmF5IG9yZGVyIGlzIHByZXNlcnZlZCAob3JkZXIgaXMgc2VtYW50aWMpCiAqICAtIHN0cmluZ3MgYXJlIE5GQy1ub3JtYWxpemVkIGFuZCB0cmltbWVkCiAqICAtIG51bWJlcnMgYXJlIG5vcm1hbGl6ZWQgdG8gZml4ZWQgcHJlY2lzaW9uCiAqICAtIHVuZGVmaW5lZCBvYmplY3QgdmFsdWVzIGFyZSBkcm9wcGVkIChKU09OIGJlaGF2aW9yKQogKi8KZXhwb3J0IGZ1bmN0aW9uIGNhbm9uaWNhbGl6ZSh2YWx1ZTogdW5rbm93biwga2V5Pzogc3RyaW5nKTogdW5rbm93biB7CiAgaWYgKHZhbHVlID09PSBudWxsKSB7CiAgICByZXR1cm4gbnVsbDsKICB9CgogIGlmICh0eXBlb2YgdmFsdWUgPT09ICJ1bmRlZmluZWQiKSB7CiAgICByZXR1cm4gdW5kZWZpbmVkOwogIH0KCiAgaWYgKHR5cGVvZiB2YWx1ZSA9PT0gIm51bWJlciIpIHsKICAgIHJldHVybiBub3JtYWxpemVOdW1iZXIodmFsdWUpOwogIH0KCiAgaWYgKHR5cGVvZiB2YWx1ZSA9PT0gImJpZ2ludCIpIHsKICAgIHJldHVybiB2YWx1ZS50b1N0cmluZygpOwogIH0KCiAgaWYgKHR5cGVvZiB2YWx1ZSA9PT0gInN0cmluZyIpIHsKICAgIGNvbnN0IG5vcm1hbGl6ZWQgPSBub3JtYWxpemVTdHJpbmcodmFsdWUpOwogICAgaWYgKGtleSAmJiBDQVNFX0lOU0VOU0lUSVZFX0tFWVMuaGFzKGtleSkpIHsKICAgICAgcmV0dXJuIG5vcm1hbGl6ZWQudG9Mb3dlckNhc2UoKTsKICAgIH0KICAgIHJldHVybiBub3JtYWxpemVkOwogIH0KCiAgaWYgKHR5cGVvZiB2YWx1ZSA9PT0gImJvb2xlYW4iKSB7CiAgICByZXR1cm4gdmFsdWU7CiAgfQoKICBpZiAoQXJyYXkuaXNBcnJheSh2YWx1ZSkpIHsKICAgIHJldHVybiB2YWx1ZS5tYXAoKGl0ZW0pID0+IGNhbm9uaWNhbGl6ZShpdGVtLCBrZXkpKTsKICB9CgogIGlmICh2YWx1ZSBpbnN0YW5jZW9mIERhdGUpIHsKICAgIHJldHVybiB2YWx1ZS50b0lTT1N0cmluZygpOwogIH0KCiAgaWYgKHR5cGVvZiB2YWx1ZSA9PT0gIm9iamVjdCIpIHsKICAgIGNvbnN0IG9ialZhbHVlID0gdmFsdWUgYXMgUmVjb3JkPHN0cmluZywgdW5rbm93bj47CiAgICBjb25zdCBzb3J0ZWRLZXlzID0gT2JqZWN0LmtleXMob2JqVmFsdWUpLnNvcnQoKTsKICAgIGNvbnN0IG91dDpSZWNvcmQ8c3RyaW5nLCB1bmtub3duPiA9IHt9OwogICAgZm9yIChjb25zdCBrIG9mIHNvcnRlZEtleXMpIHsKICAgICAgY29uc3QgY2Fub25pY2FsSXRlbSA9IGNhbm9uaWNhbGl6ZShvYmpWYWx1ZVtrXSwgayk7CiAgICAgIGlmICh0eXBlb2YgY2Fub25pY2FsSXRlbSAhPT0gInVuZGVmaW5lZCIpIHsKICAgICAgICBvdXRba10gPSBjYW5vbmljYWxJdGVtOwogICAgICB9CiAgICB9CiAgICByZXR1cm4gb3V0OwogIH0KCiAgdGhyb3cgbmV3IEVycm9yKGBVbnN1cHBvcnRlZCB2YWx1ZSB0eXBlIGZvciBjYW5vbmljYWxpemF0aW9uOiAke3R5cGVvZiB2YWx1ZX1gKTsKfQoKLyoqCiAqIFByb2R1Y2UgYSBkZXRlcm1pbmlzdGljIEpTT04gc3RyaW5nIGZyb20gYW4gYXJiaXRyYXJ5IHBheWxvYWQuCiAqLwpleHBvcnQgZnVuY3Rpb24gY2Fub25pY2FsSlNPTihwYXlsb2FkOiB1bmtub3duKTogc3RyaW5nIHsKICByZXR1cm4gSlNPTi5zdHJpbmdpZnkoY2Fub25pY2FsaXplKHBheWxvYWQpKTsKfQoKLyoqCiAqIExlZ2FjeSBwYXlsb2FkcyB3ZXJlIHNlcmlhbGl6ZWQgd2l0aCB0aGUgb3JpZ2luYWwgSlNPTi5zdHJpbmdpZnkKICogb3JkZXJpbmcgKG5vIGtleSBzb3J0aW5nLCBubyBjYXNpbmcgbm9ybWFsaXphdGlvbiwgbm8gbnVtZXJpYwogKiBub3JtYWxpemF0aW9uKS4gVG8ga2VlcCBleGlzdGluZyByZWNvcmRzIHZlcmlmaWFibGUsIHdlIGV4cG9zZSBhCiAqIGNvbXBhdGliaWxpdHkgc2VyaWFsaXplciB0aGF0IHJlcHJvZHVjZXMgdGhlIGxlZ2FjeSBieXRlIGxheW91dC4KICovCmV4cG9ydCBmdW5jdGlvbiBsZWdhY3lDYW5vbmljYWxKU09OKHBheWxvYWQ6IHVua25vd24pOiBzdHJpbmcgewogIHJldHVybiBKU09OLnN0cmluZ2lmeShwYXlsb2FkKTsKfQoKZXhwb3J0IGludGVyZmFjZSBDYW5vbmljYWxQYXlsb2FkIHsKICB2ZXJzaW9uOiBudW1iZXI7CiAgaWQ6IHN0cmluZzsKICB3YWxsZXRBZGRyZXNzOiBzdHJpbmc7CiAgYWN0aW9uVHlwZTogc3RyaW5nOwogIGFjdG9yOiBzdHJpbmc7CiAgYXV0aG9yaXphdGlvbjogc3RyaW5nOwogIGludGVudEhhc2g6IHN0cmluZzsKICByZXN1bHQ6IHsKICAgIHN0YXR1czogc3RyaW5nOwogICAgdHhIYXNoOiBzdHJpbmcgfCBudWxsOwogICAgZXJyb3JDb2RlOiBzdHJpbmcgfCBudWxsOwogIH07CiAgdGltZXN0YW1wOiBzdHJpbmc7Cn0KCmV4cG9ydCBjbGFzcyBBY3Rpb25MZWRnZXJWZXJpZmljYXRpb25TZXJ2aWNlIHsKICBjb25zdHJ1Y3Rvcihwcml2YXRlIHJlYWRvbmx5IHByaXNtYTogUHJpc21hQ2xpZW50KSB7fQoKICAvKioKICAgKiBCdWlsZCB0aGUgY2Fub25pY2FsIHBheWxvYWQgb2JqZWN0IGZvciBhbiBhY3Rpb24gcmVjb3JkLgogICAqIFRoaXMgb2JqZWN0IGlzIHRoZSBzaW5nbGUgc291cmNlIG9mIHRydXRoIGZvciBoYXNoaW5nIGFuZAogICAqIHNpZ25pbmcuCiAgICovCiAgcHJpdmF0ZSBidWlsZENhbm9uaWNhbFBheWxvYWQoCiAgICBhY3Rpb246IEFjdGlvbkxlZGdlciwKICAgIGFjdG9yOiBzdHJpbmcsCiAgICBhdXRob3JpemF0aW9uOiBzdHJpbmcsCiAgICBpbnRlbnRIYXNoOiBzdHJpbmcKICApOiBDYW5vbmljYWxQYXlsb2FkIHsKICAgIHJldHVybiB7CiAgICAgIHZlcnNpb246IENBTk9OSUNBTF9WRVJTSU9OLAogICAgICBpZDogYWN0aW9uLmlkLAogICAgICB3YWxsZXRBZGRyZXNzOiBhY3Rpb24ud2FsbGV0QWRkcmVzcywKICAgICAgYWN0aW9uVHlwZTogYWN0aW9uLmFjdGlvblR5cGUsCiAgICAgIGFjdG9yLAogICAgICBhdXRob3JpemF0aW9uLAogICAgICBpbnRlbnRIYXNoLAogICAgICByZXN1bHQ6IHsKICAgICAgICBzdGF0dXM6IGFjdGlvbi5zdGF0dXMsCiAgICAgICAgdHhIYXNoOiBhY3Rpb24udHhIYXNoLAogICAgICAgIGVycm9yQ29kZTogYWN0aW9uLmVycm9yQ29kZQogICAgICB9LAogICAgICB0aW1lc3RhbXA6IGFjdGlvbi5jcmVhdGVkQXQudG9JU09TdHJpbmcoKQogICAgfTsKICB9CgogIC8qKgogICAqIFByb2R1Y2UgdGhlIGNhbm9uaWNhbCBzdHJpbmcgcmVwcmVzZW50YXRpb24gb2YgYSByZWNvcmQuCiAgICovCiAgcHJpdmF0ZSBnZW5lcmF0ZUNhbm9uaWNhbFJlY29yZCgKICAgIGFjdGlvbjogQWN0aW9uTGVkZ2VyLAogICAgYWN0b3I6IHN0cmluZywKICAgIGF1dGhvcml6YXRpb246IHN0cmluZywKICAgIGludGVudEhhc2g6IHN0cmluZwogICk6IHN0cmluZyB7CiAgICByZXR1cm4gY2Fub25pY2FsSlNPTih0aGlzLmJ1aWxkQ2Fub25pY2FsUGF5bG9hZChhY3Rpb24sIGFjdG9yLCBhdXRob3JpemF0aW9uLCBpbnRlbnRIYXNoKSk7CiAgfQoKICAvKioKICAgKiBSZWdlbmVyYXRlIHRoZSBsZWdhY3kgY2Fub25pY2FsIHN0cmluZyBmb3IgYSByZWNvcmQgc28gdGhhdAogICAqIHByZS1leGlzdGluZyBzaWduYXR1cmVzIGFuZCBoYXNoZXMgY2FuIHN0aWxsIGJlIHZlcmlmaWVkLgogICAqLwogIHByaXZhdGUgZ2VuZXJhdGVMZWdhY3lDYW5vbmljYWxSZWNvcmQoCiAgICBhY3Rpb246IEFjdGlvbkxlZGdlciwKICAgIGFjdG9yOiBzdHJpbmcsCiAgICBhdXRob3JpemF0aW9uOiBzdHJpbmcsCiAgICBpbnRlbnRIYXNoOiBzdHJpbmcKICApOiBzdHJpbmcgewogICAgY29uc3QgbGVnYWN5UGF5bG9hZCA9IHsKICAgICAgaWQ6IGFjdGlvbi5pZCwKICAgICAgd2FsbGV0QWRkcmVzczogYWN0aW9uLndhbGxldEFkZHJlc3MsCiAgICAgIGFjdGlvblR5cGU6IGFjdGlvbi5hY3Rpb25UeXBlLAogICAgICBhY3RvcjogYWN0b3IsCiAgICAgIGF1dGhvcml6YXRpb246IGF1dGhvcml6YXRpb24sCiAgICAgIGludGVudEhhc2g6IGludGVudEhhc2gsCiAgICAgIHJlc3VsdDogewogICAgICAgIHN0YXR1czogYWN0aW9uLnN0YXR1cywKICAgICAgICB0eEhhc2g6IGFjdGlvbi50eEhhc2gsCiAgICAgICAgZXJyb3JDb2RlOiBhY3Rpb24uZXJyb3JDb2RlCiAgICAgIH0sCiAgICAgIHRpbWVzdGFtcDogYWN0aW9uLmNyZWF0ZWRBdC50b0lTT1N0cmluZygpCiAgICB9OwogICAgcmV0dXJuIGxlZ2FjeUNhbm9uaWNhbEpTT04obGVnYWN5UGF5bG9hZCk7CiAgfQoKICBnZW5lcmF0ZUhhc2goY29udGVudDogc3RyaW5nKTogc3RyaW5nIHsKICAgIHJldHVybiBjcnlwdG8uY3JlYXRlSGFzaCgic2hhMjU2IikudXBkYXRlKGNvbnRlbnQpLmRpZ2VzdCgiaGV4Iik7CiAgfQoKICBhc3luYyBjaGFpblJlY29yZChpbnB1dDogewogICAgYWN0aW9uSWQ6IHN0cmluZzsKICAgIGFjdG9yOiBzdHJpbmc7CiAgICBhdXRob3JpemF0aW9uOiBzdHJpbmc7CiAgICBpbnRlbnRIYXNoOiBzdHJpbmc7CiAgICByZWZlcmVuY2VkRXZlbnRzOiBzdHJpbmdbXTsKICAgIHNpZ25pbmdLZXk6IEJ1ZmZlcjsKICB9KTogUHJvbWlzZTxDaGFpbmVkUmVjb3JkPiB7CiAgICBjb25zdCBhY3Rpb24gPSBhd2FpdCB0aGlzLnByaXNtYS5hY3Rpb25MZWRnZXIuZmluZFVuaXF1ZSh7CiAgICAgIHdoZXJlOiB7IGlkOiBpbnB1dC5hY3Rpb25JZCB9CiAgICB9KTsKCiAgICBpZiAoIWFjdGlvbikgewogICAgICB0aHJvdyBuZXcgRXJyb3IoYEFjdGlvbiAke2lucHV0LmFjdGlvbklkfSBub3QgZm91bmRgKTsKICAgIH0KCiAgICBjb25zdCBwcmV2aW91c1JlY29yZCA9IGF3YWl0IHRoaXMucHJpc21hLmFjdGlvbkx lZGdlckNoYWluLmZpbmRGaXJzdCh7CiAgICAgIHdoZXJlOiB7IGFjdGlvbklkOiBpbnB1dC5hY3Rpb25JZCB9LAogICAgICBvcmRlckJ5OiB7IGNyZWF0ZWRBdDogImRlc2MiIH0KICAgIH0pOwoKICAgIGNvbnN0IHByZXZpb3VzSGFzaCA9IHByZXZpb3VzUmVjb3JkPy5jdXJyZW50SGFzaCA/PyAiZ2VuZXNpcyI7CiAgICBjb25zdCBjYW5vbmljYWwgPSB0aGlzLmdlbmVyYXRlQ2Fub25pY2FsUmVjb3JkKGFjdGlvbiwgaW5wdXQuYWN0b3IsIGlucHV0LmF1dGhvcml6YXRpb24sIGlucHV0LmludGVudEhhc2gpOwogICAgY29uc3QgY3VycmVudEhhc2ggPSB0aGlzLmdlbmVyYXRlSGFzaChjYW5vbmljYWwpOwoKICAgIGNvbnN0IHNpZ25hdHVyZSA9IGNyeXB0bwogICAgICAuY3JlYXRlU2lnbigic2hhMjU2IikKICAgICAgLnVwZGF0ZShjYW5vbmljYWwpCiAgICAgIC5zaWduKGlucHV0LnNpZ25pbmdLZXksICJoZXgiKTsKCiAgICBjb25zdCByZWNvcmQgPSBhd2FpdCB0aGlzLnByaXNtYS5hY3Rpb25MZWRnZXJDaGFpbi5jcmVhdGUoewogICAgICBkYXRhOiB7CiAgICAgICAgYWN0aW9uSWQ6IGlucHV0LmFjdGlvbklkLAogICAgICAgIHByZXZpb3VzSGFzaCwKICAgICAgICBjdXJyZW50SGFzaCwKICAgICAgICBhY3RvcjogaW5wdXQuYWN0b3IsCiAgICAgICAgYXV0aG9yaXphdGlvbjogaW5wdXQuYXV0aG9yaXphdGlvbiwKICAgICAgICBpbnRlbnRIYXNoOiBpbnB1dC5pbnRlbnRIYXNoLAogICAgICAgIHJlc3VsdDogewogICAgICAgICAgc3RhdHVzOiBhY3Rpb24uc3RhdHVzLAogICAgICAgICAgdHhIYXNoOiBhY3Rpb24udHhIYXNoLAogICAgICAgICAgZXJyb3JDb2RlOiBhY3Rpb24uZXJyb3JDb2RlCiAgICAgICAgfSwKICAgICAgICByZWZlcmVuY2VkRXZlbnRzOiBpbnB1dC5yZWZlcmVuY2VkRXZlbnRzLAogICAgICAgIHNpZ25hdHVyZSwKICAgICAgICBjYW5vbmljYWwKICAgICAgfQogICAgfSk7CgogICAgcmV0dXJuIHsKICAgICAgaWQ6IHJlY29yZC5pZCwKICAgICAgcHJldmlvdXNIYXNoOiByZWNvcmQucHJldmlvdXNIYXNoLAogICAgICBjdXJyZW50SGFzaDogcmVjb3JkLmN1cnJlbnRIYXNoLAogICAgICBhY3RvcjogcmVjb3JkLmFjdG9yLAogICAgICBhdXRob3JpemF0aW9uOiByZWNvcmQuYXV0aG9yaXphdGlvbiwKICAgICAgaW50ZW50SGFzaDogcmVjb3JkLmludGVudEhhc2gsCiAgICAgIHJlc3VsdDogcmVjb3JkLnJlc3VsdCwKICAgICAgcmVmZXJlbmNlZEV2ZW50czogcmVjb3JkLnJlZmVyZW5jZWRFdmVudHMsCiAgICAgIHRpbWVzdGFtcDogcmVjb3JkLmNyZWF0ZWRBdCwKICAgICAgc2lnbmF0dXJlOiByZWNvcmQuc2lnbmF0dXJlCiAgICB9OwogIH0KCiAgLyoqCiAgICogVmVyaWZ5IGEgY2hhaW4gb2YgcmVjb3Jkcy4gUmVjb3JkcyB0aGF0IHdlcmUgd3JpdHRlbiBiZWZvcmUgdGhlCiAgICogY2Fub25pY2FsIHNlcmlhbGl6YXRpb24gdXBncmFkZSBhcmUgdmVyaWZpZWQgYWdhaW5zdCB0aGUgbGVnYWN5CiAgICogc2VyaWFsaXphdGlvbiBmb3JtYXQsIHdoaWxlIG5ldyByZWNvcmRzIGFyZSB2ZXJpZmllZCBhZ2FpbnN0IHRoZQogICAqIGNhbm9uaWNhbCBmb3JtYXQuIFRoaXMgcHJvdmlkZXMgYSBjb21wYXRpYmlsaXR5IHBhdGggZm9yIGV4aXN0aW5nCiAgICogcmVjb3JkcyB3aXRob3V0IHJlcXVpcmluZyBhIG1pZ3JhdGlvbi4KICAgKi8KICBhc3luYyB2ZXJpZnlDaGFpbihhY3Rpb25JZDogc3RyaW5nLCBwdWJsaWNLZXk6IEJ1ZmZlcik6IFByb21pc2U8eyB2YWxpZDogYm9vbGVhbjsgcmVhc29uPzogc3RyaW5nIH0+IHsKICAgIGNvbnN0IHJlY29yZHMgPSBhd2FpdCB0aGlzLnByaXNtYS5hY3Rpb25MZWRnZXJDaGFpbi5maW5kTWFueSh7CiAgICAgIHdoZXJlOiB7IGFjdGlvbklkIH0sCiAgICAgIG9yZGVyQnk6IHsgY3JlYXRlZEF0OiAiYXNjIiB9CiAgICB9KTsKCiAgICBpZiAocmVjb3Jkcy5sZW5ndGggPT09IDApIHsKICAgICAgcmV0dXJuIHsgdmFsaWQ6IGZhbHNlLCByZWFzb246ICJObyBjaGFpbiByZWNvcmRzIGZvdW5kIiB9OwogICAgfQoKICAgIGZvciAobGV0IGkgPSAwOyBpIDwgcmVjb3Jkcy5sZW5ndGg7IGkrKykgewogICAgICBjb25zdCByZWNvcmQgPSByZWNvcmRzW2ldOwoKICAgICAgaWYgKGkgPT09IDAgJiYgcmVjb3JkLnByZXZpb3VzSGFzaCAhPT0gImdlbmVzaXMiKSB7CiAgICAgICAgcmV0dXJuIHsgdmFsaWQ6IGZhbHNlLCByZWFzb246IGBGaXJzdCByZWNvcmQgcHJldmlvdXNIYXNoIGlzIG5vdCBnZW5lc2lzYCB9OwogICAgICB9CgogICAgICBpZiAoaSA+IDAgJiYgcmVjb3Jkc1tpIC0gMV0uY3VycmVudEhhc2ggIT09IHJlY29yZC5wcmV2aW91c0hhc2gpIHsKICAgICAgICByZXR1cm4geyB2YWxpZDogZmFsc2UsIHJlYXNvbjogYENoYWluIGJyb2tlbiBhdCByZWNvcmQgJHtpfWAgfTsKICAgICAgfQoKICAgICAgY29uc3QgaXNWYWxpZCA9IGNyeXB0bwogICAgICAgIC5jcmVhdGVWZXJpZnkoInNoYTI1NiIpCiAgICAgICAgLnVwZGF0ZShyZWNvcmQuY2Fub25pY2FsKQogICAgICAgIC52ZXJpZnkocHVibGljS2V5LCByZWNvcmQuc2lnbmF0dXJlLCAiaGV4Iik7CgogICAgICBpZiAoIWlzVmFsaWQpIHsKICAgICAgICByZXR1cm4geyB2YWxpZDogZmFsc2UsIHJlYXNvbjogYEludmFsaWQgc2lnbmF0dXJlIGF0IHJlY29yZCAke2l9YCB9OwogICAgICB9CiAgICB9CgogICAgcmV0dXJuIHsgdmFsaWQ6IHRydWUgfTsKICB9CgogIC8qKgogICAqIFZlcmlmeSBhIHNpbmdsZSByZWNvcmQgYWdhaW5zdCBhIHB1YmxpYyBrZXksIGF0dGVtcHRpbmcgYm90aCB0aGUKICAgKiBjYW5vbmljYWwgYW5kIGxlZ2FjeSBzZXJpYWxpemF0aW9ucy4gUmV0dXJucyB0aGUgbWF0Y2hpbmcgZm9ybWF0CiAgICogc28gY2FsbGVycyBjYW4gZGlzdGluZ3Vpc2ggbGVnYWN5IGZyb20gY2Fub25pY2FsIHJlY29yZHMuCiAgICovCiAgYXN5bmMgdmVyaWZ5UmVjb3JkKAogICAgYWN0aW9uSWQ6IHN0cmluZywKICAgIHB1YmxpY0tleTogQnVmZmVyCiAgKTogUHJvbWlzZTx7IHZhbGlkOiBib29sZWFuOyBmb3JtYXQ/OiAiY2Fub25pY2FsIiB8ICJsZWdhY3kiOyByZWFzb24/OiBzdHJpbmcgfT4gewogICAgY29uc3QgcmVjb3JkID0gYXdhaXQgdGhpcy5wcmlzbWEuYWN0aW9uTGVkZ2VyQ2hhaW4uZmluZEZpcnN0KHsKICAgICAgd2hlcmU6IHsgYWN0aW9uSWQgfSwKICAgICAgb3JkZXJCeTogeyBjcmVhdGVkQXQ6ICJkZXNjIiB9CiAgICB9KTsKCiAgICBpZiAoIXJlY29yZCkgewogICAgICByZXR1cm4geyB2YWxpZDogZmFsc2UsIHJlYXNvbjogIk5vIGNoYWluIHJlY29yZCBmb3VuZCIgfTsKICAgIH0KCiAgICBjb25zdCBjYW5vbmljYWxWYWxpZCA9IGNyeXB0bwogICAgICAuY3JlYXRlVmVyaWZ5KCJzaGEyNTYiKQogICAgICAudXBkYXRlKHJlY29yZC5jYW5vbmljYWwpCiAgICAgIC52ZXJpZnkocHVibGljS2V5LCByZWNvcmQuc2lnbmF0dXJlLCAiaGV4Iik7CgogICAgaWYgKGNhbm9uaWNhbFZhbGlkKSB7CiAgICAgIHJldHVybiB7IHZhbGlkOiB0cnVlLCBmb3JtYXQ6ICJjYW5vbmljYWwiIH07CiAgICB9CgogICAgY29uc3QgYWN0aW9uID0gYXdhaXQgdGhpcy5wcmlzbWEuYWN0aW9uTGVkZ2VyLmZpbmRVbmlxdWUoewogICAgICB3aGVyZTogeyBpZDogYWN0aW9uSWQgfQogICAgfSk7CgogICAgaWYgKGFjdGlvbikgewogICAgICBjb25zdCBsZWdhY3lDYW5vbmljYWwgPSB0aGlzLmdlbmVyYXRlTGVnYWN5Q2Fub25pY2FsUmVjb3JkKAogICAgICAgIGFjdGlvbiwKICAgICAgICByZWNvcmQuYWN0b3IsCiAgICAgICAgcmVjb3JkLmF1dGhvcml6YXRpb24sCiAgICAgICAgcmVjb3JkLmludGVudEhhc2gKICAgICAgKTsKICAgICAgY29uc3QgbGVnYWN5VmFsaWQgPSBjcnlwdG8KICAgICAgICAuY3JlYXRlVmVyaWZ5KCJzaGEyNTYiKQogICAgICAgIC51cGRhdGUobGVnYWN5Q2Fub25pY2FsKQogICAgICAgIC52ZXJpZnkocHVibGljS2V5LCByZWNvcmQuc2lnbmF0dXJlLCAiaGV4Iik7CiAgICAgIGlmIChsZWdhY3lWYWxpZCkgewogICAgICAgIHJldHVybiB7IHZhbGlkOiB0cnVlLCBmb3JtYXQ6ICJsZWdhY3kiIH07CiAgICAgIH0KICAgIH0KCiAgICByZXR1cm4geyB2YWxpZDogZmFsc2UsIHJlYXNvbjogIlNpZ25hdHVyZSBkb2VzIG5vdCBtYXRjaCBjYW5vbmljYWwgb3IgbGVnYWN5IGZvcm1hdCIgfTsKICB9CgogIGFzeW5jIGV4cG9ydENoYWluKGFjdGlvbklkOiBzdHJpbmcpOiBQcm9taXNlPENoYWluZWRSZWNvcmRbXT4gewogICAgY29uc3QgcmVjb3JkcyA9IGF3YWl0IHRoaXMucHJpc21hLmFjdGlvbkx lZGdlckNoYWluLmZpbmRNYW55KHsKICAgICAgd2hlcmU6IHsgYWN0aW9uSWQgfSwKICAgICAgb3JkZXJCeTogeyBjcmVhdGVkQXQ6ICJhc2MiIH0KICAgIH0pOwoKICAgIHJldHVybiByZWNvcmRzLm1hcCgocikgPT4gKHsKICAgICAgaWQ6IHIuaWQsCiAgICAgIHByZXZpb3VzSGFzaDogci5wcmV2aW91c0hhc2gsCiAgICAgIGN1cnJlbnRIYXNoOiByLmN1cnJlbnRIYXNoLAogICAgICBhY3Rvcjogci5hY3RvciwKICAgICAgYXV0aG9yaXphdGlvbjogci5hdXRob3JpemF0aW9uLAogICAgICBpbnRlbnRIYXNoOiByLmludGVudEhhc2gsCiAgICAgIHJlc3VsdDogci5yZXN1bHQsCiAgICAgIHJlZmVyZW5jZWRFdmVudHM6IHIucmVmZXJlbmNlZEV2ZW50cywKICAgICAgdGltZXN0YW1wOiByLmNyZWF0ZWRBdCwKICAgICAgc2lnbmF0dXJlOiByLnNpZ25hdHVyZQogICAgfSkpOwogIH0KfQo=
+import crypto from "crypto";
+import type { PrismaClient, ActionLedger } from "@prisma/client";
+
+export interface ChainedRecord {
+  id: string;
+  previousHash: string;
+  currentHash: string;
+  actor: string;
+  authorization: string;
+  intentHash: string;
+  result: unknown;
+  referencedEvents: string[];
+  timestamp: Date;
+  signature: string;
+}
+
+/**
+ * Canonical serialization utilities.
+ *
+ * Payloads that are hashed, signed, compared, or verified must be
+ * serialized deterministically. The rules below ensure that equivalent
+ * payloads (differing only in key order, whitespace, casing of known
+ * enums, or numeric precision) produce the same canonical output.
+ */
+
+export const CANONICAL_VERSION = 1;
+
+/**
+ * Numbers are normalized to a fixed decimal precision and trimmed of
+
+ * trailing zeros so that 1, 1.0, 1.00 and 1.00000000 all map to the
+ * same string. Numbers are rendered as strings to avoid JSON float
+ * representation differences across runtimes.
+ */
+export const NUMERIC_PRECISION = 8;
+
+/**
+ * Known enum-like fields are normalized to lowercase so that casing
+ * differences (e.g. "SUCCESS" vs "success") do not change the hash.
+ */
+const CASE_INSENSITIVE_KEYS = new Set(["status", "actionType", "actor", "authorization"]);
+
+function normalizeString(value: string): string {
+  return value.normalize("NFC").trim();
+}
+
+function normalizeNumber(value: number): string {
+  if (!Number.isFinite(value)) {
+    throw new Error(`Cannot canonicalize non-finite number: ${value}`);
+  }
+  const fixed = value.toFixed(NUMERIC_PRECISION);
+  const trimmed = fixed.replace(/0+$/, "").replace(/\.$/, "");
+  return trimmed === "-0" ? "0" : trimmed;
+}
+
+/**
+ * Recursively canonicalize a value:
+ *  - object keys are sorted lexicographically
+ *  - array order is preserved (order is semantic)
+ *  - strings are NFC-normalized and trimmed
+ *  - numbers are normalized to fixed precision
+ *  - undefined object values are dropped (JSON behavior)
+ */
+export function canonicalize(value: unknown, key?: string): unknown {
+  if (value === null) {
+    return null;
+  }
+
+  if (typeof value === "undefined") {
+    return undefined;
+  }
+
+  if (typeof value === "number") {
+    return normalizeNumber(value);
+  }
+
+  if (typeof value === "bigint") {
+    return value.toString();
+  }
+
+  if (typeof value === "string") {
+    const normalized = normalizeString(value);
+    if (key && CASE_INSENSITIVE_KEYS.has(key)) {
+      return normalized.toLowerCase();
+    }
+    return normalized;
+  }
+
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => canonicalize(item, key));
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  if (typeof value === "object") {
+    const objValue = value as Record<string, unknown>;
+    const sortedKeys = Object.keys(objValue).sort();
+    const out:Record<string, unknown> = {};
+    for (const k of sortedKeys) {
+      const canonicalItem = canonicalize(objValue[k], k);
+      if (typeof canonicalItem !== "undefined") {
+        out[k] = canonicalItem;
+      }
+    }
+    return out;
+  }
+
+  throw new Error(`Unsupported value type for canonicalization: ${typeof value}`);
+}
+
+/**
+ * Produce a deterministic JSON string from an arbitrary payload.
+ */
+export function canonicalJSON(payload: unknown): string {
+  return JSON.stringify(canonicalize(payload));
+}
+
+/**
+ * Legacy payloads were serialized with the original JSON.stringify
+ * ordering (no key sorting, no casing normalization, no numeric
+ * normalization). To keep existing records verifiable, we expose a
+ * compatibility serializer that reproduces the legacy byte layout.
+ */
+export function legacyCanonicalJSON(payload: unknown): string {
+  return JSON.stringify(payload);
+}
+
+export interface CanonicalPayload {
+  version: number;
+  id: string;
+  walletAddress: string;
+  actionType: string;
+  actor: string;
+  authorization: string;
+  intentHash: string;
+  result: {
+    status: string;
+    txHash: string | null;
+    errorCode: string | null;
+  };
+  timestamp: string;
+}
+
+export class ActionLedgerVerificationService {
+  constructor(private readonly prisma: PrismaClient) {}
+
+  /**
+   * Build the canonical payload object for an action record.
+   * This object is the single source of truth for hashing and
+   * signing.
+   */
+  private buildCanonicalPayload(
+    action: ActionLedger,
+    actor: string,
+    authorization: string,
+    intentHash: string
+  ): CanonicalPayload {
+    return {
+      version: CANONICAL_VERSION,
+      id: action.id,
+      walletAddress: action.walletAddress,
+      actionType: action.actionType,
+      actor,
+      authorization,
+      intentHash,
+      result: {
+        status: action.status,
+        txHash: action.txHash,
+        errorCode: action.errorCode
+      },
+      timestamp: action.createdAt.toISOString()
+    };
+  }
+
+  /**
+   * Produce the canonical string representation of a record.
+   */
+  private generateCanonicalRecord(
+    action: ActionLedger,
+    actor: string,
+    authorization: string,
+    intentHash: string
+  ): string {
+    return canonicalJSON(this.buildCanonicalPayload(action, actor, authorization, intentHash));
+  }
+
+  /**
+   * Regenerate the legacy canonical string for a record so that
+   * pre-existing signatures and hashes can still be verified.
+   */
+  private generateLegacyCanonicalRecord(
+    action: ActionLedger,
+    actor: string,
+    authorization: string,
+    intentHash: string
+  ): string {
+    const legacyPayload = {
+      id: action.id,
+      walletAddress: action.walletAddress,
+      actionType: action.actionType,
+      actor: actor,
+      authorization: authorization,
+      intentHash: intentHash,
+      result: {
+        status: action.status,
+        txHash: action.txHash,
+        errorCode: action.errorCode
+      },
+      timestamp: action.createdAt.toISOString()
+    };
+    return legacyCanonicalJSON(legacyPayload);
+  }
+
+  generateHash(content: string): string {
+    return crypto.createHash("sha256").update(content).digest("hex");
+  }
+
+  async chainRecord(input: {
+    actionId: string;
+    actor: string;
+    authorization: string;
+    intentHash: string;
+    referencedEvents: string[];
+    signingKey: Buffer;
+  }): Promise<ChainedRecord> {
+    const action = await this.prisma.actionLedger.findUnique({
+      where: { id: input.actionId }
+    });
+
+    if (!action) {
+      throw new Error(`Action ${input.actionId} not found`);
+    }
+
+    const previousRecord = await this.prisma.actionLedger.findFirst({
+      where: { actionId: input.actionId },
+      orderBy: { createdAt: "desc" }
+    });
+
+    const previousHash = previousRecord?.currentHash ?? "genesis";
+    const canonical = this.generateCanonicalRecord(action, input.actor, input.authorization, input.intentHash);
+    const currentHash = this.generateHash(canonical);
+
+    const signature = crypto
+      .createSign("sha256")
+      .update(canonical)
+      .sign(input.signingKey, "hex");
+
+    const record = await this.prisma.actionLedger.create({
+      data: {
+        actionId: input.actionId,
+        previousHash,
+        currentHash,
+        actor: input.actor,
+        authorization: input.authorization,
+        intentHash: input.intentHash,
+        result: {
+          status: action.status,
+          txHash: action.txHash,
+          errorCode: action.errorCode
+        },
+        referencedEvents: input.referencedEvents,
+        signature,
+        canonical
+      }
+    });
+
+    return {
+      id: record.id,
+      previousHash: record.previousHash,
+      currentHash: record.currentHash,
+      actor: record.actor,
+      authorization: record.authorization,
+      intentHash: record.intentHash,
+      result: record.result,
+      referencedEvents: record.referencedEvents,
+      timestamp: record.createdAt,
+      signature: record.signature
+    };
+  }
+
+  /**
+   * Verify a chain of records. Records that were written before the
+   * canonical serialization upgrade are verified against the legacy
+   * serialization format, while new records are verified against the
+   * canonical format. This provides a compatibility path for existing
+   * records without requiring a migration.
+   */
+  async verifyChain(actionId: string, publicKey: Buffer): Promise<{ valid: boolean; reason?: string }> {
+    const records = await this.prisma.actionLedger.findMany({
+      where: { actionId },
+      orderBy: { createdAt: "asc" }
+    });
+
+    if (records.length === 0) {
+      return { valid: false, reason: "No chain records found" };
+    }
+
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i];
+
+      if (i === 0 && record.previousHash !== "genesis") {
+        return { valid: false, reason: `First record previousHash is not genesis` };
+      }
+
+      if (i > 0 && records[i - 1].currentHash !== record.previousHash) {
+        return { valid: false, reason: `Chain broken at record ${i}` };
+      }
+
+      const isValid = crypto
+        .createVerify("sha256")
+        .update(record.canonical)
+        .verify(publicKey, record.signature, "hex");
+
+      if (!isValid) {
+        return { valid: false, reason: `Invalid signature at record ${i}` };
+      }
+    }
+
+    return { valid: true };
+  }
+
+  /**
+   * Verify a single record against a public key, attempting both the
+   * canonical and legacy serializations. Returns the matching format
+   * so callers can distinguish legacy from canonical records.
+   */
+  async verifyRecord(
+    actionId: string,
+    publicKey: Buffer
+  ): Promise<{ valid: boolean; format?: "canonical" | "legacy"; reason?: string }> {
+    const record = await this.prisma.actionLedger.findFirst({
+      where: { actionId },
+      orderBy: { createdAt: "desc" }
+    });
+
+    if (!record) {
+      return { valid: false, reason: "No chain record found" };
+    }
+
+    const canonicalValid = crypto
+      .createVerify("sha256")
+      .update(record.canonical)
+      .verify(publicKey, record.signature, "hex");
+
+    if (canonicalValid) {
+      return { valid: true, format: "canonical" };
+    }
+
+    const action = await this.prisma.actionLedger.findUnique({
+      where: { id: actionId }
+    });
+
+    if (action) {
+      const legacyCanonical = this.generateLegacyCanonicalRecord(
+        action,
+        record.actor,
+        record.authorization,
+        record.intentHash
+      );
+      const legacyValid = crypto
+        .createVerify("sha256")
+        .update(legacyCanonical)
+        .verify(publicKey, record.signature, "hex");
+      if (legacyValid) {
+        return { valid: true, format: "legacy" };
+      }
+    }
+
+    return { valid: false, reason: "Signature does not match canonical or legacy format" };
+  }
+
+  async exportChain(actionId: string): Promise<ChainedRecord[]> {
+    const records = await this.prisma.actionLedger.findMany({
+      where: { actionId },
+      orderBy: { createdAt: "asc" }
+    });
+
+    return records.map((r) => ({
+      id: r.id,
+      previousHash: r.previousHash,
+      currentHash: r.currentHash,
+      actor: r.actor,
+      authorization: r.authorization,
+      intentHash: r.intentHash,
+      result: r.result,
+      referencedEvents: r.referencedEvents,
+      timestamp: r.createdAt,
+      signature: r.signature
+    }));
+  }
+}

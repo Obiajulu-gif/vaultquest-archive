@@ -20,10 +20,10 @@
     "generate:manifest": "npx tsx scripts/generate-manifest.ts",
     "check:drift": "npx tsx scripts/check-config-drift.ts",
     "fixtures:regenerate": "node scripts/regenerate-fixtures.js",
+    "fixtures:recovery": "npx tsx scripts/generate-recovery-fixtures.ts",
     "check:mock-data": "node ./scripts/check-mock-data.js",
     "check:mock-auth": "node ./scripts/check-mock-auth.js",
     "check:package-json": "node ./scripts/check-package-json.js",
-    "diagnostics": "node ./scripts/diagnostics.js"
     "diagnostics": "node ./scripts/contributor-diagnostics.mjs"
   },
   "dependencies": {

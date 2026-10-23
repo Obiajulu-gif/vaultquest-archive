@@ -44,6 +44,12 @@ describe("public /actions routes", () => {
     expect(body.status).toBe("pending");
     expect(body.correlation_id).toBeDefined();
     expect(body.recovery.next_action).toBe("continue_wallet_approval");
+    expect(body.risk_assessment).toMatchObject({
+      score: 5,
+      level: "low",
+      requires_review: false,
+      factors: [{ code: "action_type:deposit", points: 5 }],
+    });
   });
 
   it("POST /actions returns 200 on idempotent replay", async () => {
@@ -133,6 +139,11 @@ describe("public /actions routes", () => {
     expect(cancel.statusCode).toBe(200);
     expect(cancel.json().data.status).toBe("failed");
     expect(cancel.json().data.error_code).toBe("WALLET_REJECTED");
+    expect(cancel.json().data.risk_assessment).toMatchObject({
+      score: 20,
+      level: "low",
+      requires_review: false,
+    });
   });
 
   it("GET /actions/:id returns record", async () => {

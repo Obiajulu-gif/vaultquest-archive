@@ -18,6 +18,7 @@ import {
 import { AppError } from "../errors.js";
 import { ok, page } from "../responses.js";
 import type { ActionRecord } from "../types.js";
+import { assessActionRisk } from "../services/actionRiskScoring.js";
 
 /**
  * #812: called after an action is created (or a duplicate request returns
@@ -31,6 +32,7 @@ export type ActionLifecycleHooks = {
 
 function serialize(row: Awaited<ReturnType<LedgerService["getAction"]>>) {
   if (!row) return null;
+  const risk = assessActionRisk(row);
   const checkpoint = row.recoveryCheckpoint as { stage?: string } | null;
   const nextAction = row.status === "confirmed" || row.status === "failed" || row.status === "reverted"
     ? "none"
@@ -55,6 +57,12 @@ function serialize(row: Awaited<ReturnType<LedgerService["getAction"]>>) {
     error_code: row.errorCode,
     error_detail: row.errorDetail,
     retry_count: row.retryCount,
+    risk_assessment: {
+      score: risk.score,
+      level: risk.level,
+      requires_review: risk.requiresReview,
+      factors: risk.factors,
+    },
     recovery: {
       checkpoint: row.recoveryCheckpoint,
       next_action: nextAction,

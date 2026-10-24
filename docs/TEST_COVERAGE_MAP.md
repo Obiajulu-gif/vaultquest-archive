@@ -16,6 +16,12 @@ This map tracks important product and platform areas that should stay covered as
 | Wallet connection UI | `e2e/helpers/wallet-mock.ts` and route smoke disconnected state | Partial | Header status tests for connected, disconnected, balance loading, extension disconnect, and network mismatch |
 | Dashboard widgets | `components/hooks/useYieldCounter.test.js`; dashboard route smoke | Partial | Tests for onboarding checklist, empty position state, recent winners, and prize countdown |
 | Accessibility/responsive behavior | Playwright guidance in `docs/TESTING.md` | Partial | Add axe checks for vault detail, archive, wallet status, and mobile nav |
+| E2E failure states (wallet rejection, RPC failure, on-chain revert) | `e2e/error-states.spec.ts` mocks denial (code 4001), C-Chain RPC outage (502), and a reverted `/api/actions` record via `e2e/helpers/wallet-mock.ts` | Covered | Add per-action retry/recover coverage for the connected deposit flow once a real wallet-proxy surface exists |
+| Draw round-close with independent winner verification | `e2e/round-close.spec.ts` recomputes seed→R→weighted winner, full hash chain, and `verifyProofIntegrity`, then asserts the served proof renders Verified on `/app/prizes` | Covered | Add negative round-close cases (tampered participants/seed hash) |
+| Dashboard cache consistency (#748/#749) | `stellar-wallet-connect/src/vault/data/queryClient.test.ts` (out-of-order drop, monotonic `setQueryDataAt`) and `consistency.test.ts` (cross-tab fan-out, no echo, snapshot rehydrate) | Partial | Add a browser-level cross-tab test for the wired `ensureVaultCacheSync` in `Providers.jsx` |
+| Notification preference routing | `tests/notification-routing.test.ts` (classification, preference sanitization/migration, deterministic routing + bounded audit) and `tests/notification-provider-routing.test.tsx` (mandatory bypass, optional suppression, durable preferences/audit across remounts) | Covered | Add coverage for `onRoutingDecision` telemetry consumers as they are wired up |
+| Offline/multi-tab operation queue | `tests/offline-operation-queue.test.ts` (durable enqueue, refresh resume, version-conflict retry/discard, backoff, per-entity ordering, snapshot merge/tombstones) | Covered | Add a browser-level multi-tab test for `useOfflineOperationQueue` storage events once the hook is wired into a flow |
+| Policy simulation preview | `tests/policy-simulation.test.ts` (catalog validation, impact aggregation, risk thresholds, confirmation token stability, irreversible acknowledgement) | Covered | Add adapter tests when the backend impact source (dry-run counts) is implemented |
 
 ## Backend
 
@@ -27,6 +33,7 @@ This map tracks important product and platform areas that should stay covered as
 | Quest and escrow services | `backend/tests/quest.spec.ts`, `escrow.spec.ts` | Partial | Add settlement retry, idempotency, and external API failure coverage |
 | Indexer, ledger, reconciliation | `backend/tests/indexer.spec.ts`, `ledger.spec.ts`, `reconciler.spec.ts`, `pool-status.spec.ts` | Partial | Add checkpoint recovery, duplicate event handling, and partial Horizon outage tests |
 | Saved pools and cache | `backend/tests/saved-pools.spec.ts`, `cache.spec.ts` | Covered | Add eviction and cross-user authorization regressions as features expand |
+| Restore verification | `backend/tests/validateRestore.spec.ts` (read-only invariants) and `backend/tests/restoreVerification.spec.ts` (derived rebuild, staleness repair, loud failures with repair steps, read-only probe) | Covered | Add an integration run against a real restored backup in the DR drill environment |
 
 ## Contracts
 

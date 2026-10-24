@@ -43,7 +43,7 @@ function MetricCard({ icon: Icon, label, value, sub, highlight }) {
   );
 }
 
-function ConnectedDashboard({ isNetworkMismatch, onRetry, locale }) {
+function ConnectedDashboard({ address, isNetworkMismatch, onRetry, locale }) {
   const [selectedAsset, setSelectedAsset] = useState("all");
   const [tourKey, setTourKey] = useState(0);
 
@@ -176,31 +176,25 @@ function EmptyAccount() {
 
 export default function AccountPage() {
   const { t, i18n } = useTranslation("common");
-  const { isConnected: wagmiConnected } = useAccount();
+  const { address, isConnected } = useAccount();
   const { openConnectModal } = useConnectModal();
-  const [isMockConnected, setIsMockConnected] = useState(false);
   const [wasDisconnected, setWasDisconnected] = useState(false);
   const [isNetworkMismatch, setIsNetworkMismatch] = useState(false);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
-      if (params.get("mockConnected") === "true") {
-        setIsMockConnected(true);
-      }
       if (params.get("networkMismatch") === "true") {
         setIsNetworkMismatch(true);
       }
     }
 
-    if (!wagmiConnected && !isMockConnected && !isNetworkMismatch) {
+    if (!isConnected && !isNetworkMismatch) {
       setWasDisconnected(true);
     } else {
       setWasDisconnected(false);
     }
-  }, [wagmiConnected, isMockConnected, isNetworkMismatch]);
-
-  const isConnected = wagmiConnected || isMockConnected;
+  }, [isConnected, isNetworkMismatch]);
 
   const handleRetry = () => {
     setIsNetworkMismatch(false);
@@ -218,6 +212,7 @@ export default function AccountPage() {
       </header>
       {isConnected ? (
         <ConnectedDashboard
+          address={address}
           isNetworkMismatch={isNetworkMismatch}
           onRetry={handleRetry}
           locale={i18n.resolvedLanguage || i18n.language}

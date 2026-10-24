@@ -7,12 +7,14 @@ source of truth for principal, rewards/yield, round/draw state, pause, admin
 control, and winner settlement. All clients (backend, `stellar-wallet-connect`,
 deployment manifest) bind to it exclusively.
 
-`contracts/vault` is a deprecated skeleton that predates drip-pool. It is
-**not** deployed for new pools and no client is wired to its write entrypoints.
-It is retained only so a pre-existing deployment (if any) can still be read
-for migration verification. See the deprecation banner in
-`contracts/vault/src/lib.rs` for the specific incompatibilities (single-admin,
-no rounds/lockups/claim-deadlines, no real token custody).
+`contracts/_deprecated/vault` (quarantined 2026-08-29) is a deprecated skeleton
+that predates drip-pool. It is **not** deployed for new pools and no client is
+wired to its write entrypoints. It is retained only so a pre-existing
+deployment (if any) can still be read for migration verification. See the
+deprecation banner in `contracts/_deprecated/vault/src/lib.rs` for the
+specific incompatibilities (single-admin, no rounds/lockups/claim-deadlines,
+no real token custody). CI guards prevent any new code outside
+`contracts/_deprecated/` from referencing this crate.
 
 ## Why drip-pool
 
@@ -34,11 +36,12 @@ generic on-chain upgrade path between them.
 
 - **pool** (`contracts/drip-pool`): canonical state — deposits, withdrawals,
   yield, rounds, winner selection, payouts, pause, multisig admin.
-- **vault** (`contracts/vault`): retired; read-only (`balance_of`,
-  `total_deposits`, `get_paused`) for legacy-deployment verification only.
-- **factory**: not yet implemented. Any future multi-pool factory must deploy
-  drip-pool instances and register them through the same
-  `contracts/drip-pool/canonical-spec.ts`.
+- **vault** (`contracts/_deprecated/vault`): retired and quarantined; read-only
+  (`balance_of`, `total_deposits`, `get_paused`) for legacy-deployment
+  verification only.
+- **factory** (`contracts/vault-factory`): deploys `drip-pool` instances via
+  deterministic factory pattern; does not reference the deprecated vault
+  contract.
 - **strategy**: not yet implemented; yield sourcing today is admin-credited
   via `add_yield`/`credit_yield` inside drip-pool itself. A future strategy
   module must be a caller of drip-pool's yield entrypoints, not a parallel
@@ -66,7 +69,7 @@ build, via the `DEPRECATED_CONTRACT_SPEC_HASHES` allowlist in
 
 ## Legacy deployment migration path
 
-For any already-deployed `contracts/vault` instance:
+For any already-deployed `contracts/_deprecated/vault` instance:
 
 1. Read out `balance_of(depositor)` for every known depositor and
    `total_deposits()` via the contract's own view calls (read-only; no writes).
@@ -81,3 +84,8 @@ For any already-deployed `contracts/vault` instance:
 
 No automated on-chain migration exists today; step 2 is an operational runbook,
 not a contract call, because the storage models don't map automatically.
+
+## Upgrade Rollback Runbook (#554)
+
+For emergency response procedures, anomaly detection, governance approval steps, and timelock management during proxy logic contract rollbacks, refer to the [Proxy Upgrade Rollback Runbook](docs/UPGRADE_ROLLBACK.md).
+

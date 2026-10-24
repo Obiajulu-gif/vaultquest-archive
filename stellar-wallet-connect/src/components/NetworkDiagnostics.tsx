@@ -21,6 +21,7 @@ export const NetworkDiagnostics: FC = () => {
 
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [anonymize, setAnonymize] = useState(false);
 
   // Read environment variables safely
   let env: any = {};
@@ -40,10 +41,11 @@ export const NetworkDiagnostics: FC = () => {
 
   const handleCopy = () => {
     const attestation = getManifestAttestation();
+    const displayKey = publicKey ? (anonymize ? `${publicKey.slice(0, 4)}...ANONYMIZED` : publicKey) : "N/A";
     const info = `### VaultQuest Diagnostic Report
 - **Timestamp**: ${new Date().toISOString()}
 - **Wallet Connected**: ${publicKey ? "Yes" : "No"}
-- **Wallet Public Key**: ${publicKey || "N/A"}
+- **Wallet Public Key**: ${displayKey}
 - **Connected Network**: ${network || "Unknown"} (Passphrase: ${connectedNetworkConfig?.passphrase || "N/A"})
 - **Expected Network**: ${EXPECTED_NETWORK} (Passphrase: ${expectedNetworkConfig?.passphrase || "N/A"})
 - **Network Mismatch Detected**: ${mismatch ? "Yes" : "No"}
@@ -128,23 +130,34 @@ export const NetworkDiagnostics: FC = () => {
                 <p className="text-[11px] text-gray-400">Useful metadata for network and smart contract status.</p>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={handleCopy}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-red-900/20 border border-red-900/40 hover:bg-red-900/40 px-3 py-1.5 text-xs font-medium text-white transition-colors focus:outline-none focus:ring-1 focus:ring-red-400"
-            >
-              {copied ? (
-                <>
-                  <Check className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
-                  Copied!
-                </>
-              ) : (
-                <>
-                  <Clipboard className="h-3.5 w-3.5" aria-hidden="true" />
-                  Copy Diagnostics
-                </>
-              )}
-            </button>
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={anonymize}
+                  onChange={(e) => setAnonymize(e.target.checked)}
+                  className="rounded border-red-900/40 bg-black/40 text-red-600 focus:ring-red-500"
+                />
+                Anonymize
+              </label>
+              <button
+                type="button"
+                onClick={handleCopy}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-red-900/20 border border-red-900/40 hover:bg-red-900/40 px-3 py-1.5 text-xs font-medium text-white transition-colors focus:outline-none focus:ring-1 focus:ring-red-400"
+              >
+                {copied ? (
+                  <>
+                    <Check className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
+                    Copied!
+                  </>
+                ) : (
+                  <>
+                    <Clipboard className="h-3.5 w-3.5" aria-hidden="true" />
+                    Copy Diagnostics
+                  </>
+                )}
+              </button>
+            </div>
           </div>
 
           <div className="grid gap-4 md:grid-cols-2 text-xs">

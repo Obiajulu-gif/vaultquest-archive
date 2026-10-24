@@ -17,6 +17,9 @@ i just need to create a draft pr plaese
 | [`e2e/`](./e2e) | Playwright end-to-end tests |
 | [`docs/`](./docs) | Architecture, state model, testing notes |
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | Cross-stack architecture diagram and action/event flow |
+| [`docs/data-fetching.md`](./docs/data-fetching.md) | Client-side data fetching and hooks conventions |
+| [`docs/NOTIFICATIONS.md`](./docs/NOTIFICATIONS.md) | Lifecycle notification event, targeting, and deduplication model |
+| [`docs/POOL_LIFECYCLE.md`](./docs/POOL_LIFECYCLE.md) | Deterministic pool lifecycle states, guarded transitions, and audit events |
 
 ## Quick start
 
@@ -48,5 +51,3 @@ We welcome contributions from everyone. Before opening a PR, please read
 ## License
 
 License details are managed separately.
-
-// Comment befire starting

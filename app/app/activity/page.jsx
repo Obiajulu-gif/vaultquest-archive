@@ -1,21 +1,46 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { useAccount } from "wagmi";
 import { useConnectModal } from "@rainbow-me/rainbowkit";
 import {
   ArrowDownRight, ArrowUpRight, Gift, RefreshCw, Wallet,
-  ChevronLeft, ChevronRight, Filter, Clock, History
+  ChevronLeft, ChevronRight, Filter, Clock, AlertCircle, EyeOff, Eye
 } from "lucide-react";
-import { DEMO_TRANSACTIONS } from "@/lib/demo-portfolio";
-import { ActivityExport } from "@vaultquest/stellar-wallet-connect/src/vault/components/ActivityExport";
-import TransactionHistoryModal from "@/components/app/TransactionHistoryModal";
+import UserActivityTimeline from "@/components/app/UserActivityTimeline";
+
+/**
+ * Client-side-only "privacy mode" preference (#655). Hides identifying
+ * pool/vault labels in the LOCAL activity feed on this device -- it has no
+ * effect on-chain and does not touch amounts, dates, or status, which are
+ * on-chain facts and stay visible either way. Persisted with the same
+ * localStorage pattern other per-device settings in this app use (see
+ * components/app/AppNav.jsx's high-contrast toggle).
+ */
+export const ACTIVITY_PRIVACY_MODE_KEY = "vaultquest-activity-privacy-mode";
+
+/**
+ * Resolve the label shown for one activity row, masking the identifying
+ * pool/vault name with a generic placeholder when privacy mode is on.
+ * Free-text messages (e.g. "System Upgrade Completed") are left unchanged
+ * either way -- they don't name a specific vault the wallet participated
+ * in, so there's nothing pool-identifying to hide.
+ */
+export function maskPoolLabel(tx, privacyMode) {
+  if (tx.message) return tx.message;
+  if (privacyMode && tx.pool) return "Vault activity";
+  return tx.pool;
+}
 
 const ACTIVITY_TYPES = {
   deposit: { label: "Deposit", icon: ArrowDownRight, color: "text-emerald-600 dark:text-emerald-400" },
   withdraw: { label: "Withdrawal", icon: ArrowUpRight, color: "text-vault-muted" },
   reward: { label: "Prize Claimed", icon: Gift, color: "text-amber-600 dark:text-amber-400" },
   status: { label: "Status Change", icon: RefreshCw, color: "text-blue-600 dark:text-blue-400" },
+  vault_action: { label: "Vault Action", icon: RefreshCw, color: "text-blue-600 dark:text-blue-400" },
+  round_update: { label: "Round Update", icon: Clock, color: "text-vault-muted" },
+  account_action: { label: "Account Action", icon: Wallet, color: "text-vault-muted" },
+  system_message: { label: "System Message", icon: AlertCircle, color: "text-amber-600 dark:text-amber-400" },
 };
 
 const STATUS_LABELS = {
@@ -26,7 +51,7 @@ const STATUS_LABELS = {
 
 const PAGE_SIZE = 10;
 
-function ActivityFeed({ transactions }) {
+export function ActivityFeed({ transactions, privacyMode = false }) {
   const [filter, setFilter] = useState("all");
   const [page, setPage] = useState(0);
 
@@ -46,16 +71,32 @@ function ActivityFeed({ transactions }) {
           <h2 className="text-lg font-semibold text-vault-text">Activity History</h2>
           <p className="text-sm text-vault-muted">Deposits, withdrawals, claims, and status changes</p>
         </div>
-        <div className="flex items-center gap-2">
-          <Filter className="h-4 w-4 text-vault-muted" />
-          <select value={filter} onChange={(e) => { setFilter(e.target.value); setPage(0); }}
-            className="rounded-xl border border-vault-border bg-vault-surface px-3 py-2 text-sm text-vault-text focus:outline-none focus:ring-2 focus:ring-red-400"
-            aria-label="Filter activity type">
-            <option value="all">All Activity</option>
-            <option value="deposit">Deposits</option>
-            <option value="withdraw">Withdrawals</option>
-            <option value="reward">Claims</option>
-          </select>
+        <div className="flex items-center gap-2 overflow-x-auto pb-2 sm:pb-0 hide-scrollbar max-w-full">
+          <Filter className="h-4 w-4 text-vault-muted shrink-0 hidden sm:block" />
+          <div className="flex gap-2">
+            {[
+              { id: "all", label: "All Activity" },
+              { id: "deposit", label: "Deposits" },
+              { id: "withdraw", label: "Withdrawals" },
+              { id: "reward", label: "Claims" },
+              { id: "vault_action", label: "Vault Actions" },
+              { id: "round_update", label: "Round Updates" },
+              { id: "account_action", label: "Account" },
+              { id: "system_message", label: "System" },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => { setFilter(tab.id); setPage(0); }}
+                className={`whitespace-nowrap rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
+                  filter === tab.id
+                    ? "bg-red-500/10 text-red-500 dark:text-red-400"
+                    : "text-vault-muted hover:bg-vault-surface hover:text-vault-text"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -80,17 +121,21 @@ function ActivityFeed({ transactions }) {
                     <p className="font-medium text-vault-text">{typeInfo.label}</p>
                     <span className={`text-xs font-medium ${statusInfo.class}`}>{statusInfo.label}</span>
                   </div>
-                  <p className="text-xs text-vault-muted">{tx.pool}</p>
+                  <p className="text-xs text-vault-muted">
+                    {maskPoolLabel(tx, privacyMode)}
+                  </p>
                   <p className="mt-0.5 text-xs text-vault-muted">
                     {new Date(tx.date).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })}
                   </p>
                 </div>
-                <div className="shrink-0 text-right">
-                  <p className={`font-semibold ${tx.type === "withdraw" ? "text-vault-muted" : "text-emerald-600 dark:text-emerald-400"}`}>
-                    {tx.type === "withdraw" ? "−" : "+"}${tx.amount.toLocaleString()}
-                  </p>
-                  <p className="text-xs text-vault-muted">{tx.asset || "USDC"}</p>
-                </div>
+                {tx.amount !== undefined ? (
+                  <div className="text-right shrink-0">
+                    <p className={`font-semibold ${tx.type === "withdraw" ? "text-vault-muted" : "text-emerald-600 dark:text-emerald-400"}`}>
+                      {tx.type === "withdraw" ? "\u2212" : "+"}${tx.amount.toLocaleString()}
+                    </p>
+                    <p className="text-xs text-vault-muted">{tx.asset || "USDC"}</p>
+                  </div>
+                ) : null}
               </li>
             );
           })}
@@ -112,45 +157,6 @@ function ActivityFeed({ transactions }) {
   );
 }
 
-function ActivitySummary({ transactions }) {
-  const stats = useMemo(() => {
-    const deposits = transactions.filter((t) => t.type === "deposit" && t.status === "confirmed");
-    const withdrawals = transactions.filter((t) => t.type === "withdraw" && t.status === "confirmed");
-    const claims = transactions.filter((t) => t.type === "reward" && t.status === "confirmed");
-    return {
-      totalDeposits: deposits.reduce((s, t) => s + t.amount, 0),
-      totalWithdrawals: withdrawals.reduce((s, t) => s + t.amount, 0),
-      totalClaims: claims.reduce((s, t) => s + t.amount, 0),
-      depositCount: deposits.length,
-      withdrawCount: withdrawals.length,
-      claimCount: claims.length,
-    };
-  }, [transactions]);
-
-  return (
-    <div className="grid gap-4 sm:grid-cols-3">
-      <div className="vq-glass-hover p-5">
-        <span className="flex h-10 w-10 items-center justify-center rounded-xl border border-vault-border bg-vault-surface text-emerald-500"><ArrowDownRight className="h-5 w-5" /></span>
-        <p className="mt-4 text-xs font-medium uppercase tracking-wide text-vault-muted">Total Deposits</p>
-        <p className="mt-1 text-2xl font-bold tabular-nums text-vault-text">${stats.totalDeposits.toLocaleString()}</p>
-        <p className="text-sm text-vault-muted">{stats.depositCount} deposits</p>
-      </div>
-      <div className="vq-glass-hover p-5">
-        <span className="flex h-10 w-10 items-center justify-center rounded-xl border border-vault-border bg-vault-surface text-vault-muted"><ArrowUpRight className="h-5 w-5" /></span>
-        <p className="mt-4 text-xs font-medium uppercase tracking-wide text-vault-muted">Total Withdrawals</p>
-        <p className="mt-1 text-2xl font-bold tabular-nums text-vault-text">${stats.totalWithdrawals.toLocaleString()}</p>
-        <p className="text-sm text-vault-muted">{stats.withdrawCount} withdrawals</p>
-      </div>
-      <div className="vq-glass-hover p-5">
-        <span className="flex h-10 w-10 items-center justify-center rounded-xl border border-vault-border bg-vault-surface text-amber-500"><Gift className="h-5 w-5" /></span>
-        <p className="mt-4 text-xs font-medium uppercase tracking-wide text-vault-muted">Total Claims</p>
-        <p className="mt-1 text-2xl font-bold tabular-nums text-vault-text">${stats.totalClaims.toLocaleString()}</p>
-        <p className="text-sm text-vault-muted">{stats.claimCount} prizes</p>
-      </div>
-    </div>
-  );
-}
-
 function EmptyActivity() {
   const { openConnectModal } = useConnectModal();
   return (
@@ -169,49 +175,46 @@ function EmptyActivity() {
 
 export default function ActivityPage() {
   const { isConnected, address } = useAccount();
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const enrichedTx = useMemo(() => DEMO_TRANSACTIONS.map((tx) => ({ ...tx })), []);
+  const [privacyMode, setPrivacyMode] = useState(false);
 
-  const summary = useMemo(() => {
-    if (!isConnected) return null;
-    return {
-      deposits: enrichedTx.filter((t) => t.type === "deposit" && t.status === "confirmed").length,
-      withdrawals: enrichedTx.filter((t) => t.type === "withdraw" && t.status === "confirmed").length,
-      rewards: enrichedTx.filter((t) => t.type === "reward" && t.status === "confirmed").length,
-    };
-  }, [isConnected, enrichedTx]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setPrivacyMode(window.localStorage.getItem(ACTIVITY_PRIVACY_MODE_KEY) === "true");
+  }, []);
+
+  const togglePrivacyMode = useCallback(() => {
+    setPrivacyMode((prev) => {
+      const next = !prev;
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(ACTIVITY_PRIVACY_MODE_KEY, String(next));
+      }
+      return next;
+    });
+  }, []);
 
   return (
     <div className="space-y-8">
-      <header>
-        <h1 className="text-3xl font-bold text-vault-text">Account Activity</h1>
-        <p className="mt-2 text-vault-muted">Track all deposits, withdrawals, prize claims, and status changes.</p>
+      <header className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold text-vault-text">Account Activity</h1>
+          <p className="mt-2 text-vault-muted">Track deposits, withdrawals, and prize claims from your wallet.</p>
+        </div>
+        {isConnected && (
+          <button
+            type="button"
+            onClick={togglePrivacyMode}
+            aria-pressed={privacyMode}
+            title="Hide vault/pool names in your local activity view. On-chain data is still public and unaffected."
+            className="vq-btn-ghost inline-flex items-center gap-2 text-sm"
+          >
+            {privacyMode ? <EyeOff className="h-4 w-4" aria-hidden="true" /> : <Eye className="h-4 w-4" aria-hidden="true" />}
+            {privacyMode ? "Privacy mode: On" : "Privacy mode: Off"}
+          </button>
+        )}
       </header>
 
       {isConnected ? (
-        <>
-          <ActivitySummary transactions={enrichedTx} />
-          <ActivityFeed transactions={enrichedTx} />
-          <ActivityExport
-            walletAddress={null}
-            walletConnected={isConnected}
-            summary={summary}
-          />
-          <div className="vq-glass flex items-center justify-between p-4 sm:p-6">
-            <div>
-              <h3 className="text-base font-semibold text-vault-text">Full transaction history</h3>
-              <p className="text-sm text-vault-muted">View paginated deposits, withdrawals, and claims from the backend.</p>
-            </div>
-            <button type="button" onClick={() => setHistoryOpen(true)} className="vq-btn-primary">
-              <History className="h-4 w-4" /> View history
-            </button>
-          </div>
-          <TransactionHistoryModal
-            open={historyOpen}
-            onClose={() => setHistoryOpen(false)}
-            walletAddress={address ?? null}
-          />
-        </>
+        <UserActivityTimeline key={address} walletAddress={address ?? null} privacyMode={privacyMode} />
       ) : (
         <EmptyActivity />
       )}

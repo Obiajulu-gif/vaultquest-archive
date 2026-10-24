@@ -59,11 +59,25 @@ Pre-validated JSON files used by tests:
 
 ## CI Integration
 
-The `.github/workflows/conformance.yml` workflow runs on:
-- Changes to contract source files
+The `.github/workflows/conformance.yml` and `.github/workflows/storage-abi-spec-diff.yml` workflows run on:
+- Changes to contract source files (`contracts/drip-pool/src/**`, `contracts/common/src/**`, `contracts/vault-factory/src/**`)
 - Changes to canonical spec or golden fixtures
 - Changes to backend constants/types/indexer
 - Changes to wallet contract types
+
+## Proxy Upgrade Pipeline & Verification
+
+### 1. Storage & ABI Spec Diff Check (Issue #551)
+Enforced in CI via `.github/workflows/storage-abi-spec-diff.yml`. Validates that storage layout (`DataKey`) variants or public `#[contractimpl]` entrypoints are not silently removed or changed without registering an explicit on-chain migration record or migration documentation.
+
+### 2. Populated-State Upgrade Rehearsal (Issue #552)
+Tested via `test_populated_state_upgrade_rehearsal` in `contracts/drip-pool/src/test.rs`. Seeds realistic populated state (multiple participants, lockup tiers, queued `WithdrawalRequest`s, open rounds) before executing the full upgrade lifecycle (`propose_upgrade` → `approve_upgrade` → timelock -> `execute_upgrade`). Asserts that all participant balances, queue ordering, and round data remain byte-identical and uncorrupted post-upgrade.
+
+### 3. Post-Upgrade Smoke Tests (Issue #553)
+Provided via reusable helper `run_post_upgrade_smoke_tests(...)` in `contracts/drip-pool/src/test.rs`. Exercises `join`, `deposit`, `withdraw`, multisig proposal workflows, and view functions (`pool`, `savings`) immediately following an upgrade to ensure newly upgraded logic contracts function properly.
+
+### 4. Fail Closed Token Custody Security Guard (Issue #524)
+`transfer_tokens` returns `Err(Error::TokenNotConfigured)` when unconfigured, preventing no-custody pools from executing synthetic accounting or false claims. `set_token` fails with `Error::AlreadyInitialized` if a token is already configured, preventing post-deposit asset switching.
 
 ## Intentional Breaking Changes
 

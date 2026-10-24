@@ -68,5 +68,7 @@ contract diff stays reviewable in isolation.
   validate the round-trip with the harness here.
 - Admin pause and incident recovery behavior is documented in
   [`docs/PAUSE_RECOVERY.md`](./docs/PAUSE_RECOVERY.md).
+- Conservative proportional-allocation arithmetic and rounding reports are
+  documented in [`docs/ROUNDING_POLICY.md`](./docs/ROUNDING_POLICY.md).
 - The frontend imports the generated TypeScript bindings — keep the
   public method names + types stable across releases.

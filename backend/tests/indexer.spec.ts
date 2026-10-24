@@ -132,7 +132,7 @@ describe("StellarIndexer", () => {
       source: {
         async fetchEvents({ cursor, limit }) {
           seenCursor = cursor;
-          expect(limit).toBe(200);
+          expect(limit).toBe(50);
           return cursor === "2"
             ? [makeEvent({ id: "3", ledger: 103, txHash: "tx_resume" })]
             : [];
@@ -141,6 +141,8 @@ describe("StellarIndexer", () => {
       decoder: defaultXdrDecoder
     });
 
+    // The server restores the persisted checkpoint explicitly before ticking.
+    indexer.setCursor((await ledger.getIndexerCheckpoint())?.lastProcessedEventId ?? null);
     const result = await indexer.tick();
 
     expect(seenCursor).toBe("2");
@@ -148,11 +150,118 @@ describe("StellarIndexer", () => {
     expect(result.processed).toBe(1);
     expect(result.imported).toBe(1);
 
+    // Checkpoint persistence is owned by the cron runner, after a successful tick.
+    await ledger.updateIndexerCheckpoint({ latestLedger: result.latestLedger!, lastProcessedEventId: result.cursor, success: true });
     const checkpoint = await db.prisma.indexerCheckpoint.findUnique({ where: { id: "singleton" } });
     expect(checkpoint?.lastProcessedEventId).toBe("3");
     expect(checkpoint?.latestLedger).toBe(103);
 
     const parked = await db.prisma.pendingEvent.findUnique({ where: { txHash: "tx_resume" } });
     expect(parked).not.toBeNull();
+  });
+
+  it("batch-reconciles a mixed batch with per-event-equivalent outcomes", async () => {
+    await seedAction(db.prisma, { status: "submitted", txHash: "tx_match" });
+    await seedAction(db.prisma, { status: "submitted", txHash: "tx_rev" });
+    const events = [
+      makeEvent({ id: "1", txHash: "tx_match" }),
+      makeEvent({ id: "2", txHash: "tx_new" }),
+      makeEvent({ id: "3", txHash: "tx_match" }),
+      makeEvent({ id: "4", txHash: "tx_rev", successful: false }),
+      makeEvent({ id: "5", txHash: "tx_new" })
+    ];
+    const indexer = new StellarIndexer({
+      ledger,
+      source: staticSource(events),
+      decoder: defaultXdrDecoder
+    });
+
+    const result = await indexer.tick();
+
+    // Same counts the per-event loop would have produced: two events match
+    // existing actions, one parks a pending row, two are intra-batch dupes.
+    expect(result).toMatchObject({
+      processed: 5,
+      imported: 3,
+      duplicates: 2,
+      quarantined: 0,
+      cursor: "5"
+    });
+
+    const matched = await db.prisma.actionLedger.findFirst({ where: { txHash: "tx_match" } });
+    expect(matched?.status).toBe("confirmed");
+    const reverted = await db.prisma.actionLedger.findFirst({ where: { txHash: "tx_rev" } });
+    expect(reverted?.status).toBe("reverted");
+    const parked = await db.prisma.pendingEvent.findMany({ where: { txHash: "tx_new" } });
+    expect(parked).toHaveLength(1);
+  });
+
+  it("keeps the quarantine-halts-the-batch guarantee with batched writes", async () => {
+    const throwingDecoder = {
+      decode(event: RawHorizonEvent): Record<string, unknown> {
+        if (event.id === "2") throw new Error("malformed XDR");
+        return defaultXdrDecoder.decode(event);
+      }
+    };
+    const events = [
+      makeEvent({ id: "1", txHash: "tx_gap_a" }),
+      makeEvent({ id: "2", txHash: "tx_gap_b" }),
+      makeEvent({ id: "3", txHash: "tx_gap_c" })
+    ];
+    const indexer = new StellarIndexer({
+      ledger,
+      source: staticSource(events),
+      decoder: throwingDecoder
+    });
+
+    const result = await indexer.tick();
+
+    // Event 1 is written, event 2 is quarantined, and the cursor stops at
+    // event 1 — event 3 is never touched, so the next tick retries the gap.
+    expect(result).toMatchObject({
+      processed: 3,
+      imported: 1,
+      quarantined: 1,
+      cursor: "1"
+    });
+    const parked = await db.prisma.pendingEvent.findMany({
+      where: { txHash: { in: ["tx_gap_a", "tx_gap_c"] } }
+    });
+    expect(parked.map((p) => p.txHash)).toEqual(["tx_gap_a"]);
+    const poison = await db.prisma.poisonEvent.findFirst({ where: { sorobanEventId: "2" } });
+    expect(poison).not.toBeNull();
+  });
+
+  it("benchmarks tick() latency for a full 50-event batch: batched beats sequential", async () => {
+    const events = Array.from({ length: 50 }, (_, i) =>
+      makeEvent({ id: String(i + 1), txHash: `tx_bench_${i}` })
+    );
+
+    // Sequential baseline: N individual reconcileEvent transactions.
+    const seqLedger = new LedgerService(db.prisma);
+    const seqStart = performance.now();
+    for (const e of events) {
+      await seqLedger.reconcileEvent({
+        txHash: e.txHash,
+        sorobanEventId: e.id,
+        eventPayload: { type: "deposit" },
+        statusHint: "confirmed"
+      });
+    }
+    const seqElapsed = performance.now() - seqStart;
+    await resetDb(db.prisma);
+
+    // Batched: one tick() with the same 50 events.
+    const indexer = new StellarIndexer({
+      ledger: new LedgerService(db.prisma),
+      source: staticSource(events),
+      decoder: defaultXdrDecoder
+    });
+    const batchStart = performance.now();
+    const result = await indexer.tick();
+    const batchElapsed = performance.now() - batchStart;
+
+    expect(result).toMatchObject({ processed: 50, imported: 50, duplicates: 0 });
+    expect(batchElapsed).toBeLessThan(seqElapsed);
   });
 });

@@ -20,6 +20,47 @@ export interface TransactionStatusView {
 
 type ApiEnvelope<T> = { data: T };
 
+export interface VaultMetadataRecord {
+  id: string;
+  risk_tier?: string | null;
+  strategy?: string | null;
+  lockup_days?: number | null;
+  fee_bps?: number | null;
+  accepted_asset?: string | null;
+  operational_status?: string | null;
+  metadata_version?: number | null;
+}
+
+export interface PortfolioActivePosition {
+  vault_id: string;
+  balance: number;
+  token: string;
+}
+
+export interface PortfolioRecentActivity {
+  id: string;
+  action_type: string;
+  status: string;
+  tx_hash: string | null;
+  created_at: string;
+  payload: unknown;
+}
+
+/**
+ * Matches GET /portfolio/summary's real response shape exactly — see
+ * backend/src/services/ledger.ts's getPortfolioSummary() and
+ * backend/tests/portfolio.spec.ts for the contract this mirrors.
+ */
+export interface PortfolioSummary {
+  wallet_address: string;
+  total_deposits: number;
+  active_positions: PortfolioActivePosition[];
+  pending_rewards: number;
+  claimable_amount: number;
+  invalid_action_count: number;
+  recent_activity: PortfolioRecentActivity[];
+}
+
 type SavedPoolApiRecord = {
   id: string;
   wallet_address: string;
@@ -138,6 +179,36 @@ export class VaultApiClient {
     const body = await parseJsonResponse<ApiEnvelope<PoolSummary[]>>(
       await fetch(this.url("/pools"), { signal: options?.signal }),
       "Pool discovery request failed",
+    );
+    return body.data.map((pool) => {
+      const raw = pool as PoolSummary & Record<string, unknown>;
+      return {
+        ...pool,
+        riskTier: pool.riskTier ?? (raw.risk_tier as string | undefined),
+        strategy: pool.strategy ?? (raw.strategy_name as string | undefined),
+        lockupDays: pool.lockupDays ?? (raw.lockup_days as number | undefined),
+        feeBps: pool.feeBps ?? (raw.fee_bps as number | undefined),
+        acceptedAsset: pool.acceptedAsset ?? (raw.accepted_asset as string | undefined),
+        operationalStatus: pool.operationalStatus ?? (raw.operational_status as string | undefined),
+        metadataVersion: pool.metadataVersion ?? (raw.metadata_version as number | undefined),
+      };
+    });
+
+  }
+
+  async listVaultMetadata(options?: { signal?: AbortSignal }): Promise<VaultMetadataRecord[]> {
+    const body = await parseJsonResponse<ApiEnvelope<VaultMetadataRecord[]>>(
+      await fetch(this.url("/vault-metadata"), { signal: options?.signal }),
+      "Vault metadata request failed",
+    );
+    return body.data;
+  }
+
+  async getPortfolioSummary(walletAddress: string, options?: { signal?: AbortSignal }): Promise<PortfolioSummary> {
+    const params = new URLSearchParams({ wallet: walletAddress });
+    const body = await parseJsonResponse<ApiEnvelope<PortfolioSummary>>(
+      await fetch(this.url("/portfolio/summary", params), { signal: options?.signal }),
+      "Portfolio summary request failed",
     );
     return body.data;
   }

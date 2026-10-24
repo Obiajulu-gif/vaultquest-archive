@@ -6,7 +6,8 @@ function createMockPrisma() {
     walletChallenge: {
       create: vi.fn(),
       findUnique: vi.fn(),
-      update: vi.fn()
+      update: vi.fn(),
+      updateMany: vi.fn()
     },
     walletSession: {
       create: vi.fn(),
@@ -308,6 +309,111 @@ describe("WalletAuthService", () => {
           network: "TESTNET"
         })
       ).rejects.toThrow("unauthorized");
+    });
+
+    // ── #566: single-use enforcement handshake ───────────────────────────────
+    // The authoritative consume is a conditionally-scoped updateMany
+    // (WHERE consumedAt = null AND expiresAt > now). These tests pin the
+    // contract: consumption must be conditional, single-use, and re-check
+    // expiry at consume time (TOCTOU-safe), not a bare update by id.
+
+    it("marks the challenge consumed atomically via a conditional updateMany", async () => {
+      prisma.walletChallenge.findUnique.mockResolvedValue({
+        challengeId: "ch1",
+        expiresAt: new Date(Date.now() + 60000),
+        publicKey: "GKEY",
+        network: "TESTNET",
+        consumedAt: null,
+        nonce: "correct-nonce",
+        walletAddress: "GABC"
+      });
+      // Simulate a valid signature: crypto step passes (Keypair.verify).
+      // Provide a signature that the mocked public key verify accepts is
+      // hard to arrange in pure-mock terms, so exercise the happy path:
+      // patched below with a real-ed25519 signature when needed. Here we
+      // assert the *consume* handshake using a keystore that passes.
+      prisma.walletChallenge.updateMany.mockResolvedValue({ count: 1 });
+      prisma.walletSession.create.mockResolvedValue({
+        token: "t1",
+        refreshToken: "r1",
+        expiresAt: new Date(Date.now() + 86400000),
+        walletAddress: "GABC",
+        publicKey: "GKEY",
+        network: "TESTNET"
+      });
+
+      // Build a genuinely valid signature so crypto verification passes.
+      const kp = (await import("@stellar/stellar-sdk")).Keypair.random();
+      const payload = JSON.stringify({
+        appName: "VaultQuest",
+        network: "TESTNET",
+        purpose: "API_AUTHENTICATION",
+        nonce: "correct-nonce"
+      });
+      const signature = kp.sign(Buffer.from(payload)).toString("base64");
+      prisma.walletChallenge.findUnique.mockResolvedValue({
+        challengeId: "ch1",
+        expiresAt: new Date(Date.now() + 60000),
+        publicKey: kp.publicKey(),
+        network: "TESTNET",
+        consumedAt: null,
+        nonce: "correct-nonce",
+        walletAddress: kp.publicKey()
+      });
+
+      await svc.verifyChallenge({
+        challengeId: "ch1",
+        payload,
+        signature,
+        publicKey: kp.publicKey(),
+        network: "TESTNET"
+      });
+
+      expect(prisma.walletChallenge.updateMany).toHaveBeenCalledWith({
+        where: {
+          challengeId: "ch1",
+          consumedAt: null,
+          expiresAt: { gt: expect.any(Date) }
+        },
+        data: { consumedAt: expect.any(Date) }
+      });
+    });
+
+    it("rejects when the conditional updateMany consumes zero rows (concurrent double-verify loser)", async () => {
+      const kp = (await import("@stellar/stellar-sdk")).Keypair.random();
+      const payload = JSON.stringify({
+        appName: "VaultQuest",
+        network: "TESTNET",
+        purpose: "API_AUTHENTICATION",
+        nonce: "correct-nonce"
+      });
+      const signature = kp.sign(Buffer.from(payload)).toString("base64");
+
+      prisma.walletChallenge.findUnique.mockResolvedValue({
+        challengeId: "ch1",
+        expiresAt: new Date(Date.now() + 60000),
+        publicKey: kp.publicKey(),
+        network: "TESTNET",
+        consumedAt: null,
+        nonce: "correct-nonce",
+        walletAddress: kp.publicKey()
+      });
+
+      // Crypto verification passes, but the atomic consume loses the race
+      // because another request already consumed the nonce.
+      prisma.walletChallenge.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        svc.verifyChallenge({
+          challengeId: "ch1",
+          payload,
+          signature,
+          publicKey: kp.publicKey(),
+          network: "TESTNET"
+        })
+      ).rejects.toThrow("unauthorized");
+      // No session is created for the loser.
+      expect(prisma.walletSession.create).not.toHaveBeenCalled();
     });
   });
 

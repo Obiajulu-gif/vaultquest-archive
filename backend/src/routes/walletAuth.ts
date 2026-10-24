@@ -25,8 +25,18 @@ const refreshBody = z.object({
 
 export const walletAuthRoutes = (svc: WalletAuthService): FastifyPluginAsync =>
   async (app) => {
-    app.post("/wallet-auth/challenge", async (req, reply) => {
-      const body = challengeBody.parse(req.body);
+    app.post(
+      "/wallet-auth/challenge",
+      {
+        config: {
+          rateLimit: {
+            max: 5,
+            timeWindow: 15 * 60 * 1000 // 15 minutes
+          }
+        }
+      },
+      async (req, reply) => {
+        const body = challengeBody.parse(req.body);
       const challenge = await svc.createChallenge({
         walletAddress: body.wallet_address,
         publicKey: body.public_key,
@@ -42,8 +52,18 @@ export const walletAuthRoutes = (svc: WalletAuthService): FastifyPluginAsync =>
       });
     });
 
-    app.post("/wallet-auth/verify", async (req, reply) => {
-      const body = verifyBody.parse(req.body);
+    app.post(
+      "/wallet-auth/verify",
+      {
+        config: {
+          rateLimit: {
+            max: 5,
+            timeWindow: 15 * 60 * 1000 // 15 minutes
+          }
+        }
+      },
+      async (req, reply) => {
+        const body = verifyBody.parse(req.body);
       const session = await svc.verifyChallenge({
         challengeId: body.challenge_id,
         payload: body.payload,

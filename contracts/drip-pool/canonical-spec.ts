@@ -25,6 +25,32 @@ export const CONTRACT_ERRORS = {
   ProposalNotFound: 11,
   ProposalExpired: 12,
   InvalidAction: 13,
+  TokenNotConfigured: 14,
+  AssetMismatch: 15,
+  TransferFailed: 16,
+  ClaimDeadlinePassed: 17,
+  ClaimDeadlineNotReached: 18,
+  NoClaimDeadline: 19,
+  InvalidDeadline: 20,
+  InEmergency: 21,
+  NotInEmergency: 22,
+  Insolvent: 23,
+  IncompatibleConfig: 24,
+  GovernanceEpochChanged: 25,
+  TimelockNotElapsed: 26,
+  StrategyNotSet: 51,
+  StrategyVersionUnsupported: 52,
+  StrategyPaused: 53,
+  RedeemFailed: 54,
+  DepositFailed: 55,
+  StrategyRotationPending: 56,
+  StrategyRotationNotInProgress: 57,
+  StrategyUnreconciledPrincipal: 58,
+  ExposureCapExceeded: 59,
+  StrategyAssetMismatch: 60,
+  StrategyCodeHashNotAllowed: 76,
+  BalanceVerificationFailed: 77,
+  TokenDecimalsNotConfigured: 75,
 } as const;
 
 export type ContractErrorCode = keyof typeof CONTRACT_ERRORS;
@@ -116,6 +142,12 @@ export interface OnChainParticipant {
   yield_accrued: string; // i128
 }
 
+export interface OnChainRoundingRemainder {
+  whole_units: string; // i128 token units
+  numerator: string; // i128 fraction numerator
+  denominator: string; // i128 frozen round snapshot
+}
+
 // ── Contract Method Signatures ──────────────────────────────────────────────
 
 export type ContractMethod =
@@ -138,7 +170,8 @@ export type ContractMethod =
   | "pool"
   | "savings"
   | "admins"
-  | "threshold";
+  | "threshold"
+  | "round_rounding_remainder";
 
 // ── Cross-Stack Type Mapping ────────────────────────────────────────────────
 
@@ -169,6 +202,7 @@ export const BACKEND_TO_WALLET: Record<string, string> = {
   create_vault: "create",
   claim: "claim",
   select_winner: "draw_winner",
+  compensating: "compensating",
 };
 
 // ── Error Code Mapping ──────────────────────────────────────────────────────
@@ -188,6 +222,32 @@ export const CONTRACT_TO_BACKEND_ERRORS: Record<ContractErrorCode, string> = {
   ProposalNotFound: "NOT_FOUND",
   ProposalExpired: "INVALID_PAYLOAD",
   InvalidAction: "INVALID_PAYLOAD",
+  TokenNotConfigured: "INVALID_PAYLOAD",
+  AssetMismatch: "INVALID_PAYLOAD",
+  TransferFailed: "REVERTED_ON_CHAIN",
+  ClaimDeadlinePassed: "REVERTED_ON_CHAIN",
+  ClaimDeadlineNotReached: "REVERTED_ON_CHAIN",
+  NoClaimDeadline: "INVALID_PAYLOAD",
+  InvalidDeadline: "INVALID_PAYLOAD",
+  InEmergency: "REVERTED_ON_CHAIN",
+  NotInEmergency: "INVALID_PAYLOAD",
+  Insolvent: "REVERTED_ON_CHAIN",
+  IncompatibleConfig: "INVALID_PAYLOAD",
+  GovernanceEpochChanged: "INVALID_PAYLOAD",
+  TimelockNotElapsed: "REVERTED_ON_CHAIN",
+  StrategyNotSet: "INVALID_PAYLOAD",
+  StrategyVersionUnsupported: "INVALID_PAYLOAD",
+  StrategyPaused: "REVERTED_ON_CHAIN",
+  RedeemFailed: "REVERTED_ON_CHAIN",
+  DepositFailed: "REVERTED_ON_CHAIN",
+  StrategyRotationPending: "REVERTED_ON_CHAIN",
+  StrategyRotationNotInProgress: "INVALID_PAYLOAD",
+  StrategyUnreconciledPrincipal: "REVERTED_ON_CHAIN",
+  ExposureCapExceeded: "REVERTED_ON_CHAIN",
+  StrategyAssetMismatch: "INVALID_PAYLOAD",
+  StrategyCodeHashNotAllowed: "FORBIDDEN",
+  BalanceVerificationFailed: "REVERTED_ON_CHAIN",
+  TokenDecimalsNotConfigured: "INVALID_PAYLOAD",
 };
 
 /** Maps contract error codes to wallet ContractErrorKind values. */
@@ -205,6 +265,32 @@ export const CONTRACT_TO_WALLET_ERRORS: Record<ContractErrorCode, string> = {
   ProposalNotFound: "contract_error",
   ProposalExpired: "contract_error",
   InvalidAction: "contract_error",
+  TokenNotConfigured: "contract_error",
+  AssetMismatch: "contract_error",
+  TransferFailed: "contract_error",
+  ClaimDeadlinePassed: "contract_error",
+  ClaimDeadlineNotReached: "contract_error",
+  NoClaimDeadline: "contract_error",
+  InvalidDeadline: "contract_error",
+  InEmergency: "contract_error",
+  NotInEmergency: "contract_error",
+  Insolvent: "contract_error",
+  IncompatibleConfig: "contract_error",
+  GovernanceEpochChanged: "contract_error",
+  TimelockNotElapsed: "contract_error",
+  StrategyNotSet: "contract_error",
+  StrategyVersionUnsupported: "contract_error",
+  StrategyPaused: "contract_error",
+  RedeemFailed: "contract_error",
+  DepositFailed: "contract_error",
+  StrategyRotationPending: "contract_error",
+  StrategyRotationNotInProgress: "contract_error",
+  StrategyUnreconciledPrincipal: "contract_error",
+  ExposureCapExceeded: "contract_error",
+  StrategyAssetMismatch: "contract_error",
+  StrategyCodeHashNotAllowed: "contract_error",
+  BalanceVerificationFailed: "contract_error",
+  TokenDecimalsNotConfigured: "contract_error",
 };
 
 // ── Validation Helpers ──────────────────────────────────────────────────────
@@ -244,6 +330,25 @@ export function validateContractMethod(method: string): string | null {
     "join", "deposit", "drip", "deposit_with_duration", "claim",
     "claim_reward", "withdraw", "withdraw_locked", "add_yield",
     "credit_yield", "draw_winner", "pool", "savings", "admins", "threshold",
+    "set_token_decimals", "token_decimals",
+    "allow_strategy_code_hash", "disallow_strategy_code_hash",
+    "allowed_strategy_code_hashes", "is_strategy_code_hash_allowed",
+    "set_strategy", "propose_strategy", "validate_strategy",
+    "drain_strategy", "reconcile_strategy", "activate_strategy",
+    "cancel_strategy_rotation", "deploy_to_strategy", "recall_from_strategy",
+    "harvest_strategy", "emergency_recall_strategy",
+    "set_min_idle_reserve", "min_idle_reserve",
+    "fulfill_withdrawal_queue", "cancel_withdrawal_request",
+    "withdrawal_request", "withdrawal_request_of",
+    "withdrawal_queue_head", "withdrawal_queue_tail",
+    "open_round", "round_deposit", "lock_round", "settle_round",
+    "finalize_round", "round_claim", "round", "round_deposit_of", "round_nonce",
+    "governance_epoch", "token", "claim_deadline", "claim_deadline_passed",
+    "unclaimed_swept", "renew_participant", "renew_instance", "renew_storage",
+    "emergency_withdraw", "is_emergency", "emergency_assets",
+    "execute_proposal", "set_claim_deadline", "sweep_unclaimed",
+    "round_rounding_remainder",
+    "config_version",
   ];
 
   if (!validMethods.includes(method)) {
@@ -258,8 +363,8 @@ export function validateContractMethod(method: string): string | null {
  * Returns null if valid, or an error message.
  */
 export function validateContractErrorCode(code: number): string | null {
-  if (code < 1 || code > 13) {
-    return `Invalid contract error code ${code}; expected 1-13`;
+  if (code < 1 || code > 77) {
+    return `Invalid contract error code ${code}; expected 1-77`;
   }
   return null;
 }

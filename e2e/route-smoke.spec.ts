@@ -38,6 +38,28 @@ const appRoutes: SmokeRoute[] = [
   },
 ];
 
+// Routes whose rendered content meaningfully differs by wallet-connection
+// state (they gate deposit/position UI behind `isConnected`), so a
+// disconnected-only smoke run can silently miss a connected-state crash.
+// Scoped to the primary app routes only — see #656.
+const walletSensitiveAppRoutes: SmokeRoute[] = [
+  {
+    name: "app dashboard",
+    path: "/app",
+    expectedContent: /Save together\. Win together\.|Connect your wallet/i,
+  },
+  {
+    name: "prizes index",
+    path: "/app/prizes",
+    expectedContent: /Prize simulator|Browse active prize rounds/i,
+  },
+  {
+    name: "vaults index",
+    path: "/app/vaults",
+    expectedContent: /Quick Deposit Flow|Available Pools/i,
+  },
+];
+
 const routeLevelCrashPatterns = [
   /Application error/i,
   /Unhandled Runtime Error/i,
@@ -86,8 +108,18 @@ test.describe("route smoke tests", () => {
   }
 
   for (const route of appRoutes) {
-    test(`${route.name} renders at ${route.path}`, async ({ page }) => {
+    test(`${route.name} renders at ${route.path} (disconnected)`, async ({ page }) => {
       await mockAppShell(page);
+      await expectRouteToRender(page, route);
+    });
+  }
+
+  // Same primary routes again with a wallet connected — `mockAppShell`
+  // defaults to disconnected, so without this the connected-state render
+  // path (deposit/position UI, join/withdraw actions) was never smoke-tested.
+  for (const route of walletSensitiveAppRoutes) {
+    test(`${route.name} renders at ${route.path} (connected)`, async ({ page }) => {
+      await mockAppShell(page, { connected: true });
       await expectRouteToRender(page, route);
     });
   }

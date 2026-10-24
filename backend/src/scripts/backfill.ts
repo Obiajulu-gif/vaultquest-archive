@@ -1,159 +1,205 @@
+#!/usr/bin/env tsx
 /**
- * Standalone ledger-range backfill script (issue #435).
+ * Operator-safe resumable backfill and recovery tool (#920, #728).
  *
- * Reprocesses a bounded range of Stellar ledgers for missing events.
- * Reuses the idempotent LedgerService.reconcileEvent.
+ * Features:
+ *   - Dry-run diff preview (shows exact creates, updates, and skips before applying)
+ *   - Resumable checkpoints persisted in indexer_checkpoints
+ *   - Gap calculation and consistency verification
+ *   - Explicit skip reporting (e.g. RECORD_ALREADY_CONFIRMED)
+ *   - Safe error isolation
  *
  * Usage:
- *   tsx src/scripts/backfill.ts --start 1000 --end 2000 [--dry-run]
- *
- * Exit codes:
- *   0 - backfill succeeded
- *   1 - backfill failed
+ *   pnpm backfill                    # Resume from last checkpoint
+ *   pnpm backfill --status           # Show current gap to chain tip
+ *   pnpm backfill --verify           # Verify checkpoint consistency with action_ledger
+ *   pnpm backfill --from 1000000     # Explicit start ledger
+ *   pnpm backfill --to 1050000       # Explicit end ledger
+ *   pnpm backfill --dry-run          # Preview diff without mutating database or checkpoint
+ *   pnpm backfill --reset-checkpoint 995000 # Rewind/reset checkpoint
+ *   pnpm backfill --limit 500        # Cap maximum records processed
+ *   pnpm backfill --force            # Bypass safety warnings
  */
 
-import { getEnv } from "../env.js";
-import { createLogger } from "../logger.js";
 import { PrismaClient } from "@prisma/client";
-import { LedgerService } from "../services/ledger.js";
-import { SorobanRpcEventSource, sorobanNativeXdrDecoder } from "../services/stellarIndexer.js";
+import { logger } from "../logger.js";
+import {
+  BackfillService,
+  type BackfillOptions,
+  type RawBackfillEvent,
+  type BackfillReport,
+  type BackfillEventSource
+} from "../services/backfillService.js";
 
-const env = getEnv();
-const logger = createLogger(env.LOG_LEVEL);
+export interface CliOptions extends BackfillOptions {
+  status?: boolean;
+  verify?: boolean;
+  json?: boolean;
+}
 
-function parseArgs() {
-  const args = process.argv.slice(2);
-  let startLedger: number | undefined;
-  let endLedger: number | undefined;
-  let dryRun = false;
+export function parseArgs(args: string[]): CliOptions {
+  const options: CliOptions = {};
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === "--start") {
-      startLedger = parseInt(args[++i], 10);
-    } else if (arg === "--end") {
-      endLedger = parseInt(args[++i], 10);
+
+    if (arg === "--from" && i + 1 < args.length) {
+      options.fromLedger = parseInt(args[++i], 10);
+    } else if (arg === "--to" && i + 1 < args.length) {
+      options.toLedger = parseInt(args[++i], 10);
+    } else if (arg === "--status") {
+      options.status = true;
+    } else if (arg === "--verify") {
+      options.verify = true;
     } else if (arg === "--dry-run") {
-      dryRun = true;
+      options.dryRun = true;
+    } else if (arg === "--reset-checkpoint" && i + 1 < args.length) {
+      options.resetCheckpoint = parseInt(args[++i], 10);
+    } else if (arg === "--limit" && i + 1 < args.length) {
+      options.limit = parseInt(args[++i], 10);
+    } else if (arg === "--batch-size" && i + 1 < args.length) {
+      options.batchSize = parseInt(args[++i], 10);
+    } else if (arg === "--force") {
+      options.force = true;
+    } else if (arg === "--json") {
+      options.json = true;
     }
   }
 
-  if (startLedger === undefined || endLedger === undefined || isNaN(startLedger) || isNaN(endLedger)) {
-    console.error("Usage: tsx src/scripts/backfill.ts --start <ledger> --end <ledger> [--dry-run]");
-    process.exit(1);
-  }
-
-  if (endLedger < startLedger) {
-    console.error("Error: --end ledger must be >= --start ledger");
-    process.exit(1);
-  }
-
-  return { startLedger, endLedger, dryRun };
+  return options;
 }
 
-async function run() {
-  const { startLedger, endLedger, dryRun } = parseArgs();
+export class DefaultBackfillEventSource implements BackfillEventSource {
+  constructor(private readonly prisma: PrismaClient) {}
 
-  if (!env.SOROBAN_RPC_URL) {
-    console.error("Error: SOROBAN_RPC_URL must be set to run the backfill");
-    process.exit(1);
-  }
+  async fetchEvents(fromLedger: number, toLedger: number, limit = 1000): Promise<RawBackfillEvent[]> {
+    // Read from chain_events or pending_events if present
+    const chainEvents = await this.prisma.chainEvent.findMany({
+      where: {
+        ledger: { gte: fromLedger, lte: toLedger },
+      },
+      take: limit,
+      orderBy: { ledger: "asc" },
+    });
 
-  const prisma = new PrismaClient({
-    datasources: { db: { url: env.DATABASE_URL } }
-  });
-
-  const ledgerService = new LedgerService(prisma);
-  const contractIds = env.INDEXER_CONTRACT_IDS?.split(",").map((s) => s.trim()).filter(Boolean);
-  const source = new SorobanRpcEventSource({
-    rpcUrl: env.SOROBAN_RPC_URL.split(",").map((s) => s.trim()),
-    contractIds,
-    maxPageFetch: 10000
-  });
-
-  logger.info({ startLedger, endLedger, dryRun }, "Starting ledger range backfill");
-  console.log(`Starting backfill from ledger ${startLedger} to ${endLedger}${dryRun ? ' (DRY RUN)' : ''}...`);
-
-  let processed = 0;
-  let skipped = 0;
-  let failed = 0;
-
-  try {
-    // In a real implementation we would paginate through the ledgers.
-    // For now we assume a single fetchEvents call covers the range.
-    const rawEvents = await source.fetchEvents({ startLedger, endLedger, limit: 10000 });
-
-    for (const raw of rawEvents) {
-      let payload: Record<string, unknown>;
-      try {
-        payload = sorobanNativeXdrDecoder.decode(raw);
-      } catch (err) {
-        logger.warn({ err, txHash: raw.txHash, eventId: raw.id }, "backfill: quarantining malformed event");
-        if (!dryRun) {
-          await ledgerService.quarantineEvent({
-            sorobanEventId: raw.id,
-            ledger: raw.ledger,
-            contractId: raw.contractId,
-            txHash: raw.txHash,
-            rawEvent: raw,
-            reason: err instanceof Error ? err.message : String(err)
-          });
-        }
-        failed += 1;
-        continue;
-      }
-      const statusHint = raw.successful ? "confirmed" : "reverted";
-
-      if (dryRun) {
-        // In dry-run, we perform no mutations, but we can check if it exists
-        // to categorize it as skipped vs processed.
-        const existingAction = await prisma.actionLedger.findFirst({ where: { txHash: raw.txHash } });
-        const existingPending = await prisma.pendingEvent.findFirst({ where: { txHash: raw.txHash } });
-        
-        if (existingAction || existingPending) {
-          skipped += 1;
-        } else {
-          processed += 1;
-        }
-      } else {
-        try {
-          await ledgerService.reconcileEvent({
-            txHash: raw.txHash,
-            sorobanEventId: raw.id,
-            eventPayload: payload,
-            statusHint
-          });
-          processed += 1;
-        } catch (err: unknown) {
-          const isDuplicate =
-            err instanceof Error &&
-            (err.message.includes("Unique constraint") ||
-              err.message.includes("P2002") ||
-              (err as any).code === "P2002");
-
-          if (isDuplicate) {
-            skipped += 1;
-          } else {
-            logger.warn({ err, txHash: raw.txHash }, "backfill: failed to process event");
-            failed += 1;
-          }
-        }
-      }
+    if (chainEvents.length > 0) {
+      return chainEvents.map((e) => ({
+        id: e.id,
+        ledger: e.ledger,
+        txHash: e.txHash,
+        eventType: e.topicXdr[0] || "deposit",
+        payload: { contractId: e.contractId, valueXdr: e.valueXdr },
+        timestamp: e.ledgerClosedAt ?? undefined,
+      }));
     }
 
-    console.log("Backfill completed.");
-    console.log(`Processed: ${processed}`);
-    console.log(`Skipped (duplicates): ${skipped}`);
-    console.log(`Failed: ${failed}`);
-    logger.info({ processed, skipped, failed }, "Backfill completed");
+    // Fallback: If no raw chainEvents in DB, return empty array
+    return [];
+  }
 
-  } catch (err) {
-    logger.error({ err }, "Backfill encountered a fatal error");
-    console.error("Backfill encountered a fatal error:", err);
-    process.exit(1);
+  async getLatestLedger(): Promise<number> {
+    const maxChain = await this.prisma.chainEvent.aggregate({
+      _max: { ledger: true },
+    });
+    if (maxChain._max.ledger) return maxChain._max.ledger;
+
+    const maxAction = await this.prisma.actionLedger.aggregate({
+      _max: { observedLedger: true },
+    });
+    return maxAction._max.observedLedger ?? 1000;
+  }
+}
+
+export async function showStatus(prisma: PrismaClient, service?: BackfillService): Promise<void> {
+  const svc = service ?? new BackfillService(prisma, new DefaultBackfillEventSource(prisma));
+  const status = await svc.getStatus();
+
+  console.log("================ Backfill Status ================");
+  console.log(`Current Checkpoint Ledger: ${status.checkpointLedger}`);
+  console.log(`Latest Known Ledger:      ${status.latestLedger}`);
+  console.log(`Gap:                       ${status.gap} ledgers (~${status.estimatedHours} hours)`);
+  if (status.lastSyncTime) {
+    console.log(`Last Sync Time:            ${status.lastSyncTime.toISOString()}`);
+  }
+  if (status.lastError) {
+    console.log(`Last Recorded Error:       ${status.lastError}`);
+  }
+  console.log("=================================================");
+}
+
+export async function verifyCheckpointConsistency(
+  prisma: PrismaClient,
+  service?: BackfillService
+): Promise<boolean> {
+  const svc = service ?? new BackfillService(prisma, new DefaultBackfillEventSource(prisma));
+  const verification = await svc.verifyConsistency();
+
+  console.log("========= Checkpoint Consistency Check =========");
+  console.log(`Consistent:             ${verification.consistent ? "YES" : "NO"}`);
+  console.log(`Checkpoint Ledger:      ${verification.checkpointLedger}`);
+  console.log(`Max Action Ledger:      ${verification.maxActionLedger}`);
+  console.log(`Divergence Gap:         ${verification.gap}`);
+  if (verification.warning) {
+    console.warn(`WARNING: ${verification.warning}`);
+  }
+  console.log("================================================");
+  return verification.consistent;
+}
+
+export async function backfill(
+  options: CliOptions,
+  customService?: BackfillService,
+  mockEvents?: RawBackfillEvent[]
+): Promise<BackfillReport | void> {
+  const prisma = new PrismaClient();
+  const service = customService ?? new BackfillService(prisma, new DefaultBackfillEventSource(prisma));
+
+  try {
+    if (options.status) {
+      await showStatus(prisma, service);
+      return;
+    }
+
+    if (options.verify) {
+      const isConsistent = await verifyCheckpointConsistency(prisma, service);
+      if (!isConsistent && !options.force) {
+        throw new Error("Checkpoint verification failed; use --force to override.");
+      }
+      return;
+    }
+
+    logger.info("Executing operator backfill", {
+      from: options.fromLedger,
+      to: options.toLedger,
+      dryRun: options.dryRun ?? false,
+      limit: options.limit,
+    });
+
+    const report = await service.runBackfill(mockEvents, options);
+
+    if (options.json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      console.log(BackfillService.formatDiffReport(report));
+    }
+
+    return report;
   } finally {
     await prisma.$disconnect();
   }
 }
 
-run();
+// CLI entry point
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const options = parseArgs(process.argv.slice(2));
+
+  backfill(options)
+    .then(() => {
+      logger.info("Backfill command finished successfully");
+      process.exit(0);
+    })
+    .catch((error) => {
+      logger.error("Backfill command failed", { error: error?.message ?? error });
+      process.exit(1);
+    });
+}

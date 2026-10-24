@@ -10,6 +10,12 @@ Tests essential user workflows including wallet connection, page navigation, and
 ### Route Smoke Tests (`route-smoke.spec.ts`)
 Validates that all routes render correctly without crashes or errors.
 
+### Error States (`error-states.spec.ts`)
+Covers deterministic failure paths: wallet rejection (connection denial, code 4001), Avalanche RPC outage (502 on the C-Chain `eth_gasPrice` call, asserting the fallback fee data alert), and an on-chain reverted action surfaced in the activity history modal.
+
+### Round Close (`round-close.spec.ts`)
+Independently replays the weighted draw selection (seed -> `R` -> cumulative walk over ticket weights) and recomputes the participants/weights/winner hashes and draw id, asserts the served draw proof matches, then verifies the prizes page shows the independently-confirmed winner with the local "Verified" badge.
+
 ### Mobile Responsiveness (`mobile-responsive.spec.ts`)
 Ensures the application works correctly across different mobile devices and viewports.
 

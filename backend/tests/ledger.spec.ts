@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { startTestDb, resetDb, type TestDb } from "./helpers/db.js";
-import { makeIntentInput } from "./helpers/factory.js";
+import { makeIntentInput, seedAction } from "./helpers/factory.js";
 import { LedgerService } from "../src/services/ledger.js";
 import { AppError } from "../src/errors.js";
 
@@ -110,6 +110,8 @@ describe("LedgerService.attachTxHash", () => {
     expect(updated.status).toBe("confirmed");
     expect(updated.sorobanEventId).toBe("evt_xyz");
     expect(updated.confirmedAt).not.toBeNull();
+    // #509: the parked event's payload becomes the action's verifiedPayload.
+    expect(updated.verifiedPayload).toEqual({ ok: true });
 
     const consumed = await db.prisma.pendingEvent.findUnique({ where: { txHash: "tx_race_1" } });
     expect(consumed?.consumedAt).not.toBeNull();
@@ -239,6 +241,9 @@ describe("LedgerService.reconcileEvent", () => {
     expect(row?.status).toBe("confirmed");
     expect(row?.sorobanEventId).toBe("evt_1");
     expect(row?.confirmedAt).not.toBeNull();
+    // #509: the decoded finalized-event payload is persisted separately from
+    // the client-supplied actionPayload.
+    expect(row?.verifiedPayload).toEqual({ amount: "100" });
   });
 
   it("marks reverted on revert hint", async () => {
@@ -265,6 +270,25 @@ describe("LedgerService.reconcileEvent", () => {
     expect(result.matched).toBe(false);
     const parked = await db.prisma.pendingEvent.findUnique({ where: { txHash: "tx_orphan_event" } });
     expect(parked).not.toBeNull();
+  });
+
+  it("confirms an event that arrived before the transaction hash was attached", async () => {
+    const created = await svc.createAction(makeIntentInput());
+    const event = {
+      txHash: "tx_event_before_attach",
+      sorobanEventId: "evt_before_attach",
+      eventPayload: { amount: "100" },
+      statusHint: "confirmed" as const
+    };
+
+    expect(await svc.reconcileEvent(event)).toEqual({ matched: false });
+    const attached = await svc.attachTxHash(created.id, event.txHash, { workerId: "worker-1" });
+
+    expect(attached.status).toBe("confirmed");
+    expect(attached.verifiedPayload).toEqual(event.eventPayload);
+    expect(await db.prisma.pendingEvent.findUnique({ where: { txHash: event.txHash } })).toMatchObject({
+      consumedAt: expect.any(Date)
+    });
   });
 
   it("is idempotent on duplicate event delivery", async () => {
@@ -375,6 +399,67 @@ describe("LedgerService.recoverSubmittedLeases", () => {
     const row = await svc.getAction(created.id);
     expect(row?.status).toBe("orphaned");
     expect(row?.errorCode).toBe("ORPHAN_TTL_EXPIRED");
+    expect((row?.recoveryCheckpoint as { stage: string }).stage).toBe("recovery_required");
+    expect(row?.txHash).toBe("tx_nolease");
+  });
+
+  it("does not treat an abandoned intent as submitted before external work starts", async () => {
+    const created = await svc.createAction(makeIntentInput());
+    await db.prisma.actionLedger.update({
+      where: { id: created.id },
+      data: { updatedAt: new Date(Date.now() - 60_000) }
+    });
+
+    const result = await svc.recoverSubmittedLeases("recovery-worker", { ttlMs: 1 });
+    const row = await svc.getAction(created.id);
+
+    expect(result.recovered).toBe(0);
+    expect(row?.status).toBe("pending");
+    expect((row?.recoveryCheckpoint as { stage: string }).stage).toBe("intent_recorded");
+  });
+
+  it("requires wallet verification after an interrupted external action", async () => {
+    const created = await svc.createAction(makeIntentInput());
+    await svc.markExternalActionStarted(created.id);
+    await db.prisma.actionLedger.update({
+      where: { id: created.id },
+      data: { updatedAt: new Date(Date.now() - 60_000) }
+    });
+
+    const result = await svc.recoverSubmittedLeases("recovery-worker", { ttlMs: 1 });
+    const row = await svc.getAction(created.id);
+
+    expect(result.recovered).toBe(1);
+    expect(row?.status).toBe("pending");
+    expect((row?.recoveryCheckpoint as { stage: string }).stage).toBe("recovery_required");
+    await expect(svc.attachTxHash(created.id, "tx_blind_retry", { workerId: "retry-worker" }))
+      .rejects.toMatchObject({ code: "ILLEGAL_TRANSITION" });
+  });
+
+  it("preserves chain events and blocks resubmission after the tx hash is known", async () => {
+    const created = await svc.createAction(makeIntentInput());
+    await db.prisma.actionLedger.update({
+      where: { id: created.id },
+      data: {
+        status: "submitted",
+        txHash: "tx_recovery_evidence",
+        submittedAt: new Date(Date.now() - 60_000)
+      }
+    });
+    await db.prisma.pendingEvent.create({
+      data: {
+        txHash: "tx_recovery_evidence",
+        sorobanEventId: "evt_recovery_evidence",
+        eventPayload: {},
+        statusHint: "confirmed"
+      }
+    });
+
+    await svc.recoverSubmittedLeases("recovery-worker", { ttlMs: 1 });
+
+    expect(await db.prisma.pendingEvent.findUnique({ where: { txHash: "tx_recovery_evidence" } })).not.toBeNull();
+    await expect(svc.attachTxHash(created.id, "tx_duplicate", { workerId: "retry-worker" }))
+      .rejects.toMatchObject({ code: "ILLEGAL_TRANSITION" });
   });
 
   it("dry-run mode does not modify records", async () => {
@@ -428,6 +513,8 @@ describe("Crash-injection: exactly-once submission", () => {
     const row = await svc.getAction(created.id);
     expect(row?.status).toBe("orphaned");
     expect(row?.errorCode).toBe("ORPHAN_TTL_EXPIRED");
+    await expect(svc.attachTxHash(created.id, "tx_crash_duplicate", { workerId: "retry-worker" }))
+      .rejects.toMatchObject({ code: "ILLEGAL_TRANSITION" });
   });
 
   it("every action reaches terminal or operator-owned state", async () => {
@@ -460,6 +547,96 @@ describe("Crash-injection: exactly-once submission", () => {
   });
 });
 
+describe("LedgerService.verifyPayoutIntegrity", () => {
+  let db: TestDb;
+  let svc: LedgerService;
+
+  beforeAll(async () => { db = await startTestDb(); svc = new LedgerService(db.prisma); });
+  afterAll(async () => { await db.stop(); });
+  beforeEach(async () => { await resetDb(db.prisma); });
+
+  it("returns not-found for an unknown action id", async () => {
+    const result = await svc.verifyPayoutIntegrity("11111111-1111-1111-1111-111111111111");
+    expect(result.verified).toBe(false);
+    expect(result.reason).toMatch(/not found/);
+    expect(result.action).toBeNull();
+  });
+
+  it("fails closed when the action is not yet confirmed", async () => {
+    const created = await svc.createAction(
+      makeIntentInput({ actionType: "select_winner", actionPayload: { winner: "GWIN", amount: "100" } })
+    );
+    const result = await svc.verifyPayoutIntegrity(created.id);
+    expect(result.verified).toBe(false);
+    expect(result.reason).toMatch(/not confirmed/);
+  });
+
+  it("fails when the action reverted on-chain", async () => {
+    const created = await svc.createAction(
+      makeIntentInput({ actionType: "select_winner", actionPayload: { winner: "GWIN", amount: "100" } })
+    );
+    await svc.attachTxHash(created.id, "tx_reverted");
+    await svc.reconcileEvent({
+      txHash: "tx_reverted",
+      sorobanEventId: "evt_reverted",
+      eventPayload: { winner: "GWIN", amount: "100" },
+      statusHint: "reverted"
+    });
+    const result = await svc.verifyPayoutIntegrity(created.id);
+    expect(result.verified).toBe(false);
+    expect(result.reason).toMatch(/reverted on-chain/);
+  });
+
+  it("verifies when claimed and finalized-event fields agree (loose key matching)", async () => {
+    const created = await svc.createAction(
+      makeIntentInput({ actionType: "select_winner", actionPayload: { winner: "GWIN", amount: "100" } })
+    );
+    await svc.attachTxHash(created.id, "tx_match");
+    await svc.reconcileEvent({
+      txHash: "tx_match",
+      sorobanEventId: "evt_match",
+      // Event uses "recipient"/"value" instead of "winner"/"amount" — loose
+      // key matching in verifyPayoutIntegrity should still agree.
+      eventPayload: { recipient: "GWIN", value: "100" },
+      statusHint: "confirmed"
+    });
+    const result = await svc.verifyPayoutIntegrity(created.id);
+    expect(result.verified).toBe(true);
+  });
+
+  it("fails when the finalized event amount disagrees with the claimed amount", async () => {
+    const created = await svc.createAction(
+      makeIntentInput({ actionType: "select_winner", actionPayload: { winner: "GWIN", amount: "9999" } })
+    );
+    await svc.attachTxHash(created.id, "tx_mismatch");
+    await svc.reconcileEvent({
+      txHash: "tx_mismatch",
+      sorobanEventId: "evt_mismatch",
+      eventPayload: { winner: "GWIN", amount: "100" },
+      statusHint: "confirmed"
+    });
+    const result = await svc.verifyPayoutIntegrity(created.id);
+    expect(result.verified).toBe(false);
+    expect(result.reason).toMatch(/amount mismatch/);
+  });
+
+  it("fails when the finalized event recipient disagrees with the claimed recipient", async () => {
+    const created = await svc.createAction(
+      makeIntentInput({ actionType: "select_winner", actionPayload: { winner: "GATTACKER", amount: "100" } })
+    );
+    await svc.attachTxHash(created.id, "tx_wrong_recipient");
+    await svc.reconcileEvent({
+      txHash: "tx_wrong_recipient",
+      sorobanEventId: "evt_wr",
+      eventPayload: { winner: "GLEGITIMATE", amount: "100" },
+      statusHint: "confirmed"
+    });
+    const result = await svc.verifyPayoutIntegrity(created.id);
+    expect(result.verified).toBe(false);
+    expect(result.reason).toMatch(/recipient mismatch/);
+  });
+});
+
 describe("LedgerService.scrubWallet", () => {
   let db: TestDb;
   let svc: LedgerService;
@@ -483,5 +660,81 @@ describe("LedgerService.scrubWallet", () => {
     const untouched = await db.prisma.actionLedger.findUnique({ where: { id: other.id } });
     expect(untouched?.actionPayload).not.toBeNull();
     expect(untouched?.redactedAt).toBeNull();
+  });
+});
+
+describe("LedgerService.reconcileEvents (#588 batch)", () => {
+  let db: TestDb;
+  let svc: LedgerService;
+
+  beforeAll(async () => {
+    db = await startTestDb();
+    svc = new LedgerService(db.prisma);
+  });
+  afterAll(async () => {
+    await db.stop();
+  });
+  beforeEach(async () => {
+    await resetDb(db.prisma);
+  });
+
+  it("reconciles a mixed batch with per-event-equivalent outcomes", async () => {
+    const matched = await seedAction(db.prisma, { status: "submitted", txHash: "tx_match" });
+    const terminal = await seedAction(db.prisma, { status: "confirmed", txHash: "tx_done" });
+
+    const outcomes = await svc.reconcileEvents([
+      { txHash: "tx_match", sorobanEventId: "e1", eventPayload: { type: "deposit" }, statusHint: "confirmed" },
+      { txHash: "tx_new", sorobanEventId: "e2", eventPayload: { type: "withdraw" }, statusHint: "confirmed" },
+      { txHash: "tx_done", sorobanEventId: "e3", eventPayload: { type: "deposit" }, statusHint: "confirmed" }
+    ]);
+
+    expect(outcomes).toEqual([
+      { txHash: "tx_match", matched: true },
+      { txHash: "tx_new", matched: false },
+      { txHash: "tx_done", matched: true }
+    ]);
+
+    const refreshed = await db.prisma.actionLedger.findUnique({ where: { id: matched.id } });
+    expect(refreshed?.status).toBe("confirmed");
+    expect(refreshed?.verifiedPayload).toEqual({ type: "deposit" });
+
+    // Terminal rows are skipped untouched (same no-op as reconcileEvent).
+    const terminalRefreshed = await db.prisma.actionLedger.findUnique({ where: { id: terminal.id } });
+    expect(terminalRefreshed?.status).toBe("confirmed");
+    expect(terminalRefreshed?.sorobanEventId).toBeNull();
+
+    const parked = await db.prisma.pendingEvent.findUnique({ where: { txHash: "tx_new" } });
+    expect(parked).not.toBeNull();
+  });
+
+  it("marks a reverted hint as reverted and releases the action lease", async () => {
+    const action = await seedAction(db.prisma, { status: "submitted", txHash: "tx_rev_b" });
+    await db.prisma.actionLease.create({
+      data: { actionId: action.id, workerId: "w1", expiresAt: new Date(Date.now() + 60_000) }
+    });
+
+    await svc.reconcileEvents([
+      { txHash: "tx_rev_b", sorobanEventId: "e1", eventPayload: { type: "deposit" }, statusHint: "reverted" }
+    ]);
+
+    const refreshed = await db.prisma.actionLedger.findUnique({ where: { id: action.id } });
+    expect(refreshed?.status).toBe("reverted");
+    expect(refreshed?.errorCode).toBe("REVERTED_ON_CHAIN");
+    const leases = await db.prisma.actionLease.findMany({ where: { actionId: action.id } });
+    expect(leases).toHaveLength(0);
+  });
+
+  it("is idempotent across re-delivered batches", async () => {
+    const input = {
+      txHash: "tx_again",
+      sorobanEventId: "e1",
+      eventPayload: { type: "deposit" },
+      statusHint: "confirmed" as const
+    };
+    await svc.reconcileEvents([input]);
+    await svc.reconcileEvents([input]);
+
+    const parked = await db.prisma.pendingEvent.findMany({ where: { txHash: "tx_again" } });
+    expect(parked).toHaveLength(1);
   });
 });

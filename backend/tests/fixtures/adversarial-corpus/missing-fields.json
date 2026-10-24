@@ -1,0 +1,86 @@
+{
+  "corpusVersion": "1.0.0",
+  "category": "missing-fields",
+  "description": "Golden fixtures for payloads and records missing mandatory schema fields",
+  "fixtures": [
+    {
+      "id": "MISS-001-ACTION-NO-WALLET",
+      "scenario": "Action intent missing required walletAddress",
+      "target": "actionSchema",
+      "payload": {
+        "actionType": "deposit",
+        "actionPayload": { "vault_id": "v1", "amount": "1000", "token": "USDC" },
+        "idempotencyKey": "idem-miss-001"
+      },
+      "missingField": "walletAddress",
+      "expectedErrorCode": "VALIDATION_ERROR"
+    },
+    {
+      "id": "MISS-002-INTENT-NO-AMOUNT",
+      "scenario": "Deposit action payload missing required amount field",
+      "target": "depositPayloadSchema",
+      "payload": {
+        "walletAddress": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        "actionType": "deposit",
+        "actionPayload": { "vault_id": "v1", "token": "USDC" },
+        "idempotencyKey": "idem-miss-002"
+      },
+      "missingField": "actionPayload.amount",
+      "expectedErrorCode": "VALIDATION_ERROR"
+    },
+    {
+      "id": "MISS-003-VAULT-RECORD-NO-POOL-ID",
+      "scenario": "Vault domain record missing prizePoolId",
+      "target": "recordCompatibility",
+      "payload": {
+        "schemaVersion": "1.0.0",
+        "id": "vault-rec-miss-003",
+        "ownerAddress": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        "asset": "USDC",
+        "balance": "5000000000",
+        "createdAt": "2026-01-01T00:00:00.000Z",
+        "updatedAt": "2026-01-02T00:00:00.000Z"
+      },
+      "missingField": "prizePoolId",
+      "expectedErrorCode": "RECORD_SCHEMA_INVALID"
+    },
+    {
+      "id": "MISS-004-INDEXER-EVENT-NO-CONTRACT",
+      "scenario": "Soroban raw RPC event missing contractId",
+      "target": "stellarIndexer",
+      "payload": {
+        "id": "0000000000000000100-0000000001",
+        "ledger": 100,
+        "txHash": "tx_miss_004",
+        "topicXdr": ["ZGVwb3NpdA=="],
+        "valueXdr": "e30=",
+        "successful": true
+      },
+      "missingField": "contractId",
+      "expectedErrorCode": "PARSER_ERROR"
+    },
+    {
+      "id": "MISS-005-WEBHOOK-NO-EVENT-TYPE",
+      "scenario": "Webhook delivery missing event type discriminator",
+      "target": "webhookSchema",
+      "payload": {
+        "id": "wh_evt_005",
+        "data": { "roundId": "r-123" },
+        "timestamp": 1700000000
+      },
+      "missingField": "type",
+      "expectedErrorCode": "VALIDATION_ERROR"
+    },
+    {
+      "id": "MISS-006-SAVED-POOL-NO-NETWORK",
+      "scenario": "Saved pool watchlist record missing network or poolId",
+      "target": "savedPoolsSchema",
+      "payload": {
+        "walletAddress": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        "alias": "My Favorite Vault"
+      },
+      "missingField": "poolId",
+      "expectedErrorCode": "VALIDATION_ERROR"
+    }
+  ]
+}

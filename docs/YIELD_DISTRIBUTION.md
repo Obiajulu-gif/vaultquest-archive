@@ -242,37 +242,36 @@ Y_total ≈ 97.31 USDC
 
 ### Winner Selection
 
-The smart contract uses a weighted random selection algorithm:
-
-1. Generate a random number `R` between 0 and `total_deposited`
-2. Iterate through participants, accumulating deposits
-3. Select the participant whose cumulative deposit range contains `R`
-
-**Algorithm:**
-
-```rust
-fn select_winner(participants: Vec<Participant>, total: i128, random: i128) -> Address {
-    let mut cumulative = 0;
-    for participant in participants {
-        cumulative += participant.deposited;
-        if random <= cumulative {
-            return participant.address;
-        }
-    }
-    // Should never reach here if random < total
-    panic!("Invalid random number");
-}
-```
-
-**Example:**
-- Alice: 1,000 USDC (range: 0-1,000)
-- Bob: 4,000 USDC (range: 1,001-5,000)
-- Random number: 3,500
+The weighted selection itself follows the "cumulative range" idea below: a
+random value is drawn, participants are walked in order accumulating
+deposits, and whoever's cumulative range contains the drawn value wins.
 
 ```
 Cumulative at Alice: 1,000 < 3,500, continue
 Cumulative at Bob: 5,000 >= 3,500, Bob wins!
 ```
+
+**Where the random value itself comes from** is a manipulation-resistant
+on-chain commit-reveal process (not simply "a random number"), documented in
+full in `contracts/docs/RANDOMNESS.md` and implemented in
+`contracts/drip-pool/src/lib.rs` (`commit_round_randomness` /
+`reveal_round_randomness` / `select_round_winner`). In short: every approved
+admin who wants to contribute entropy commits `sha256(their own secret
+seed)` while the round is still open; once locked, each committer reveals
+their seed, which the contract checks against their commitment; once every
+committer has revealed, the seeds are combined into the winning value. This
+is unbiasable as long as at least one committer keeps their seed secret
+until reveal — the same assumption the contract's multisig governance
+already relies on.
+
+**Randomness source configuration is validated before a round can even
+open** (#657): `open_round` refuses to start a round unless at least
+`Threshold` (2 by default) approved admins exist to serve as commit-reveal
+participants. With only one eligible committer, that single admin would
+fully control the drawn value, so the commit-reveal scheme provides no real
+protection — the contract fails closed (`UnsafeRandomnessConfig`) rather
+than silently accepting deposits into a round whose eventual draw has no
+real randomness guarantee. See "Edge Cases" §6 below.
 
 ### Prize Payout
 

@@ -1,0 +1,10 @@
+# event|topic0|topic1|required_payload_fields
+pool_created|vaultquest|v1|pool_id,creator,asset,target_amount,opens_at,locks_at,draws_at,admin
+pool_joined|vaultquest|v1|pool_id,wallet,amount,shares,participant_count
+drip_deposited|vaultquest|v1|pool_id,wallet,amount,shares_delta,total_deposited,tvl
+reward_claimed|vaultquest|v1|pool_id,wallet,amount,asset,cycle
+withdrawn|vaultquest|v1|pool_id,wallet,amount,shares_burned,remaining_shares
+payout_selected|vaultquest|v1|pool_id,winner,amount,asset,cycle
+paused|vaultquest|v1|scope,admin,reason,paused_at
+recovered|vaultquest|v1|scope,admin,recovered_at
+config_changed|vaultquest|v1|scope,admin,key,new_value,effective_at

@@ -4,30 +4,57 @@ import { useState } from "react";
 import { Shield, ShieldCheck, ShieldAlert, Loader2, AlertCircle, RefreshCw } from "lucide-react";
 import { verifyDrawProofClient, createFetchRpcClient } from "@/lib/draw-proof-verifier";
 
+const FIELD_STATUS_LABEL = {
+  pass: "PASS",
+  fail: "FAILED",
+  unverified: "UNVERIFIED",
+};
+
+const FIELD_STATUS_STYLES = {
+  pass: {
+    row: "bg-emerald-500/[0.03]",
+    text: "text-emerald-400",
+    chip: "bg-emerald-500/10 border-emerald-500/20 text-emerald-400",
+  },
+  fail: {
+    row: "bg-red-500/[0.06]",
+    text: "text-red-400",
+    chip: "bg-red-500/15 border-red-500/30 text-red-400",
+  },
+  unverified: {
+    row: "",
+    text: "text-gray-500",
+    chip: "bg-gray-500/10 border-gray-500/20 text-gray-400",
+  },
+};
+
 function VerificationFieldRow({ field }) {
-  const statusColors = {
-    pass: "text-emerald-400",
-    fail: "text-red-400",
-    unverified: "text-gray-500",
-  };
+  const styles = FIELD_STATUS_STYLES[field.status] ?? FIELD_STATUS_STYLES.unverified;
   const StatusIcon = {
     pass: ShieldCheck,
     fail: ShieldAlert,
     unverified: AlertCircle,
-  }[field.status];
+  }[field.status] ?? AlertCircle;
 
   return (
-    <div className="flex items-center justify-between py-1.5 border-b border-gray-800/50 last:border-0">
-      <span className="text-xs text-gray-400">{field.name}</span>
-      <div className="flex items-center gap-1.5">
+    <div className={`flex items-start justify-between gap-3 py-1.5 px-2 rounded border-b border-gray-800/50 last:border-0 ${styles.row}`}>
+      <span className="text-xs text-gray-400 font-medium">{field.name}</span>
+      <div className="flex items-center gap-2 min-w-0">
         {field.detail && (
-          <span className="text-[9px] text-gray-600 truncate max-w-[120px]" title={field.detail}>
+          <span
+            className={`text-[10px] truncate max-w-[220px] ${
+              field.status === "fail" ? "text-red-400/90" : "text-gray-600"
+            }`}
+            title={field.detail}
+          >
             {field.detail}
           </span>
         )}
-        <StatusIcon className={`h-3.5 w-3.5 ${statusColors[field.status]}`} />
-        <span className={`text-[10px] font-mono ${statusColors[field.status]}`}>
-          {field.status}
+        <StatusIcon className={`h-3.5 w-3.5 shrink-0 ${styles.text}`} />
+        <span
+          className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[9px] font-mono font-semibold ${styles.chip}`}
+        >
+          {FIELD_STATUS_LABEL[field.status] ?? field.status}
         </span>
       </div>
     </div>

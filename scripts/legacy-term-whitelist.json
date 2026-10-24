@@ -6,8 +6,11 @@
       "backend/README.md",
       "backend/package.json",
       "backend/package-lock.json",
+      "backend/docs/RECEIPTS_RECOVERY_AUDIT_LIMITS.md",
       "contracts/README.md",
       "contracts/docs/CONTRACT_COSTS.md",
+      "contracts/drip-pool/tests/cross-stack-conformance.test.ts",
+      "contracts/drip-pool/vitest.config.ts",
       "stellar-wallet-connect/src/components/WalletFundingModal.tsx",
       "services/questService.ts"
     ],
@@ -17,7 +20,13 @@
     "term": "Trustless Work",
     "paths": [
       "docs/env-inventory.md",
-      "services/escrowService.ts"
+      "docs/QUEST_DISPUTE_STATE_MACHINE.md",
+      "docs/QUEST_EXPIRY_AND_REFUND_POLICY.md",
+      "services/escrowService.ts",
+      "lib/escrow/trustlessWork.ts",
+      "lib/escrow/types.ts",
+      "stellar-wallet-connect/src/components/NetworkDiagnostics.tsx",
+      "types/challenge.ts"
     ],
     "reason": "Intentional integration references that remain part of current config semantics."
   },

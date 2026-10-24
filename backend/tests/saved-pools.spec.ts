@@ -1,15 +1,18 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { startTestDb, resetDb, type TestDb } from "./helpers/db.js";
 import { buildApp } from "../src/app.js";
+import { createRequester, type Requester } from "./helpers/request.js";
 import type { FastifyInstance } from "fastify";
 
 describe("Saved pools API", () => {
   let db: TestDb;
   let app: FastifyInstance;
+  let inject: Requester;
 
   beforeAll(async () => {
     db = await startTestDb();
     app = buildApp({ prisma: db.prisma, internalSecret: "test-secret" });
+    inject = createRequester(app);
   });
 
   afterAll(async () => {
@@ -37,7 +40,7 @@ describe("Saved pools API", () => {
   };
 
   it("saves a pool and returns 201", async () => {
-    const res = await app.inject({
+    const res = await inject({
       method: "POST",
       url: "/saved-pools",
       headers: { "content-type": "application/json" },
@@ -56,14 +59,14 @@ describe("Saved pools API", () => {
   });
 
   it("returns 200 on re-saving an already saved pool (upsert)", async () => {
-    await app.inject({
+    await inject({
       method: "POST",
       url: "/saved-pools",
       headers: { "content-type": "application/json" },
       payload: { wallet_address: walletAddress, pool: samplePool },
     });
 
-    const res = await app.inject({
+    const res = await inject({
       method: "POST",
       url: "/saved-pools",
       headers: { "content-type": "application/json" },
@@ -76,40 +79,40 @@ describe("Saved pools API", () => {
   it("lists saved pools for a wallet", async () => {
     const pool2 = { ...samplePool, pool_id: "pool-2", pool_name: "Pool Two" };
 
-    await app.inject({
+    await inject({
       method: "POST",
       url: "/saved-pools",
       headers: { "content-type": "application/json" },
       payload: { wallet_address: walletAddress, pool: samplePool },
     });
-    await app.inject({
+    await inject({
       method: "POST",
       url: "/saved-pools",
       headers: { "content-type": "application/json" },
       payload: { wallet_address: walletAddress, pool: pool2 },
     });
 
-    const res = await app.inject({
+    const res = await inject({
       method: "GET",
       url: `/saved-pools?wallet=${walletAddress}`,
     });
 
     expect(res.statusCode).toBe(200);
     expect(res.json().data).toHaveLength(2);
-    expect(res.json().data.map((p: any) => p.pool_id)).toEqual(
+    expect(res.json().data.map((p: { pool_id: string }) => p.pool_id)).toEqual(
       expect.arrayContaining(["pool-1", "pool-2"])
     );
   });
 
   it("unsaves a pool", async () => {
-    await app.inject({
+    await inject({
       method: "POST",
       url: "/saved-pools",
       headers: { "content-type": "application/json" },
       payload: { wallet_address: walletAddress, pool: samplePool },
     });
 
-    const del = await app.inject({
+    const del = await inject({
       method: "DELETE",
       url: `/saved-pools/pool-1?wallet=${walletAddress}`,
     });
@@ -117,7 +120,7 @@ describe("Saved pools API", () => {
     expect(del.statusCode).toBe(200);
     expect(del.json().data.deleted).toBe(1);
 
-    const list = await app.inject({
+    const list = await inject({
       method: "GET",
       url: `/saved-pools?wallet=${walletAddress}`,
     });
@@ -125,7 +128,7 @@ describe("Saved pools API", () => {
   });
 
   it("returns empty list for wallet with no saved pools", async () => {
-    const res = await app.inject({
+    const res = await inject({
       method: "GET",
       url: `/saved-pools?wallet=${walletAddress}`,
     });
@@ -135,7 +138,7 @@ describe("Saved pools API", () => {
   });
 
   it("rejects save with missing wallet address", async () => {
-    const res = await app.inject({
+    const res = await inject({
       method: "POST",
       url: "/saved-pools",
       headers: { "content-type": "application/json" },
@@ -147,7 +150,7 @@ describe("Saved pools API", () => {
   });
 
   it("rejects save with invalid pool data", async () => {
-    const res = await app.inject({
+    const res = await inject({
       method: "POST",
       url: "/saved-pools",
       headers: { "content-type": "application/json" },
@@ -164,14 +167,14 @@ describe("Saved pools API", () => {
   it("isolates saved pools between different wallets", async () => {
     const walletB = "GSAVED9876543210987654321098765432109876543210987654321";
 
-    await app.inject({
+    await inject({
       method: "POST",
       url: "/saved-pools",
       headers: { "content-type": "application/json" },
       payload: { wallet_address: walletAddress, pool: samplePool },
     });
 
-    const resB = await app.inject({
+    const resB = await inject({
       method: "GET",
       url: `/saved-pools?wallet=${walletB}`,
     });

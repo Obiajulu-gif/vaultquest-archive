@@ -225,3 +225,32 @@ export const OfflineState: FC<OfflineStateProps> = ({ className }) => (
     </div>
   </Shell>
 );
+
+// ── Emergency-paused banner (#645) ──────────────────────────────────────────
+
+export interface EmergencyPausedBannerProps {
+  className?: string;
+}
+
+/**
+ * Inline banner shown when a pool's on-chain `is_emergency` circuit breaker
+ * is active. Unlike the full-shell states above, this is meant to sit above
+ * existing pool data (not replace it) — reads, balances, and history stay
+ * visible while the pool is paused.
+ */
+export const EmergencyPausedBanner: FC<EmergencyPausedBannerProps> = ({ className = "" }) => (
+  <div
+    role="alert"
+    aria-live="assertive"
+    className={`flex items-start gap-3 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 sm:px-5 sm:py-4 ${className}`}
+  >
+    <AlertTriangle className="h-5 w-5 shrink-0 text-amber-400" aria-hidden="true" />
+    <div className="space-y-1">
+      <h3 className="text-sm font-semibold text-amber-200">Pool paused for recovery</h3>
+      <p className="text-sm text-amber-100/80">
+        Joining, deposits, and prize draws are disabled while maintainers respond to an emergency.
+        Withdrawing and claiming rewards remain available, and your balances and history stay visible.
+      </p>
+    </div>
+  </div>
+);

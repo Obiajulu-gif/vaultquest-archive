@@ -7,9 +7,21 @@ import { ArrowUpDown, ArrowUpRight, Wallet, Info } from "lucide-react";
 import VaultEmptyState from "@/components/app/VaultEmptyState";
 import SavePoolButton from "@/components/app/SavePoolButton";
 import ComparePoolButton from "@/components/app/ComparePoolButton";
+import { usePrefersReducedMotion } from "@/lib/usePrefersReducedMotion";
+
+const SORTABLE_COLUMNS = [
+  { key: "tvl", label: "Deposits (TVL)" },
+  { key: "participantCount", label: "Participants" },
+  { key: "apy", label: "Est. Yield" },
+  { key: "lockup", label: "Lockup" },
+  { key: "activity", label: "Activity" },
+];
 
 export default function VaultComparisonTable({ vaults = [], sortBy = "apy", suggestions = null, onSuggestionClick = null, onClearFilters = null, comparisonMode = null }) {
   const [sortConfig, setSortConfig] = useState({ key: sortBy, direction: "desc" });
+  // Announced only after the user sorts, never on first render.
+  const [sortAnnouncement, setSortAnnouncement] = useState("");
+  const reducedMotion = usePrefersReducedMotion();
 
   const sortedVaults = [...vaults].sort((a, b) => {
     let keyA, keyB;
@@ -37,16 +49,26 @@ export default function VaultComparisonTable({ vaults = [], sortBy = "apy", sugg
       direction = "desc";
     }
     setSortConfig({ key, direction });
+    const label = SORTABLE_COLUMNS.find((c) => c.key === key)?.label ?? key;
+    setSortAnnouncement(`Sorted by ${label}, ${direction === "asc" ? "ascending" : "descending"}.`);
   };
 
   const SortIcon = ({ columnKey }) => (
-    <ArrowUpDown 
-      size={14} 
+    <ArrowUpDown
+      size={14}
+      aria-hidden="true"
       className={`ml-1 inline-block transition-colors ${
         sortConfig.key === columnKey ? "text-vault-accent" : "text-vault-muted group-hover:text-vault-text"
       }`} 
     />
   );
+
+  const getAriaSort = (key) => {
+    if (sortConfig.key === key) {
+      return sortConfig.direction === "asc" ? "ascending" : "descending";
+    }
+    return undefined;
+  };
 
   if (vaults.length === 0) {
     return (
@@ -74,63 +96,55 @@ export default function VaultComparisonTable({ vaults = [], sortBy = "apy", sugg
 
   return (
     <div className="w-full overflow-x-auto rounded-2xl border border-vault-border bg-vault-surface/50 backdrop-blur-md">
+      <p role="status" aria-live="polite" className="sr-only">{sortAnnouncement}</p>
       <table className="w-full min-w-[720px] text-left text-sm">
+        <caption className="sr-only">
+          Vault Comparison Table. Sortable columns include Deposits, Participants, Yield, Lockup, and Activity.
+          {comparisonMode && " Select pools to compare them side-by-side."}
+        </caption>
         <thead className="border-b border-vault-border bg-vault-surface/80 text-xs uppercase tracking-wider text-vault-muted">
           <tr>
-            <th className="px-6 py-4 font-semibold">Vault</th>
-            <th
-              className="group cursor-pointer px-6 py-4 font-semibold hover:bg-white/5"
-              onClick={() => handleSort("tvl")}
-            >
-              Deposits (TVL) <SortIcon columnKey="tvl" />
-            </th>
-            <th
-              className="group cursor-pointer px-6 py-4 font-semibold hover:bg-white/5"
-              onClick={() => handleSort("participantCount")}
-            >
-              Participants <SortIcon columnKey="participantCount" />
-            </th>
-            <th
-              className="group cursor-pointer px-6 py-4 font-semibold hover:bg-white/5"
-              onClick={() => handleSort("apy")}
-            >
-              Est. Yield <SortIcon columnKey="apy" />
-            </th>
-            <th
-              className="group cursor-pointer px-6 py-4 font-semibold hover:bg-white/5"
-              onClick={() => handleSort("lockup")}
-            >
-              Lockup <SortIcon columnKey="lockup" />
-            </th>
-            <th
-              className="group cursor-pointer px-6 py-4 font-semibold hover:bg-white/5"
-              onClick={() => handleSort("activity")}
-            >
-              Activity <SortIcon columnKey="activity" />
-            </th>
-            <th className="px-6 py-4 text-right font-semibold">Action</th>
+            <th scope="col" className="px-6 py-4 font-semibold">Vault</th>
+            {SORTABLE_COLUMNS.map(({ key, label }) => (
+              <th
+                key={key}
+                scope="col"
+                aria-sort={getAriaSort(key)}
+                className="group px-6 py-4 font-semibold hover:bg-white/5"
+              >
+                {/* A real button so sorting works from the keyboard (Tab + Enter/Space). */}
+                <button
+                  type="button"
+                  onClick={() => handleSort(key)}
+                  className="inline-flex cursor-pointer items-center font-semibold uppercase tracking-wider focus:outline-none focus-visible:ring-2 focus-visible:ring-vault-accent rounded"
+                >
+                  {label} <SortIcon columnKey={key} />
+                </button>
+              </th>
+            ))}
+            <th scope="col" className="px-6 py-4 text-right font-semibold">Action</th>
           </tr>
         </thead>
         <tbody>
           {sortedVaults.map((vault, idx) => (
             <motion.tr 
               key={vault.id}
-              initial={{ opacity: 0, y: 10 }}
+              initial={reducedMotion ? false : { opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.2, delay: idx * 0.05 }}
+              transition={reducedMotion ? { duration: 0 } : { duration: 0.2, delay: idx * 0.05 }}
               className="group border-b border-vault-border/50 transition-colors hover:bg-white/5 last:border-0"
             >
-              <td className="px-6 py-4">
+              <th scope="row" className="px-6 py-4 font-normal">
                 <div className="flex items-center gap-3">
                   <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-vault-accent/10 text-vault-accent">
-                    <Wallet size={18} />
+                    <Wallet size={18} aria-hidden="true" />
                   </div>
                   <div>
                     <p className="font-semibold text-vault-text">{vault.name}</p>
                     <p className="text-xs text-vault-muted">{vault.network} • {vault.asset}</p>
                   </div>
                 </div>
-              </td>
+              </th>
               <td className="px-6 py-4 font-medium text-vault-text">
                 ${(vault.tvl / 1000000).toFixed(2)}M
               </td>
@@ -165,8 +179,8 @@ export default function VaultComparisonTable({ vaults = [], sortBy = "apy", sugg
                       disabled={!comparisonMode.isSelected(vault.id) && !comparisonMode.canAddMore}
                     />
                   )}
-                  <Link href={`/app/vaults/${vault.id}`} className="inline-flex items-center gap-1 rounded-lg border border-vault-border bg-vault-surface px-3 py-1.5 text-sm font-medium text-vault-text transition-all hover:border-vault-accent hover:text-vault-accent">
-                    View <ArrowUpRight size={14} />
+                  <Link href={`/app/vaults/${vault.id}`} aria-label={`View ${vault.name}`} className="inline-flex items-center gap-1 rounded-lg border border-vault-border bg-vault-surface px-3 py-1.5 text-sm font-medium text-vault-text transition-all hover:border-vault-accent hover:text-vault-accent">
+                    View <ArrowUpRight size={14} aria-hidden="true" />
                   </Link>
                 </div>
               </td>

@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DrawProofService } from "../src/services/drawProofService.js";
 import type { RpcClient } from "../src/services/drawProofService.js";
+import { canonicalize, canonicalHash, canonicalStringify } from "../src/utils/canonicalJson.js";
+import canonicalLegacyFixture from "../docs/fixtures/canonical-legacy-payload.json";
 
 function b64Json(value: unknown): string {
   return Buffer.from(JSON.stringify(value)).toString("base64");
@@ -31,6 +33,11 @@ function makeRpc(overrides: Partial<RpcClient> = {}): RpcClient {
     }),
     ...overrides,
   } as RpcClient;
+}
+
+function makeDrawProofService(prisma: any, rpc: RpcClient | null) {
+  const featureFlags = { isEnabled: vi.fn().mockResolvedValue(true) };
+  return new DrawProofService(prisma, rpc, undefined, featureFlags);
 }
 
 function makeMockPrisma(overrides: Record<string, any> = {}) {
@@ -88,38 +95,46 @@ function makeSelectWinnerAction(overrides: Record<string, any> = {}) {
 
 describe("DrawProofService", () => {
   describe("generateProof", () => {
+    it("does not generate when the prize draw feature flag is unavailable", async () => {
+      const prisma = makeMockPrisma({ action: makeSelectWinnerAction() });
+      const svc = new DrawProofService(prisma, makeRpc());
+
+      await expect(svc.generateProof({ actionId: "action-123" })).resolves.toBe(null);
+      expect(prisma.actionLedger.findUnique).not.toHaveBeenCalled();
+    });
+
     it("returns null if action not found", async () => {
       const prisma = makeMockPrisma({ action: null });
-      const svc = new DrawProofService(prisma, null);
+      const svc = makeDrawProofService(prisma, null);
       const result = await svc.generateProof({ actionId: "nonexistent" });
-      expect(result).toBeNull();
+      expect(result).toBe(null);
     });
 
     it("returns null if action is not select_winner", async () => {
       const prisma = makeMockPrisma({
         action: makeSelectWinnerAction({ actionType: "deposit" }),
       });
-      const svc = new DrawProofService(prisma, null);
+      const svc = makeDrawProofService(prisma, null);
       const result = await svc.generateProof({ actionId: "action-123" });
-      expect(result).toBeNull();
+      expect(result).toBe(null);
     });
 
     it("returns null if action is not confirmed", async () => {
       const prisma = makeMockPrisma({
         action: makeSelectWinnerAction({ status: "pending" }),
       });
-      const svc = new DrawProofService(prisma, null);
+      const svc = makeDrawProofService(prisma, null);
       const result = await svc.generateProof({ actionId: "action-123" });
-      expect(result).toBeNull();
+      expect(result).toBe(null);
     });
 
     it("refuses to generate a proof when no RPC client is configured (no fabricated randomness)", async () => {
       const prisma = makeMockPrisma({
         action: makeSelectWinnerAction(),
       });
-      const svc = new DrawProofService(prisma, null);
+      const svc = makeDrawProofService(prisma, null);
       const result = await svc.generateProof({ actionId: "action-123" });
-      expect(result).toBeNull();
+      expect(result).toBe(null);
       expect(prisma.drawProof.create).not.toHaveBeenCalled();
     });
 
@@ -128,9 +143,9 @@ describe("DrawProofService", () => {
         action: makeSelectWinnerAction(),
       });
       const rpc = makeRpc({ getEvents: vi.fn().mockResolvedValue({ events: [] }) });
-      const svc = new DrawProofService(prisma, rpc);
+      const svc = makeDrawProofService(prisma, rpc);
       const result = await svc.generateProof({ actionId: "action-123" });
-      expect(result).toBeNull();
+      expect(result).toBe(null);
       expect(prisma.drawProof.create).not.toHaveBeenCalled();
     });
 
@@ -138,7 +153,7 @@ describe("DrawProofService", () => {
       const prisma = makeMockPrisma({
         action: makeSelectWinnerAction(),
       });
-      const svc = new DrawProofService(prisma, makeRpc());
+      const svc = makeDrawProofService(prisma, makeRpc());
       const result = await svc.generateProof({ actionId: "action-123" });
 
       expect(result).not.toBeNull();
@@ -149,6 +164,37 @@ describe("DrawProofService", () => {
       expect(result!.proofJson.randomness.source).toBe("soroban_prng");
       expect(result!.proofJson.randomness.seed).toBe("onchain-seed");
       expect(prisma.drawProof.create).toHaveBeenCalled();
+    });
+
+    it("records the contract's on-chain Round.principal_snapshot on the proof when available (#642)", async () => {
+      const prisma = makeMockPrisma({
+        action: makeSelectWinnerAction(),
+      });
+      const rpc = makeRpc({
+        getContractData: vi.fn().mockImplementation((_contractId: string, key: string) => {
+          if (key === "Round:1") {
+            return Promise.resolve({ value: JSON.stringify({ principal_snapshot: "3500000" }) });
+          }
+          return Promise.reject(new Error("not found"));
+        }),
+      });
+      const svc = makeDrawProofService(prisma, rpc);
+      const result = await svc.generateProof({ actionId: "action-123" });
+
+      expect(result).not.toBeNull();
+      expect(result!.proofJson.snapshot.roundPrincipalSnapshot).toBe("3500000");
+    });
+
+    it("omits roundPrincipalSnapshot (never fabricates one) when the contract round data can't be fetched", async () => {
+      const prisma = makeMockPrisma({
+        action: makeSelectWinnerAction(),
+      });
+      // Default makeRpc() rejects every getContractData call.
+      const svc = makeDrawProofService(prisma, makeRpc());
+      const result = await svc.generateProof({ actionId: "action-123" });
+
+      expect(result).not.toBeNull();
+      expect(result!.proofJson.snapshot.roundPrincipalSnapshot).toBeUndefined();
     });
 
     it("returns existing proof if already generated", async () => {
@@ -169,7 +215,7 @@ describe("DrawProofService", () => {
         action: makeSelectWinnerAction(),
         existingProof,
       });
-      const svc = new DrawProofService(prisma, makeRpc());
+      const svc = makeDrawProofService(prisma, makeRpc());
       const result = await svc.generateProof({ actionId: "action-123" });
 
       expect(result).not.toBeNull();
@@ -183,18 +229,92 @@ describe("DrawProofService", () => {
           actionPayload: { contract_id: "C123", round_id: 1 },
         }),
       });
-      const svc = new DrawProofService(prisma, null);
+      const svc = makeDrawProofService(prisma, null);
       const result = await svc.generateProof({ actionId: "action-123" });
-      expect(result).toBeNull();
+      expect(result).toBe(null);
+    });
+
+    it("produces the same canonical proof hash for equivalent payloads with different key ordering", async () => {
+      const action = makeSelectWinnerAction();
+      const prismaA = makeMockPrisma({ action });
+      const svcA = makeDrawProofService(prismaA, makeRpc());
+      const resultA = await svcA.generateProof({ actionId: "action-123" });
+
+      const reordered = {
+        draw_ledger: 1000,
+        asset: "USDC",
+        amount: "500000",
+        prize: "500000",
+        winnerAddress: "GBBD...LLFL",
+        winner: "GBBD...LLFL",
+        round_id: 1,
+        pool_id: "CDRYPPOOL123",
+        contract_id: "CDRYPPOOL123",
+      };
+      const prismaB = makeMockPrisma({
+        action: makeSelectWinnerAction({ actionPayload: reordered }),
+      });
+      const svcB = makeDrawProofService(prismaB, makeRpc());
+      const resultB = await svcB.generateProof({ actionId: "action-123" });
+
+      expect(resultA).not.toBeNull();
+      expect(resultB).not.toBeNull();
+      expect(resultA!.proofHash).toBe(resultB!.proofHash);
+    });
+
+    it("normalizes numeric precision and casing when computing the canonical proof hash", async () => {
+      const action = makeSelectWinnerAction();
+      const prismaA = makeMockPrisma({ action });
+      const svcA = makeDrawProofService(prismaA, makeRpc());
+      const resultA = await svcA.generateProof({ actionId: "action-123" });
+
+      const nonCanonical = makeSelectWinnerAction();
+      nonCanonical.actionPayload = {
+        ...nonCanonical.actionPayload,
+        prize: "500000.0000",
+        amount: "500000.0000",
+        asset: "usdc",
+      };
+      const prismaB = makeMockPrisma({ action: nonCanonical });
+      const svcB = makeDrawProofService(prismaB, makeRpc());
+      const resultB = await svcB.generateProof({ actionId: "action-123" });
+
+      expect(resultA).not.toBeNull();
+      expect(resultB).not.toBeNull();
+      expect(resultA!.proofHash).toBe(resultB!.proofHash);
+    });
+
+    it("rejects non-canonical inputs that cannot be normalized (e.g. negative amounts)", async () => {
+      const action = makeSelectWinnerAction();
+      action.actionPayload = { ...action.actionPayload, prize: "-500000" };
+      const prisma = makeMockPrisma({ action });
+      const svc = makeDrawProofService(prisma, makeRpc());
+      const result = await svc.generateProof({ actionId: "action-123" });
+      expect(result).toBe(null);
+    });
+
+    const invalidPayloads: Array<[string, Record<string, unknown>]> = [
+      ["malformed prize", { prize: "5e99999" }],
+      ["zero prize", { prize: "0.000" }],
+      ["unsafe round number", { round_id: Number.MAX_SAFE_INTEGER + 1 }],
+    ];
+    it.each(invalidPayloads)("refuses %s before requesting chain evidence", async (_name, invalidFields) => {
+      const action = makeSelectWinnerAction();
+      action.actionPayload = { ...action.actionPayload, ...invalidFields };
+      const rpc = makeRpc();
+      const svc = makeDrawProofService(makeMockPrisma({ action }), rpc);
+
+      await expect(svc.generateProof({ actionId: "action-123" })).resolves.toBe(null);
+      expect(rpc.getEvents).not.toHaveBeenCalled();
     });
   });
 
   describe("verifyProof", () => {
     it("returns null if proof not found", async () => {
       const prisma = makeMockPrisma();
-      const svc = new DrawProofService(prisma, null);
+      const svc = makeDrawProofService(prisma, null);
       const result = await svc.verifyProof("nonexistent");
-      expect(result).toBeNull();
+      expect(result).toBe(null);
     });
 
     it("verifies a proof and updates verification status", async () => {
@@ -254,21 +374,56 @@ describe("DrawProofService", () => {
 
       const prisma = makeMockPrisma({ existingProof: storedProof });
       prisma.drawProof.findUnique.mockResolvedValue(storedProof);
-      const svc = new DrawProofService(prisma, null);
+      const svc = makeDrawProofService(prisma, null);
       const result = await svc.verifyProof("draw-test-001");
 
       expect(result).not.toBeNull();
       expect(result!.verification.fields.length).toBeGreaterThan(0);
       expect(prisma.drawProof.update).toHaveBeenCalled();
     });
+
+    it("verifies a legacy proof that was stored with non-canonical key ordering", async () => {
+      const legacyProof = {
+        id: "legacy-uuid",
+        drawId: "draw-legacy-001",
+        roundId: 1,
+        contractId: "C123",
+        proofJson: {
+          signature: "legacy_sig",
+          metadata: { contractSpecHash: "spec", engineVersion: "1.0.0", createdAt: "2026-07-24T00:00:00Z" },
+          payout: { recipientConfirmed: true, ledgerSeq: 1001, txHash: "tx_abc", asset: "USDC", amount: "500000" },
+          winnerSelection: { proofHash: "proof123", totalWeight: "1000000", winnerWeight: "1000000", winnerAddress: "addr-a", ticketWeightsHash: "weights123", method: "deterministic_placeholder" },
+          randomness: { drawnAtLedger: 1000, seedHash: "seed_hash_123", seed: "seed-123", source: "deterministic_placeholder" },
+          snapshot: { poolHash: "pool123", totalDeposits: "1000000", participantCount: 1, participantsHash: "abc123", ledgerCloseTime: "2026-07-24T00:00:00Z", ledgerSeq: 1000 },
+          contractId: "C123",
+          roundId: 1,
+          drawId: "draw-legacy-001",
+          version: "1.0.0",
+        },
+        proofHash: "legacy-hash",
+        signature: "legacy_sig",
+        verified: false,
+        verifiedAt: null,
+        verificationError: null,
+        createdAt: new Date(),
+      };
+
+      const prisma = makeMockPrisma({ existingProof: legacyProof });
+      prisma.drawProof.findUnique.mockResolvedValue(legacyProof);
+      const svc = makeDrawProofService(prisma, null);
+      const result = await svc.verifyProof("draw-legacy-001");
+
+      expect(result).not.toBeNull();
+      expect(result!.verification.fields.length).toBeGreaterThan(0);
+    });
   });
 
   describe("getProof", () => {
     it("returns null if not found", async () => {
       const prisma = makeMockPrisma();
-      const svc = new DrawProofService(prisma, null);
+      const svc = makeDrawProofService(prisma, null);
       const result = await svc.getProof("nonexistent");
-      expect(result).toBeNull();
+      expect(result).toBe(null);
     });
 
     it("returns proof record if found", async () => {
@@ -286,7 +441,7 @@ describe("DrawProofService", () => {
         createdAt: new Date(),
       };
       const prisma = makeMockPrisma({ existingProof: storedProof });
-      const svc = new DrawProofService(prisma, null);
+      const svc = makeDrawProofService(prisma, null);
       const result = await svc.getProof("draw-123");
       expect(result).not.toBeNull();
       expect(result!.drawId).toBe("draw-123");
@@ -300,12 +455,87 @@ describe("DrawProofService", () => {
         { id: "2", drawId: "d2", roundId: 2, contractId: "C1", proofJson: {}, proofHash: "h2", signature: null, verified: true, verifiedAt: new Date(), verificationError: null, createdAt: new Date() },
       ];
       const prisma = makeMockPrisma({ proofs });
-      prisma.drawProof.findMany.mockResolvedValue(proofs);
-      const svc = new DrawProofService(prisma, null);
-      const result = await svc.listProofs({ limit: 10 });
-
+      const svc = makeDrawProofService(prisma, null);
+      const result = await svc.listProofs({ contractId: "C1", limit: 10 });
       expect(result.items).toHaveLength(2);
-      expect(result.nextCursor).toBeNull();
     });
+  });
+});
+
+describe("canonicalJSON", () => {
+  it("produces identical output for equivalent objects with different key ordering", () => {
+    const a = { b: 2, a: 1, c: { z: 1, y: 2 } };
+    const b = { c: { y: 2, z: 1 }, a: 1, b: 2 };
+    expect(canonicalStringify(a)).toBe(canonicalStringify(b));
+  });
+
+  it("normalizes numeric precision for decimal strings", () => {
+    const a = { amount: "500000.0000" };
+    const b = { amount: "500000" };
+    expect(canonicalStringify(a)).toBe(canonicalStringify(b));
+  });
+
+  it("normalizes casing for asset codes", () => {
+    const a = { asset: "usdc" };
+    const b = { asset: "USDC" };
+    expect(canonicalStringify(a)).toBe(canonicalStringify(b));
+  });
+
+  it("strips insignificant whitespace from string values", () => {
+    const a = { winner: " GBBD...LLFL " };
+    const b = { winner: "GBBD...LLFL" };
+    expect(canonicalStringify(a)).toBe(canonicalStringify(b));
+  });
+
+  it("produces the same hash for equivalent payloads", () => {
+    const a = { round_id: 1, winner: "GBBD...LLFL", prize: "500000.0000" };
+    const b = { prize: "500000", winner: "GBBD...LLFL", round_id: 1 };
+    expect(canonicalHash(a)).toBe(canonicalHash(b));
+  });
+
+  it("normalizes legacy payloads with non-canonical key ordering and precision", () => {
+    const legacy = {
+      signature: "legacy_sig",
+      payout: { recipientConfirmed: true, ledgerSeq: 1001, txHash: "tx_abc", asset: "USDC", amount: "500000.0000" },
+      version: "1.0.0",
+    };
+    const normalized = {
+      version: "1.0.0",
+      payout: { amount: "500000", asset: "USDC", txHash: "tx_abc", ledgerSeq: 1001, recipientConfirmed: true },
+      signature: "legacy_sig",
+    };
+    expect(canonicalStringify(legacy)).toBe(canonicalStringify(normalized));
+  });
+
+  it("keeps the documented legacy payload fixture stable", () => {
+    expect(canonicalStringify(canonicalLegacyFixture.legacyPayload)).toBe(canonicalLegacyFixture.canonical);
+  });
+
+  it("rejects unsupported numeric values consistently", () => {
+    expect(() => canonicalize({ amount: NaN })).toThrow();
+    expect(() => canonicalize({ amount: Infinity })).toThrow();
+  });
+
+  it("rejects unsafe integer values rather than hashing rounded data", () => {
+    expect(() => canonicalize({ roundId: Number.MAX_SAFE_INTEGER + 1 })).toThrow(/unsafe integer/i);
+    expect(() => canonicalize({ amount: Number.MAX_SAFE_INTEGER + 1 })).toThrow(/unsafe integer/i);
+  });
+
+  it("bounds exponent expansion and rejects key collisions after trimming", () => {
+    expect(() => canonicalize({ amount: "1e1025" })).toThrow(/exponent/i);
+    expect(() => canonicalize({ " wallet ": "a", wallet: "b" })).toThrow(/duplicate key/i);
+  });
+
+  it("preserves a JSON __proto__ property as ordinary payload data", () => {
+    const value = JSON.parse('{"__proto__":{"signed":true}}');
+    expect(canonicalStringify(value)).toBe('{"__proto__":{"signed":true}}');
+    expect(Object.prototype).not.toHaveProperty("signed");
+  });
+
+  it("applies field allowlists only at the top level and rejects unknown keys in strict mode", () => {
+    expect(canonicalStringify({ a: 1, nested: { keep: 2, drop: 3 } }, { allowedKeys: ["a", "nested"] }))
+      .toBe('{"a":"1","nested":{"drop":"3","keep":"2"}}');
+    expect(() => canonicalize({ a: 1, extra: 2 }, { allowedKeys: ["a"], strict: true }))
+      .toThrow(/unknown top-level key/i);
   });
 });

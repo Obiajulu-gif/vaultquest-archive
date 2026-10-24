@@ -15,4 +15,10 @@ target/
 .DS_Store
 tsc_output.txt
 scratch/
-CUsersgooglAppDataLocalpnpmstorev3/
+C:\Users\googl\AppData\Local\pnpm\store\v3/
+
+# Mimo
+.mimo/
+mimo/
+*.mimo
+mimo.config.*

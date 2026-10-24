@@ -21,6 +21,20 @@ import { getFrontendEnv } from "./env.js";
 
 export type HorizonNodeKind = "public" | "private";
 
+/**
+ * Criticality of a read (#626): `"critical"` reads (e.g. a balance feeding a
+ * deposit/withdraw preview) must not give up just because every node is
+ * currently cooling down — they fall back to the least-bad node rather than
+ * exhausting retries. `"best-effort"` reads (UI refreshes) keep today's
+ * behaviour: wait out the cooldown and retry, never forcing a request
+ * through a node that's currently rate-limited or unhealthy.
+ */
+export type ReadCriticality = "critical" | "best-effort";
+
+export interface HorizonRequestOptions extends RequestInit {
+  criticality?: ReadCriticality;
+}
+
 export interface HorizonNode {
   url: string;
   kind: HorizonNodeKind;
@@ -123,6 +137,7 @@ export class HorizonPool {
     const now = this.opts.now();
     if (now < h.cooldownUntil) return Number.MAX_SAFE_INTEGER;
     if (!h.healthy) return Number.MAX_SAFE_INTEGER - 1;
+    return h.latencyMs === Infinity ? 999999 : h.latencyMs;
     return Number.isFinite(h.latencyMs) ? h.latencyMs : Number.MAX_SAFE_INTEGER / 2;
   }
 
@@ -162,12 +177,19 @@ export class HorizonPool {
    * Performs a Horizon request through the pool. Tries the healthiest node
    * first and, on 429 or transport failure, backs off exponentially and
    * reroutes to the next healthiest node. Throws after `maxRetries`.
+   *
+   * Pass `{ criticality: "critical" }` for reads that gate a fund-moving
+   * decision (e.g. a balance feeding a deposit/withdraw preview): when every
+   * node is cooling down, a critical read is forced through the least-bad
+   * node instead of waiting out the cooldown like a best-effort UI refresh
+   * would (#626).
    */
-  async request(path: string, init?: RequestInit): Promise<Response> {
+  async request(path: string, init?: HorizonRequestOptions): Promise<Response> {
     let lastError: unknown;
+    const criticality: ReadCriticality = init?.criticality ?? "best-effort";
 
     for (let attempt = 0; attempt < this.opts.maxRetries; attempt++) {
-      const node = this.pickNode();
+      const node = this.pickNode() ?? (criticality === "critical" ? this.pickLeastBadNode() : null);
       if (!node) {
         // Everything is cooling down; wait out the soonest cooldown.
         await this.opts.sleep(this.backoff(attempt));
@@ -177,7 +199,8 @@ export class HorizonPool {
       const h = this.health.get(node.url)!;
       const start = this.opts.now();
       try {
-        const res = await this.timedFetch(`${node.url}${path}`, init);
+        const { criticality: _criticality, ...fetchInit } = init ?? {};
+        const res = await this.timedFetch(`${node.url}${path}`, fetchInit);
         const elapsed = this.opts.now() - start;
 
         if (res.status === 429) {
@@ -208,8 +231,11 @@ export class HorizonPool {
   }
 
   /** Convenience JSON helper. */
-  async getJson<T = unknown>(path: string): Promise<T> {
-    const res = await this.request(path, { headers: { Accept: "application/json" } });
+  async getJson<T = unknown>(path: string, options?: { criticality?: ReadCriticality }): Promise<T> {
+    const res = await this.request(path, {
+      headers: { Accept: "application/json" },
+      criticality: options?.criticality,
+    });
     return (await res.json()) as T;
   }
 
@@ -225,6 +251,20 @@ export class HorizonPool {
     }
 
     return { url: candidate.url, kind: candidate.kind };
+  }
+
+  /**
+   * Last-resort node for critical reads when every node is cooling down or
+   * unhealthy: the one with the soonest cooldown / fewest consecutive
+   * failures, rather than giving up. Never used for best-effort requests.
+   */
+  private pickLeastBadNode(): HorizonNode | null {
+    const ranked = [...this.health.values()].sort((a, b) => {
+      if (a.cooldownUntil !== b.cooldownUntil) return a.cooldownUntil - b.cooldownUntil;
+      return a.consecutiveFailures - b.consecutiveFailures;
+    });
+    const candidate = ranked[0];
+    return candidate ? { url: candidate.url, kind: candidate.kind } : null;
   }
 
   private async timedFetch(url: string, init?: RequestInit): Promise<Response> {

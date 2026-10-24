@@ -34,7 +34,7 @@ Test 1: Dashboard Flow
 
 Test 2: Account Page Flow
 ─────────────────────────
-1. Navigate to /app/account?mockConnected=true
+1. Inject connected mock wallet, then navigate to /app/account
 2. Verify: "Your profile" visible ✓
 3. Navigate to /app/account (disconnect simulation)
 4. Verify: Connect prompt visible ✓
@@ -67,8 +67,8 @@ Test 6: Navigation Persistence
 
 Test 7: Reconnect Guidance
 ─────────────────────────
-1. Navigate to /app/account?mockConnected=true
-2. Navigate to /app/account (disconnect)
+1. Inject connected mock wallet, then navigate to /app/account
+2. Disconnect wallet
 3. Verify: Reconnect button visible ✓
 
 Test 8: Wallet Address Removal
@@ -98,6 +98,8 @@ e2e/
 ├── wallet-disconnect.spec.ts    ← Wallet disconnect tests
 ├── core-flows.spec.ts           ← Core user flows
 ├── route-smoke.spec.ts          ← Route smoke tests
+├── error-states.spec.ts         ← Deterministic failure paths (#745)
+├── round-close.spec.ts          ← Draw output independently verified (#746)
 ├── helpers/
 │   └── wallet-mock.ts           ← Wallet mock utilities
 ├── README.md                    ← Test documentation
@@ -105,16 +107,41 @@ e2e/
 └── wallet-disconnect-test-summary.md  ← Implementation details
 ```
 
+## Failure-Path Tests (error-states.spec.ts)
+
+Deterministic, wallet-independent surfaces:
+
+| Test | Mock | Assertion |
+| --- | --- | --- |
+| Wallet rejection | `injectRejectingWallet` — `eth_requestAccounts`/`eth_sendTransaction` throw code 4001, `eth_accounts` returns `[]` | Connection stays denied on `/app`; no fake-balance UI |
+| RPC failure | `page.route('**/api.avax.network/ext/bc/C/rpc')` -> 502 | `[role="alert"]` shows "fallback fee data" text |
+| On-chain revert | `page.route('**/api/actions/<addr>*')` -> single `status: "reverted"` action | Activity modal shows the "reverted" status and tx hash |
+
+## Round-Close Test (round-close.spec.ts)
+
+The served draw proof is never trusted: the test recomputes the winner
+independently (`sha256(seed) -> R -> cumulative weighted walk`) and the whole
+hash chain (participants hash, ticket weights hash, winner proof hash, draw
+id), asserts each equals the proof record, checks `verifyProofIntegrity`
+covers all fields, then confirms `/app/prizes` renders that winner with the
+local "Verified" badge. The proof is sealed with a legacy 1.0.0 document-hash
+signature so the browser's local integrity check can verify it without a
+secret.
+
 ## Helper Functions
 
 ### `injectMockWallet(page, address?)`
-Injects a mock Ethereum wallet for testing.
+Injects a mock Ethereum wallet for testing. Use `injectConnectedMockWallet`
+when a test needs the wallet to be connected before page load.
 
 ```typescript
-import { injectMockWallet } from './helpers/wallet-mock';
+import { injectConnectedMockWallet, injectMockWallet } from './helpers/wallet-mock';
 
 await injectMockWallet(page);
 // Now the page has window.ethereum available
+
+await injectConnectedMockWallet(page);
+await page.goto('/app/account');
 ```
 
 ### `simulateWalletDisconnect(page)`

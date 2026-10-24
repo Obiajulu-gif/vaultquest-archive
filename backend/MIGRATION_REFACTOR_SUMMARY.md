@@ -156,4 +156,26 @@ All migration content remains identical. Only folder names were updated to follo
 
 ---
 
+## 🛡️ Disaster Recovery (DR) & Backup Integrity (Issue #565)
+
+### End-to-End DR Architecture
+1. **Automated Backup Generation (`BackupService.run`)**:
+   - Executes `pg_dump --format custom` to produce compressed archive snapshots.
+   - Enforces automatic retention pruning for archives older than `retainDays` (default 7 days).
+
+2. **Structural Integrity Verification (`BackupService.verifyBackup`)**:
+   - Runs `pg_restore --list <filePath>` to inspect archive table of contents without writing to any database.
+   - Validates archive structure and flags corrupted or truncated dump files early.
+
+3. **Safe Target Restoration (`BackupService.restoreBackup`)**:
+   - Restores custom format backups into specified target databases using `pg_restore`.
+   - **Production Safety Guard**: Protects primary database URL (`databaseUrl`). Attempts to restore into production will throw a `SAFETY GUARD ERROR` unless explicitly passed `{ allowProductionRestore: true }`.
+
+4. **Automated Restore Drills (`startRestoreDrillCron` / `runRestoreDrill`)**:
+   - Schedules periodic drills via `node-cron` using `LeaseService` distributed lock protection (`db-restore-drill`).
+   - Automatically picks the latest backup snapshot, verifies structure via `verifyBackup`, and restores into a designated `scratchDatabaseUrl`.
+
+---
+
 **Questions?** Refer to the detailed guides in `prisma/MIGRATIONS_GUIDE.md` or `prisma/migrations/README.md`.
+

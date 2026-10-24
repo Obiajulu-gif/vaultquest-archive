@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { X, ArrowUpRight, Users, Lock, TrendingUp, Wallet } from "lucide-react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
@@ -7,6 +8,65 @@ import RoundStatusBadge from "@/components/app/RoundStatusBadge";
 
 export default function PoolComparisonDrawer({ pools, onRemove, onClearAll, onClose }) {
   const isOpen = pools.length >= 2;
+  const drawerRef = useRef(null);
+  const previousFocusRef = useRef(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      previousFocusRef.current = document.activeElement;
+      
+      const drawer = drawerRef.current;
+      if (drawer) {
+        // Find all focusable elements
+        const focusableElements = drawer.querySelectorAll(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        );
+        if (focusableElements.length) {
+          focusableElements[0].focus();
+        } else {
+          drawer.focus();
+        }
+      }
+
+      const handleKeyDown = (e) => {
+        if (e.key === "Escape") {
+          onClose();
+        }
+        
+        // Focus trap logic
+        if (e.key === "Tab" && drawer) {
+          const focusableElements = drawer.querySelectorAll(
+            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+          );
+          
+          if (focusableElements.length === 0) return;
+          
+          const firstElement = focusableElements[0];
+          const lastElement = focusableElements[focusableElements.length - 1];
+
+          if (e.shiftKey) {
+            if (document.activeElement === firstElement) {
+              lastElement.focus();
+              e.preventDefault();
+            }
+          } else {
+            if (document.activeElement === lastElement) {
+              firstElement.focus();
+              e.preventDefault();
+            }
+          }
+        }
+      };
+
+      document.addEventListener("keydown", handleKeyDown);
+      return () => {
+        document.removeEventListener("keydown", handleKeyDown);
+        if (previousFocusRef.current) {
+          previousFocusRef.current.focus();
+        }
+      };
+    }
+  }, [isOpen, onClose]);
 
   const ComparisonMetric = ({ label, values, icon: Icon, highlight = false }) => (
     <div className="border-b border-vault-border last:border-b-0">
@@ -44,11 +104,16 @@ export default function PoolComparisonDrawer({ pools, onRemove, onClearAll, onCl
           
           {/* Drawer */}
           <motion.div
+            ref={drawerRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Pool Comparison (${pools.length} pools)`}
+            tabIndex={-1}
             initial={{ y: "100%" }}
             animate={{ y: 0 }}
             exit={{ y: "100%" }}
             transition={{ type: "spring", damping: 25, stiffness: 300 }}
-            className="fixed bottom-0 left-0 right-0 z-50 bg-vault-bg border-t border-vault-border shadow-2xl max-h-[80vh] overflow-auto"
+            className="fixed bottom-0 left-0 right-0 z-50 bg-vault-bg border-t border-vault-border shadow-2xl max-h-[80vh] overflow-auto focus:outline-none"
           >
             <div className="sticky top-0 z-10 bg-vault-surface/95 backdrop-blur-lg border-b border-vault-border px-6 py-4">
               <div className="flex items-center justify-between">

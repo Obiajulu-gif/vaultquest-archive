@@ -1,0 +1,347 @@
+# Security Features Implementation Guide
+
+This document covers the implementation of 4 critical security enhancements.
+
+## #611: Reproducible WASM Release Artifacts & Attestations
+
+### Overview
+Pin Rust/Soroban toolchain and produce deterministic, signed WASM builds with cryptographic attestations.
+
+### Components
+- **rust-toolchain.toml**: Pins Rust 1.82.0 and soroban SDK version
+- **AttestationService**: Generates and verifies signed attestations
+- **ReleaseAttestation**: Database table for storing attestation records
+
+### Usage
+```typescript
+const attestationSvc = new AttestationService(prisma);
+
+const attestation = await attestationSvc.createAttestation({
+  wasmBuffer: Buffer.from(wasmBinary),
+  sbomContent: sbomJson,
+  sourceRevision: gitCommitHash,
+  networkId: "stellar-mainnet",
+  adminId: adminWallet,
+  contractIds: deployedContracts,
+  toolchainVersion: "1.82.0",
+  signingKey: fs.readFileSync("signing-key.pem")
+});
+
+const isValid = await attestationSvc.verifyAttestation(
+  attestation,
+  publicKey
+);
+```
+
+### Verification Before Promotion
+All attestations must be verified before promoting to registry:
+- Signature verification against public key
+- Toolchain version validation
+- Source revision tracking
+- Contract ID pinning
+
+---
+
+## #610: Observability Cardinality & Redaction
+
+### Overview
+Prevent unbounded cardinality and redact financial identifiers from logs and metrics.
+
+### Components
+- **ObservabilityService**: Schema validation and cardinality enforcement
+- **Redaction Middleware**: Automatic identifier hashing/omission
+- **Cardinality Budget**: Per-metric-dimension limits
+
+### Usage
+```typescript
+const schema: ObservabilitySchema = {
+  approvedDimensions: new Set(["pool_id", "action_type", "status"]),
+  cardinalityBudget: new Map([
+    ["transaction_submit:pool_id", 50],
+    ["action_status:status", 10]
+  ]),
+  redactionPatterns: []
+};
+
+const observabilitySvc = new ObservabilityService(logger, schema);
+
+// Automatic redaction of sensitive values
+const redacted = observabilitySvc.recursiveRedact({
+  walletAddress: "GBL3F46SRO2CI27LFVQ6ZGLU5QPCLU3QSE7VMMYT6YJVWCIYT2SZ4XN",
+  txHash: "abcdef1234567890...",
+  amount: "1000"
+});
+
+// Record metric with cardinality enforcement
+observabilitySvc.recordMetric("transaction_submit", "pool_id", poolId);
+```
+
+### Redaction Rules
+- Wallet addresses (G*) → hashed with [REDACTED_WALLET:...] prefix
+- Transaction hashes → hashed with [REDACTED_TX:...] prefix
+- Structured logs → recursive redaction of sensitive fields
+- Error text → omitted or generalized
+
+---
+
+## #609: Admin Audit APIs & Credential Separation
+
+### Overview
+Move admin authorization to server-side, use wallet-signed sessions instead of embedded credentials.
+
+### Components
+- **AdminSessionService**: Creates and validates wallet-signed sessions
+- **admin-session middleware**: Enforces server-side authorization
+- **AdminSession table**: Stores active sessions with expiration
+
+### Usage
+```typescript
+const adminSessionSvc = new AdminSessionService(prisma);
+
+// Client: Create session with wallet signature
+const session = await adminSessionSvc.createSession({
+  walletAddress: "GBL3F46SRO2CI27LFVQ6ZGLU5QPCLU3QSE7VMMYT6YJVWCIYT2SZ4XN",
+  signature: walletSignature,  // Wallet-signed proof of ownership
+  audience: "/admin/audit",     // Explicit audience (cannot reuse for other APIs)
+  roleVersion: 1,               // Invalidate sessions when role changes
+  ttlSeconds: 3600
+});
+
+// Client: Use session for subsequent requests
+const headers = {
+  "Authorization": `Bearer ${session.sessionId}`
+};
+
+// Server: Automatic verification and audience validation
+// Routes using createRequireAdminSessionAuth middleware
+```
+
+### Session Revocation
+- Sessions automatically expire after TTL
+- Sessions revoked when role version increments
+- Server-side revocation available for immediate invalidation
+
+### Benefits
+- No test credentials embedded in client code
+- Explicit audience prevents token reuse
+- Server controls authorization at every request
+- Client-side state cannot override server validation
+
+---
+
+## #608: ActionLedger Tamper-Evidence & Verification
+
+### Overview
+Make audit ledger tamper-evident with cryptographic chaining and external checkpoints.
+
+### Components
+- **ActionLedgerVerificationService**: Creates hash-chained records
+- **ActionLedgerChain table**: Immutable audit trail
+- **Verification & Export**: Offline verification tooling
+
+### Usage
+```typescript
+const verificationSvc = new ActionLedgerVerificationService(prisma);
+
+// Create chained record for every action mutation
+const record = await verificationSvc.chainRecord({
+  actionId: "12345",
+  actor: "admin-wallet",
+  authorization: "session-signature",
+  intentHash: intentHashOfChange,  // Hash of the change intent
+  referencedEvents: ["event-id-1", "event-id-2"],
+  signingKey: signingKeyBuffer
+});
+
+// Verify chain integrity offline
+const verification = await verificationSvc.verifyChain(
+  "12345",
+  publicKeyBuffer
+);
+// Returns: { valid: true } or { valid: false, reason: "..." }
+
+// Export complete audit trail
+const chain = await verificationSvc.exportChain("12345");
+// Returns array of chained records for offline verification
+```
+
+### Record Structure
+Each chained record contains:
+- **previousHash**: Hash of previous record (or "genesis")
+- **currentHash**: Hash of this record
+- **actor**: Who made the change
+- **authorization**: How they were authorized (session ID, signature, etc)
+- **intentHash**: Hash of the change intent
+- **result**: Final state (status, txHash, errorCode)
+- **referencedEvents**: Chain events referenced
+- **signature**: Cryptographic signature of record
+
+### Verification Process
+1. Validate genesis condition (first record.previousHash == "genesis")
+2. Verify hash chain (record[i].currentHash == record[i+1].previousHash)
+3. Verify signatures with public key
+4. Check no records modified or deleted
+
+### Offline Verification
+Export and verify ledger without database access:
+```bash
+# Export ledger
+curl -H "Authorization: Bearer $SESSION" \
+  /admin/ledger/export/action-id > ledger.json
+
+# Verify offline
+node verify-ledger.js --chain ledger.json --public-key pk.pem
+```
+
+---
+
+## Integration Checklist
+
+- [ ] Generate signing/public key pairs (environment setup)
+- [ ] Add environment variables (LEDGER_SIGNING_KEY, etc)
+- [ ] Create database migrations for new tables
+- [ ] Wire services in app.ts initialization
+- [ ] Register new routes (admin-session, ledger-verification)
+- [ ] Update audit routes to use AdminSessionService
+- [ ] Update logger to use redaction middleware
+- [ ] Add ObservabilityService to metrics pipeline
+- [ ] Export toolchain version in build artifacts
+- [ ] Test attestation verification
+- [ ] Test session expiration and revocation
+- [ ] Test ledger chain verification
+- [ ] Document API changes for clients
+
+---
+
+## Security Considerations
+
+### Attestation Keys
+- Private key (signing): Keep in HSM or secure key management
+- Public key (verification): Distribute with registry verifier
+- Rotation: Implement key rotation strategy
+
+### Session Keys
+- Session IDs: Cryptographically random (32 bytes)
+- Storage: Hashed in database, never in logs
+- Transport: HTTPS only, no URL parameters
+
+### Ledger Keys
+- Signing: Same as attestation or separate key pair
+- Public key: Required for offline verification
+- Checkpoints: Consider external checkpoint server for immutability
+
+### Redaction
+- Approved dimensions only in metrics
+- Recursive redaction for structured logs
+- Budget enforcement prevents cardinality attacks
+- Regular audit of approved dimensions
+
+---
+
+## Monitoring & Alerting
+
+Monitor these metrics:
+- Attestation verification failures
+- Session expiration rates
+- Ledger chain integrity failures
+- Cardinality budget violations
+- Redaction rate per metric
+
+Alert on:
+- Multiple verification failures (5+ in 1 hour)
+- Unusual session creation patterns
+- Chain verification failures
+- Cardinality budget exceeded
+
+---
+
+## Untrusted content
+
+Implemented in [`lib/safe-content.ts`](../lib/safe-content.ts) (shared by backend and UI).
+
+| Surface                                   | Rule                                                                                    |
+| ----------------------------------------- | --------------------------------------------------------------------------------------- |
+| Profile `name`/`bio`, saved-pool names    | **Stripped** on write (`safeText`): script/style/tags/comments, control, zero-width and bidi characters removed; empty-after-strip is rejected where a value is required |
+| Outbound links (`SafeExternalLink`)       | http(s) only, no embedded credentials, no control/invisible characters, no protocol-relative URLs; renders inert text if unsafe |
+| Link attributes                           | Always `target="_blank" rel="noopener noreferrer nofollow"`; destination host exposed in `title` and to screen readers |
+| Markdown (`renderSafeMarkdown`)           | Input escaped first; only `code`, bold, italic and safe links are produced; raw HTML shown as text; images degrade to alt text |
+| Explorer transaction links                | Hash is URL-encoded before being appended to the explorer base                          |
+
+Policy: text is **stripped**, URLs are **rejected** (never silently rewritten).
+React escapes text at render time; sanitization on write is defence in depth.
+Not covered: a Content-Security-Policy header (the root layout uses an inline
+theme script and would need a nonce first).
+
+---
+
+## #868: Sensitive Field Access Logging & Anomaly Detection
+
+### Overview
+Access to sensitive fields (e.g. `ssn`, `tax_id`, `private_key`, `secret`, `email`, `wallet_seed`, `vault_pin`) is logged without retaining raw values, capturing authorized and unauthorized attempts, and providing anomaly detection hooks for suspicious patterns.
+
+### Components
+- **SensitiveFieldAccessLogger**: `lib/sensitive-field-access.ts`
+- **Redaction**: Field values are strictly omitted from log entries.
+- **Anomaly Detection Hooks**: Real-time callback alerts for `UNAUTHORIZED_BURST`, `BULK_SENSITIVE_ACCESS`, `UNAUTHORIZED_BULK_ACCESS`, and `RAPID_MULTI_RESOURCE_ACCESS`.
+
+### Usage
+```typescript
+import { sensitiveAccessLogger } from "@/lib/sensitive-field-access";
+
+// Log authorized access
+sensitiveAccessLogger.logAccess({
+  actor: "admin-wallet",
+  purpose: "vault_audit",
+  resourceType: "vault",
+  resourceId: "v-100",
+  fieldNames: ["secret", "email"],
+  authorized: true,
+});
+
+// Register anomaly hook
+sensitiveAccessLogger.onAnomaly((anomaly) => {
+  console.warn(`[ANOMALY ALERT ${anomaly.severity}] ${anomaly.rule}: ${anomaly.description}`);
+});
+```
+
+The wallet export path is instrumented in `DataExportService` and its RBAC
+guard. Successful exports log a stable SHA-256 subject identifier, fixed purpose
+`data_export`, a SHA-256 wallet resource identifier, sensitive field names and record
+count. Cross-wallet denials are logged before data is read. Anonymous and
+denied-role attempts use `unspecified` rather than copying untrusted request
+fields, headers or credentials. Exported financial amounts and payloads never
+enter the access log. Other access paths can use the same logger explicitly;
+this is not automatic instrumentation of every database read.
+
+Profile GET/PUT `/api/users/me` logs allowed attempts after the existing
+authentication guard and denied attempts before profile reads. It records
+`profile_read`/`profile_update`, a hashed user ID and email/wallet field names;
+contact values and authorization headers are excluded. Existing profile
+authentication and mock-update semantics are unchanged.
+
+Sensitive fields include wallet addresses, amounts, balances, action payloads,
+profile contacts, password hashes, private keys and seeds. Camel-case field
+names are normalized; repeated and public fields do not inflate bulk counts.
+Multi-record exports are bulk accesses even when only one field is requested.
+Metadata must contain identifiers and a fixed purpose, never field values.
+
+`buildApp` forwards allowlisted entries to the existing structured logger as
+`sensitive_field_access`, and immediate unauthorized bulk alerts as
+`sensitive_access_anomaly`. Configure normal backend log collection/retention
+to retain these events across process restarts. The local query buffer keeps
+at most 10,000 entries and is process-local; it is not durable storage. Values
+and raw hook exceptions are omitted. Returned entries and hook payloads are
+isolated copies, so consumers cannot rewrite retained history.
+
+`evaluateAnomalies()` supplies windowed denied-burst, distinct resource and
+bulk-access reports and invokes subscribed hooks. Call it from a trusted
+reporting/scheduled consumer, or implement aggregation in the log collector;
+windowed reports are not automatically scheduled. Consumers should deduplicate
+repeated reports by rule and log IDs. Detection thresholds are configurable
+positive integers, with a five-minute default window. Hooks can be unsubscribed.
+No database migration or new environment variable is required for logging.
+
+Validation for all three maintainer utilities:
+`pnpm exec vitest run --config vitest.maintainer.config.mjs`.
+Backend access checks:
+`pnpm --dir backend exec vitest run tests/sensitive-export-access.spec.ts tests/sensitive-profile-access.spec.ts tests/permission-preview.spec.ts tests/saved-pool-provenance.spec.ts`.

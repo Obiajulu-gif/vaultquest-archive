@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Golden fixtures for contract struct shapes.",
   "structs": {
     "Pool": {
@@ -80,6 +80,22 @@
         {
           "name": "approver_snapshot",
           "type": "vec"
+        }
+      ]
+    },
+    "RoundingRemainder": {
+      "fields": [
+        {
+          "name": "whole_units",
+          "type": "i128"
+        },
+        {
+          "name": "numerator",
+          "type": "i128"
+        },
+        {
+          "name": "denominator",
+          "type": "i128"
         }
       ]
     }

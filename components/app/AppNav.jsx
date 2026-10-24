@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { Contrast, Gift, Menu, Server, Settings, User, Wallet, X } from "lucide-react";
-import { Bell, Contrast, Gift, Menu, Server, User, Wallet, X, Activity, Shield } from "lucide-react";
+import { Bell, ClipboardList, Contrast, Gift, Menu, Server, User, Wallet, X, Activity, Shield } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import ThemeToggle from "./ThemeToggle";
 import BalanceAutoRefresh from "./BalanceAutoRefresh";
@@ -24,6 +24,7 @@ const LINKS = [
   { href: "/app/notifications", label: "Notifications", icon: Bell },
   { href: "/app/trust", label: "Trust", icon: Shield },
   { href: "/app/admin/proposals", label: "Admin", icon: Menu },
+  { href: "/app/admin/audit", label: "Audit", icon: ClipboardList },
 ];
 
 function applyHighContrast(enabled) {

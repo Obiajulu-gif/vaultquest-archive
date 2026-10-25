@@ -158,4 +158,57 @@ describe("Release Readiness Verification (#972)", () => {
       expect(formatted).toContain("URGENT EXCEPTION ACTIVE");
     });
   });
+
+  describe("Rollback evidence verification", () => {
+    it("validates readiness when rollback evidence snapshot is supplied", async () => {
+      const report = await validateReleaseReadiness({
+        rootDir,
+        migrationsDir,
+        checklistPath,
+        maintainerSignOff: validMaintainerSignOff,
+        requireRollbackEvidence: true,
+        rollbackEvidence: {
+          backupSnapshotUri: "s3://backups.vaultquest.internal/snapshots/db-pre-release-20261025.sql.gz",
+          verifiedDryRunTimestamp: "2026-10-25T01:00:00Z",
+          operatorNotes: "Full pre-migration dump verified with restore dry run.",
+        },
+      });
+
+      expect(report.ok).toBe(true);
+      const rollbackCheck = report.checks.find((c) => c.id === "rollback-plan-defined");
+      expect(rollbackCheck?.ok).toBe(true);
+      expect(rollbackCheck?.detail).toContain("rollback evidence attached");
+      expect(rollbackCheck?.detail).toContain("s3://backups.vaultquest.internal");
+    });
+
+    it("fails release readiness when rollback evidence is required but absent", async () => {
+      const report = await validateReleaseReadiness({
+        rootDir,
+        migrationsDir,
+        checklistPath,
+        maintainerSignOff: validMaintainerSignOff,
+        requireRollbackEvidence: true,
+      });
+
+      expect(report.ok).toBe(false);
+      const rollbackCheck = report.failures.find((c) => c.id === "rollback-plan-defined");
+      expect(rollbackCheck).toBeDefined();
+      expect(rollbackCheck?.remediation).toContain("rollbackEvidence");
+    });
+
+    it("bypasses missing rollback evidence during authorized urgent fix incidents", async () => {
+      const urgentReport = await validateReleaseReadiness({
+        rootDir,
+        migrationsDir,
+        checklistPath,
+        isUrgentFix: true,
+        incidentId: "INC-ROLLBACK-EMERGENCY-01",
+        requireRollbackEvidence: true,
+      });
+
+      expect(urgentReport.ok).toBe(true);
+      const rollbackCheck = urgentReport.checks.find((c) => c.id === "rollback-plan-defined");
+      expect(rollbackCheck?.ok).toBe(true);
+    });
+  });
 });

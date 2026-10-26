@@ -8,6 +8,7 @@ const expected = String(packageJson.packageManager ?? 'pnpm').split('@')[0];
 const results = [];
 const nodeMajor = Number.parseInt(process.versions.node.split('.')[0], 10);
 results.push({ name: 'node', ok: nodeMajor >= 20, detail: process.version, remediation: 'Install Node.js 20 or newer.' });
+
 let manager = 'unknown';
 try {
   const executable = process.platform === 'win32' ? (process.env.ComSpec ?? 'cmd.exe') : 'pnpm';
@@ -15,13 +16,29 @@ try {
   manager = execFileSync(executable, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() ? 'pnpm' : 'unknown';
 } catch {}
 results.push({ name: 'package-manager', ok: manager === expected, detail: manager, remediation: `Install and use ${expected}.` });
+
 for (const file of ['pnpm-lock.yaml', 'pnpm-workspace.yaml']) {
   results.push({ name: file, ok: existsSync(join(root, file)), detail: existsSync(join(root, file)) ? 'present' : 'missing', remediation: 'Run from a complete repository checkout.' });
 }
+
+// Check node_modules dependencies
+const hasNodeModules = existsSync(join(root, 'node_modules'));
+results.push({
+  name: 'dependencies:installed',
+  ok: hasNodeModules,
+  detail: hasNodeModules ? 'installed' : 'missing',
+  remediation: hasNodeModules ? undefined : 'Run `pnpm install` from the repository root.',
+});
+
 for (const name of ['NEXT_PUBLIC_STELLAR_NETWORK']) {
   const configured = Boolean(process.env[name]?.trim());
   results.push({ name: `env:${name}`, ok: configured, detail: configured ? 'configured' : 'missing', remediation: `Set ${name} in a local, uncommitted environment file.` });
 }
-for (const result of results) console.log(`${result.ok ? 'PASS' : 'FAIL'} ${result.name}: ${result.detail}${result.ok ? '' : ` (${result.remediation})`}`);
-if (results.some((result) => !result.ok) && process.argv.includes('--strict')) process.exitCode = 1;
 
+for (const result of results) {
+  console.log(`${result.ok ? 'PASS' : 'FAIL'} ${result.name}: ${result.detail}${result.ok ? '' : ` (${result.remediation})`}`);
+}
+
+if (results.some((result) => !result.ok) && process.argv.includes('--strict')) {
+  process.exitCode = 1;
+}

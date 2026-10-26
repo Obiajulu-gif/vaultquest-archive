@@ -48,9 +48,10 @@ Validate that configuration changes do not cause runtime downtime or drift:
 
 Every release must specify an executable rollback procedure before deployment begins:
 - **Code rollback**: Pin commit SHA or Docker image tag to quickly revert to the previous verified release.
-- **Database rollback**:
+- **Database rollback & Rollback Evidence**:
   - Non-destructive migrations (additive columns, new tables, new indexes): Can remain in place while application code is reverted.
   - Destructive migrations (dropped columns, dropped tables): Require pre-migration database snapshot (`pg_dump`) or forward-fix migration script.
+  - Rollback Evidence Contract: Release checks require verifiable rollback evidence for state mutations, including snapshot backup URI (`backupSnapshotUri`), dry-run timestamp (`verifiedDryRunTimestamp`), and path to tested reversion script (`testedRollbackScriptPath`).
   - Data backfills: Reversion script or point-in-time recovery (PITR) plan documented in the release notes.
 - **Client cache-busting**: Invalidate CDN caches and verify `/deployment-manifest.json` emits the updated version tag to prevent clients from executing stale chunks.
 

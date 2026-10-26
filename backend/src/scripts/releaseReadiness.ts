@@ -29,6 +29,13 @@ import {
   type ReleaseChecklistStatus,
 } from "./migrationSafetyCli.js";
 
+export interface RollbackEvidence {
+  backupSnapshotUri?: string;
+  verifiedDryRunTimestamp?: string;
+  testedRollbackScriptPath?: string;
+  operatorNotes?: string;
+}
+
 export interface ReleaseReadinessOptions {
   rootDir?: string;
   migrationsDir?: string;
@@ -45,6 +52,8 @@ export interface ReleaseReadinessOptions {
   };
   isUrgentFix?: boolean;
   incidentId?: string;
+  rollbackEvidence?: RollbackEvidence;
+  requireRollbackEvidence?: boolean;
 }
 
 export interface ReadinessCheckResult {
@@ -190,19 +199,35 @@ async function validateReleaseReadinessImpl(
         }
       }
 
-      // 3. Rollback Plan Check
+      // 3. Rollback Plan & Evidence Check
       const hasDestructive = plan.destructive.length > 0;
-      const rollbackOk = !hasDestructive || Boolean(migrationPreview?.rollbackNotes?.length);
+      const evidence = options.rollbackEvidence;
+      const hasEvidence = Boolean(
+        evidence?.backupSnapshotUri ||
+        evidence?.testedRollbackScriptPath ||
+        evidence?.verifiedDryRunTimestamp
+      );
+      const evidenceRequired = options.requireRollbackEvidence ?? hasDestructive;
+
+      let rollbackOk = !hasDestructive || Boolean(migrationPreview?.rollbackNotes?.length);
+      if (evidenceRequired && !hasEvidence && !options.isUrgentFix) {
+        rollbackOk = false;
+      }
+
       checks.push({
         id: "rollback-plan-defined",
         category: "rollback",
-        name: "Rollback procedure defined for migration",
+        name: "Rollback procedure and evidence defined for migration",
         ok: rollbackOk,
         detail: hasDestructive
-          ? "Destructive changes detected; rollback notes and backup required"
-          : "No destructive statements; safe to revert application code",
+          ? (hasEvidence
+              ? `Destructive changes detected; verified rollback evidence attached (snapshot: ${evidence?.backupSnapshotUri ?? 'provided'})`
+              : "Destructive changes detected; missing rollback evidence or backup snapshot URI")
+          : (hasEvidence
+              ? `Non-destructive migration; rollback evidence attached (snapshot: ${evidence?.backupSnapshotUri ?? 'provided'})`
+              : "No destructive statements; safe to revert application code"),
         remediation:
-          "Provide explicit pg_dump or forward-fix rollback notes for destructive migrations.",
+          "Provide explicit pg_dump/snapshot URI, tested rollback script, or dry-run evidence in options.rollbackEvidence.",
       });
     }
   }

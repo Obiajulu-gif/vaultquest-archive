@@ -245,8 +245,6 @@ export function parseMigrationSql(migrationId: string, sql: string): MigrationPl
     }
 
     if ((match = /^ALTER TABLE "?([^"\s]+)"? ADD COLUMN (IF NOT EXISTS )?"?([^"\s]+)"?/i.exec(statement))) {
-      const table = identifier(match[1]);
-      const column = identifier(match[3]);
       const table = identifier(match[1] ?? "");
       const column = identifier(match[3] ?? "");
       actions.push({
@@ -263,8 +261,6 @@ export function parseMigrationSql(migrationId: string, sql: string): MigrationPl
     }
 
     if ((match = /^ALTER TABLE "?([^"\s]+)"? DROP COLUMN (IF EXISTS )?"?([^"\s]+)"?/i.exec(statement))) {
-      const table = identifier(match[1]);
-      const column = identifier(match[3]);
       const table = identifier(match[1] ?? "");
       const column = identifier(match[3] ?? "");
       actions.push({
@@ -281,8 +277,6 @@ export function parseMigrationSql(migrationId: string, sql: string): MigrationPl
     }
 
     if ((match = /^ALTER TABLE "?([^"\s]+)"? ALTER COLUMN "?([^"\s]+)"? (.+)/i.exec(statement))) {
-      const table = identifier(match[1]);
-      const column = identifier(match[2]);
       const table = identifier(match[1] ?? "");
       const column = identifier(match[2] ?? "");
       const alteration = match[3] ?? "";
@@ -302,7 +296,6 @@ export function parseMigrationSql(migrationId: string, sql: string): MigrationPl
     }
 
     if ((match = /^UPDATE "?([^"\s]+)"?/i.exec(statement))) {
-      const table = identifier(match[1]);
       const table = identifier(match[1] ?? "");
       const hasWhere = /\bWHERE\b/i.test(statement);
       actions.push({
@@ -907,18 +900,30 @@ export function resolveDuplicateReview(
   report: DuplicateReport,
   resolution: DuplicateReviewResolution,
 ): DuplicateReport {
-  const review = report.review.filter((m) => m.candidate.id !== resolution.candidateId);
+  const reviewed = report.review.find((m) => m.candidate.id === resolution.candidateId);
+  if (!reviewed) {
+    throw new Error(`duplicate review candidate not found: ${resolution.candidateId}`);
+  }
+  if (resolution.existingId !== (reviewed.existing?.id ?? null)) {
+    throw new Error("duplicate review resolution does not match the detected record");
+  }
+
+  const review = report.review.filter((m) => m !== reviewed);
   const blocking = [...report.blocking];
   if (resolution.decision === "reject") {
-    const rejected = report.review.find((m) => m.candidate.id === resolution.candidateId);
-    if (rejected) {
-      blocking.push({
-        ...rejected,
-        severity: "exact",
-        reason: `rejected by ${resolution.reviewer}: ${resolution.note ?? "maintainer review"}`,
-      });
-    }
+    blocking.push({
+      ...reviewed,
+      severity: "exact",
+      reason: `rejected by ${resolution.reviewer}: ${resolution.note ?? "maintainer review"}`,
+    });
   }
+
+  // A report must be stable across equivalent input orderings so a reviewer
+  // sees the same queue and audit output on retries.
+  const byCandidate = (a: DuplicateMatch, b: DuplicateMatch) =>
+    a.candidate.id.localeCompare(b.candidate.id) || (a.existing?.id ?? "").localeCompare(b.existing?.id ?? "");
+  blocking.sort(byCandidate);
+  review.sort(byCandidate);
   return {
     blocking,
     review,

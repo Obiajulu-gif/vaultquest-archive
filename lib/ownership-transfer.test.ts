@@ -237,4 +237,83 @@ describe("OwnershipTransferRegistry (end-to-end + retry path)", () => {
     const reg = seeded();
     expect(reasonOf(() => reg.accept("nope", "bob"))).toBe(OWNERSHIP_TRANSFER_REASONS.NOT_FOUND);
   });
+
+  it("maintains a chronological audit history for each resource across lifecycle states", () => {
+    const reg = seeded();
+    reg.initiate(baseParams({ id: "xfer-1", from: "alice", to: "bob" }), { now: T0 });
+    reg.accept("xfer-1", "bob", { now: T0 + HOUR / 2 });
+
+    // Bob now transfers to carol, but cancels
+    reg.initiate(baseParams({ id: "xfer-2", from: "bob", to: "carol" }), { now: T0 + HOUR });
+    reg.cancel("xfer-2", "bob", { now: T0 + HOUR + 100 });
+
+    // Bob transfers to dave, but dave declines
+    reg.initiate(baseParams({ id: "xfer-3", from: "bob", to: "dave" }), { now: T0 + 2 * HOUR });
+    reg.decline("xfer-3", "dave", { now: T0 + 2 * HOUR + 100 });
+
+    // Bob transfers to eve, which expires
+    reg.initiate(baseParams({ id: "xfer-4", from: "bob", to: "eve" }), { now: T0 + 3 * HOUR });
+    reg.sweepExpired({ now: T0 + 5 * HOUR });
+
+    const history = reg.getAuditHistory("saved_pool", "pool-42");
+    expect(history.map((e) => e.type)).toEqual([
+      "ownership.transfer_initiated",
+      "ownership.transfer_accepted",
+      "ownership.transfer_initiated",
+      "ownership.transfer_cancelled",
+      "ownership.transfer_initiated",
+      "ownership.transfer_declined",
+      "ownership.transfer_initiated",
+      "ownership.transfer_expired",
+    ]);
+
+    expect(history[0].actor).toBe("alice");
+    expect(history[1].actor).toBe("bob");
+    expect(history[1].owner).toBe("bob");
+    expect(history[7].actor).toBe("system");
+
+    // listTransfersForResource returns all 4 transfers
+    const transfers = reg.listTransfersForResource("saved_pool", "pool-42");
+    expect(transfers).toHaveLength(4);
+    expect(transfers.map((t) => t.id)).toEqual(["xfer-1", "xfer-2", "xfer-3", "xfer-4"]);
+  });
+
+  it("enforces authorization on inspecting audit history", () => {
+    const reg = seeded();
+    reg.initiate(baseParams({ id: "xfer-1", from: "alice", to: "bob" }), { now: T0 });
+    reg.accept("xfer-1", "bob", { now: T0 + HOUR / 2 });
+
+    // Alice (past owner & initiator) is authorized
+    expect(reg.getAuditHistory("saved_pool", "pool-42", { actor: "alice" })).toHaveLength(2);
+
+    // Bob (current owner & recipient) is authorized
+    expect(reg.getAuditHistory("saved_pool", "pool-42", { actor: "bob" })).toHaveLength(2);
+
+    // Admin / system is authorized
+    expect(reg.getAuditHistory("saved_pool", "pool-42", { actor: "admin" })).toHaveLength(2);
+    expect(reg.getAuditHistory("saved_pool", "pool-42", { actor: "system" })).toHaveLength(2);
+
+    // Mallory (unrelated actor) is rejected
+    expect(() => reg.getAuditHistory("saved_pool", "pool-42", { actor: "mallory" })).toThrowError(
+      OwnershipTransferError,
+    );
+    expect(reasonOf(() => reg.getAuditHistory("saved_pool", "pool-42", { actor: "mallory" }))).toBe(
+      OWNERSHIP_TRANSFER_REASONS.FORBIDDEN_AUDIT,
+    );
+  });
+
+  it("respects limit and returns immutable copies from audit history", () => {
+    const reg = seeded();
+    reg.initiate(baseParams({ id: "xfer-1", from: "alice", to: "bob" }), { now: T0 });
+    reg.accept("xfer-1", "bob", { now: T0 + HOUR / 2 });
+
+    const limited = reg.getAuditHistory("saved_pool", "pool-42", { limit: 1 });
+    expect(limited).toHaveLength(1);
+    expect(limited[0].type).toBe("ownership.transfer_accepted");
+
+    // Mutating returned object does not alter registry internal state
+    (limited[0] as any).type = "tampered";
+    const fresh = reg.getAuditHistory("saved_pool", "pool-42");
+    expect(fresh[1].type).toBe("ownership.transfer_accepted");
+  });
 });

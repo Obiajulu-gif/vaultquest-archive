@@ -11,6 +11,7 @@ import type { TimelineStage } from "../../components/TransactionTimeline";
 import { ContractInterfaceError, type PoolActionInput, type PoolActionType, type VaultContractClient } from "../contract/types";
 import { assertNetworkMatchesBeforeSigning, assertNotMultisigBeforeSigning } from "../../core/walletService.js";
 import { assertSessionAliveBeforeSigning } from "../../core/sessionLiveness.js";
+import { BusinessPolicyEngine, DEFAULT_BUSINESS_POLICY_ENGINE } from "../../../../lib/business-policy";
 import { mapWalletErrorToRejection, getRejectionExplanation } from "../../../../lib/rejectionReasons.js";
 
 export type ActiveTxStage = Exclude<TimelineStage, "success" | "failed">;

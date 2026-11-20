@@ -12,6 +12,8 @@ import {
   listMigrationIds,
   readMigrationPlan,
   type MigrationDatabase,
+  resolveDuplicateReview,
+  type DuplicateReport,
 } from "../src/scripts/migrationSafety.js";
 
 /**
@@ -22,6 +24,52 @@ import {
  * from inline SQL for the specific shapes the framework must recognise.
  */
 const MIGRATIONS_DIR = path.join(__dirname, "../prisma/migrations");
+
+describe("duplicate merge review", () => {
+  const report = (): DuplicateReport => ({
+    blocking: [],
+    review: [
+      {
+        candidate: { id: "candidate-b", values: { vaultAddress: "GB", drawId: "2" } },
+        existing: { id: "existing-b", values: { vaultAddress: "GB", drawId: "2" } },
+        severity: "near",
+        reason: "near match",
+        matchedFields: ["vaultAddress", "drawId"],
+      },
+      {
+        candidate: { id: "candidate-a", values: { vaultAddress: "GA", drawId: "1" } },
+        existing: { id: "existing-a", values: { vaultAddress: "GA", drawId: "1" } },
+        severity: "near",
+        reason: "near match",
+        matchedFields: ["vaultAddress", "drawId"],
+      },
+    ],
+    clean: [],
+    ok: true,
+  });
+
+  it("binds a review decision to the detected pair and produces a stable queue", () => {
+    const resolved = resolveDuplicateReview(report(), {
+      candidateId: "candidate-b",
+      existingId: "existing-b",
+      decision: "reject",
+      reviewer: "maintainer",
+    });
+
+    expect(resolved.blocking.map((match) => match.candidate.id)).toEqual(["candidate-b"]);
+    expect(resolved.review.map((match) => match.candidate.id)).toEqual(["candidate-a"]);
+    expect(resolved.ok).toBe(false);
+  });
+
+  it("rejects stale or tampered merge-review decisions", () => {
+    expect(() => resolveDuplicateReview(report(), {
+      candidateId: "candidate-b", existingId: "different-record", decision: "allow", reviewer: "maintainer",
+    })).toThrow(/does not match/);
+    expect(() => resolveDuplicateReview(report(), {
+      candidateId: "missing", existingId: null, decision: "allow", reviewer: "maintainer",
+    })).toThrow(/candidate not found/);
+  });
+});
 
 interface FakeState {
   tables: Set<string>;

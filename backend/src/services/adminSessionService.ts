@@ -76,29 +76,27 @@ export class AdminSessionService {
   }
 
   async verifySession(sessionId: string): Promise<AdminSession | null> {
-    let session = this.sessionCache.get(sessionId);
-
-    if (!session) {
-      const row = await this.prisma.adminSession.findUnique({
-        where: { sessionId }
-      });
-      if (!row) return null;
-      session = {
-        sessionId: row.sessionId,
-        walletAddress: row.walletAddress,
-        signature: row.signature,
-        audience: row.audience,
-        roleVersion: row.roleVersion,
-        expiresAt: row.expiresAt,
-        createdAt: row.createdAt,
-        revokedAt: row.revokedAt
-      };
-    }
-
-    if (session.revokedAt || session.expiresAt < new Date()) {
+    // Never authorize from the process-local cache. Revocations may be made by
+    // another worker (or the bulk security-revocation endpoint), in which case
+    // a cached session would otherwise remain valid until this process restarts.
+    // The database is the revocation authority; failure to read it fails closed.
+    const row = await this.prisma.adminSession.findUnique({ where: { sessionId } });
+    if (!row || row.revokedAt || row.expiresAt <= new Date()) {
+      this.sessionCache.delete(sessionId);
       return null;
     }
 
+    const session: AdminSession = {
+      sessionId: row.sessionId,
+      walletAddress: row.walletAddress,
+      signature: row.signature,
+      audience: row.audience,
+      roleVersion: row.roleVersion,
+      expiresAt: row.expiresAt,
+      createdAt: row.createdAt,
+      revokedAt: row.revokedAt
+    };
+    this.sessionCache.set(sessionId, session);
     return session;
   }
 

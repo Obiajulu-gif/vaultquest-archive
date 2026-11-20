@@ -30,7 +30,10 @@ export const DEFAULT_MAX_VALUES_PER_LABEL = 100;
 // Route patterns (`/api/actions/:id`), operation names and error codes only.
 const SAFE_LABEL = /^[A-Za-z0-9_.:/*-]+$/;
 const WALLET = /G[A-Z2-7]{55}/;
-const TX_HASH = /[0-9a-fA-F]{64}/;
+// Match a complete transaction-hash token, not a 64-character substring of a
+// longer safe label. The latter would turn arbitrary long metric labels into
+// `redacted` and hide the cardinality guard's normal length limiting.
+const TX_HASH = /(?:^|[^0-9a-fA-F])[0-9a-fA-F]{64}(?:$|[^0-9a-fA-F])/;
 
 /**
  * Normalizes one raw label value. Never throws and never returns user text

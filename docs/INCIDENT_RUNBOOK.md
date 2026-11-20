@@ -128,6 +128,24 @@ pnpm --filter backend run build
 pnpm --filter backend exec vitest run tests/indexer.spec.ts tests/reconciler.spec.ts tests/featureFlagService.spec.ts tests/drawProofService-featureFlag.spec.ts
 ```
 
+### Executable Recovery Checks (#1093)
+
+Before restoring contained feature flags or closing an incident, run the automated recovery checks suite to verify cross-stack health, indexer synchronization, financial invariant consistency, and RPC connectivity:
+
+```bash
+# Execute recovery checks with role authorization
+npx tsx scripts/run-incident-recovery-checks.ts --operator-id=<lead_id> --role=incident_commander
+
+# Output in JSON format for automated validation pipelines
+npx tsx scripts/run-incident-recovery-checks.ts --role=service_owner --json
+```
+
+**Evaluation criteria and decision matrix:**
+- **`RECOVERED` (Exit Code 0):** All checks passed. Indexer lag is within bounds ($\le 5$ ledgers), no financial contradictions exist, and RPC connectivity is confirmed. Safe to gradually restore normal traffic.
+- **`CONTAINED` (Exit Code 0 with warnings):** System is safe from loss of funds, but emergency containment flags or circuit breakers remain active. Operators may proceed with controlled re-enabling per [Feature Flags](FEATURE_FLAGS.md).
+- **`ACTION_REQUIRED` (Exit Code 1):** One or more recovery checks failed (e.g., lagging indexer, stuck settlements, or network divergence). Do NOT lift circuit breakers. Follow the remediation steps output by the check.
+- **`UNAUTHORIZED_OPERATOR` (Exit Code 2):** Operator role is not authorized. Authorized roles: `incident_commander`, `service_owner`, `admin`, `operator`.
+
 For contract changes, also run the contract tests and checks required by the
 [contract contributor guide](../contracts/README.md). Before restoring a
 feature flag or resuming a rollout, reproduce the failure in a non-production

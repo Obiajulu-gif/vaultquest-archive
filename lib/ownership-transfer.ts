@@ -75,6 +75,7 @@ export const OWNERSHIP_TRANSFER_REASONS = {
   EXPIRED: "OWNERSHIP_EXPIRED",
   FORBIDDEN_ACCEPTOR: "OWNERSHIP_FORBIDDEN_ACCEPTOR",
   FORBIDDEN_INITIATOR: "OWNERSHIP_FORBIDDEN_INITIATOR",
+  FORBIDDEN_AUDIT: "OWNERSHIP_FORBIDDEN_AUDIT",
 } as const;
 
 export type OwnershipTransferReason =
@@ -384,6 +385,13 @@ export function expireOwnershipTransfer(
   );
 }
 
+export interface AuditHistoryOptions {
+  /** Optional actor for authorization verification. */
+  actor?: string;
+  /** Maximum number of records to return (defaults to all up to capacity). */
+  limit?: number;
+}
+
 /**
  * In-memory registry enforcing the authorization and single-pending-offer
  * invariants on top of the pure state machine. Reference implementation for the
@@ -399,9 +407,32 @@ export class OwnershipTransferRegistry {
    * O(1) instead of scanning every transfer. At most one entry per resource.
    */
   private readonly pendingByResource = new Map<string, string>();
+  /**
+   * resourceKey -> list of transfer IDs for that resource. O(1) append, O(k) listing.
+   */
+  private readonly transfersByResource = new Map<string, string[]>();
+  /**
+   * resourceKey -> chronological audit trail of all transfer events.
+   * Bound in memory to MAX_AUDIT_LOG_PER_RESOURCE to prevent leaks.
+   */
+  private readonly auditLog = new Map<string, OwnershipTransferEvent[]>();
+  private readonly MAX_AUDIT_LOG_PER_RESOURCE = 1000;
 
   private key(resourceType: string, resourceId: string): string {
     return `${resourceType}:${resourceId}`;
+  }
+
+  private recordEvent(event: OwnershipTransferEvent): void {
+    const key = this.key(event.resourceType, event.resourceId);
+    let list = this.auditLog.get(key);
+    if (!list) {
+      list = [];
+      this.auditLog.set(key, list);
+    }
+    list.push({ ...event });
+    if (list.length > this.MAX_AUDIT_LOG_PER_RESOURCE) {
+      list.shift();
+    }
   }
 
   /** Seed the current owner of a resource (e.g. on resource creation). */
@@ -420,6 +451,56 @@ export class OwnershipTransferRegistry {
   getTransfer(id: string): OwnershipTransfer | null {
     const transfer = this.transfers.get(id);
     return transfer ? { ...transfer } : null;
+  }
+
+  /**
+   * Returns all transfer offers recorded for a given resource.
+   * O(k) where k is the number of historical transfers for the resource.
+   */
+  listTransfersForResource(resourceType: string, resourceId: string): OwnershipTransfer[] {
+    const key = this.key(resourceType, resourceId);
+    const ids = this.transfersByResource.get(key) ?? [];
+    const out: OwnershipTransfer[] = [];
+    for (const id of ids) {
+      const t = this.transfers.get(id);
+      if (t) out.push({ ...t });
+    }
+    return out;
+  }
+
+  /**
+   * Retrieves chronological audit history for a resource.
+   * Enforces authorization: if `options.actor` is specified, the actor must be
+   * current owner, past participant (from/to), or administrative/system caller.
+   */
+  getAuditHistory(
+    resourceType: string,
+    resourceId: string,
+    options: AuditHistoryOptions = {},
+  ): OwnershipTransferEvent[] {
+    const key = this.key(resourceType, resourceId);
+    const currentOwner = this.ownerOf(resourceType, resourceId);
+    const events = this.auditLog.get(key) ?? [];
+
+    if (options.actor) {
+      const actor = options.actor;
+      const isSystemOrAdmin = actor === "system" || actor === "admin";
+      const isCurrentOwner = currentOwner !== null && actor === currentOwner;
+      const isParticipant = events.some((e) => e.from === actor || e.to === actor);
+
+      if (!isSystemOrAdmin && !isCurrentOwner && !isParticipant) {
+        throw new OwnershipTransferError(
+          OWNERSHIP_TRANSFER_REASONS.FORBIDDEN_AUDIT,
+          `Actor ${actor} is not authorized to inspect audit history for ${resourceType}:${resourceId}.`,
+        );
+      }
+    }
+
+    const copy = events.map((e) => ({ ...e }));
+    if (options.limit && options.limit > 0) {
+      return copy.slice(-options.limit);
+    }
+    return copy;
   }
 
   /**
@@ -475,6 +556,15 @@ export class OwnershipTransferRegistry {
     const result = createOwnershipTransfer(params, ctx);
     this.transfers.set(result.transfer.id, result.transfer);
     this.pendingByResource.set(key, result.transfer.id);
+
+    let idList = this.transfersByResource.get(key);
+    if (!idList) {
+      idList = [];
+      this.transfersByResource.set(key, idList);
+    }
+    idList.push(result.transfer.id);
+
+    this.recordEvent(result.event);
     return result;
   }
 
@@ -492,6 +582,7 @@ export class OwnershipTransferRegistry {
     this.clearPending(result.transfer);
     // Settle ownership only after the pure machine accepts the action.
     this.owners.set(this.key(result.transfer.resourceType, result.transfer.resourceId), result.transfer.to);
+    this.recordEvent(result.event);
     return result;
   }
 
@@ -499,6 +590,7 @@ export class OwnershipTransferRegistry {
     const result = declineOwnershipTransfer(this.require(id), actor, ctx);
     this.transfers.set(id, result.transfer);
     this.clearPending(result.transfer);
+    this.recordEvent(result.event);
     return result;
   }
 
@@ -506,6 +598,7 @@ export class OwnershipTransferRegistry {
     const result = cancelOwnershipTransfer(this.require(id), actor, ctx);
     this.transfers.set(id, result.transfer);
     this.clearPending(result.transfer);
+    this.recordEvent(result.event);
     return result;
   }
 
@@ -523,6 +616,7 @@ export class OwnershipTransferRegistry {
     if (expired) {
       this.transfers.set(t.id, expired.transfer);
       this.pendingByResource.delete(key);
+      this.recordEvent(expired.event);
     }
   }
 
@@ -544,6 +638,7 @@ export class OwnershipTransferRegistry {
       if (expired) {
         this.transfers.set(t.id, expired.transfer);
         this.pendingByResource.delete(key);
+        this.recordEvent(expired.event);
         events.push(expired.event);
       }
     }

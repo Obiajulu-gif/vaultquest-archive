@@ -64,6 +64,16 @@ Stop paginating when `has_more` is `false`.
 list endpoints (`/actions`). They are still accessible to maintainers via the internal
 endpoints and are not removed from the audit trail.
 
+### Hidden and Archived Records Authorization (#1109)
+
+Visibility checks (`lib/visibility-checks.ts`) enforce multi-tenant isolation across all query surfaces:
+- **Public Archived Records**: Readable by all callers (including unauthenticated/public users). Mutations are strictly rejected (`409 ILLEGAL_TRANSITION`) as archived records are permanently immutable.
+- **Private Records & Private Archives**: Visible strictly to the resource owner (`ownerId === viewerId`) and system administrators (`viewerRole === 'admin'`). Non-owner access attempts receive `404 NOT_FOUND` to conceal record existence and prevent ID enumeration attacks.
+- **Restricted Records & Maintainer Archives**: Accessible to `maintainer` and `admin` roles, provided `includeArchived: true` is explicitly passed. Unprivileged requests receive `403 FORBIDDEN`.
+- **Deleted Records**: Fully hidden from public and owner queries. Accessible only to administrators in explicit audit contexts with `includeDeleted: true`.
+- **Transient Retries**: Ephemeral token expirations (`401 TOKEN_EXPIRED`) trigger automatic token refresh and retry (up to 3 attempts with exponential backoff) without losing the current pagination cursor.
+- **Multi-surface Consistency**: Guaranteed invariant that direct lookup, search indexing, batch export, and relational foreign-key resolution always produce consistent visibility subsets without metadata leaks.
+
 ### Status-filtered records
 
 The `status` query parameter on `/actions` matches the `ActionStatus` enum exactly.

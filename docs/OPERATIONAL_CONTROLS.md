@@ -3,10 +3,11 @@
 The repository exposes four small controls for safe contributor and production
 operations:
 
-- `pnpm diagnostics` checks Node, the package manager, installed node_modules, required local files,
-  and the public network setting. Add `-- --strict` in CI when failures must stop a
-  job. The command prints only pass/fail metadata and never environment values.
-- `lib/contributor-diagnostics.ts` provides diagnostic checks covering normal, failure, retry,
+- `pnpm diagnostics` (`scripts/contributor-diagnostics.mjs`, #1134) checks Node, the package manager, installed node_modules, required local files,
+  workspace project manifests, role authorization, and network configuration. Add `-- --strict` in CI when failures must stop a
+  job, or `-- --json` for machine-readable output. Use `-- --role <role>` (e.g. `maintainer`, `admin`) to verify protected diagnostic boundaries.
+  The command prints only pass/fail metadata and never environment values.
+- `lib/contributor-diagnostics.ts` provides pure diagnostic functions covering normal, failure, retry,
   and role-scoped authorization paths for local contributor setups and external dependencies.
 - `lib/rollout-guardrails.ts` requires the admin flag permission, records a
   bounded sample window, disables a rollout when its error budget is exceeded,

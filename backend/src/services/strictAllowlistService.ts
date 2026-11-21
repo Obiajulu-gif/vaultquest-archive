@@ -240,8 +240,8 @@ export function validateFileType(
   } catch {
     return { allowed: false, reason: "Filename contains malformed percent encoding", code: ERROR_CODES.FILE_TYPE_NOT_ALLOWED };
   }
-  if (decodedFilename.includes("/") || decodedFilename.includes("\\\\") || decodedFilename.includes("..") ||
-      /[\\u0000-\\u001F\\u007F-\\u009F]/.test(decodedFilename)) {
+  if (decodedFilename.includes("/") || decodedFilename.includes("\\") || decodedFilename.includes("..") ||
+      /[\u0000-\u001F\u007F-\u009F]/.test(decodedFilename)) {
     return { allowed: false, reason: "Encoded path traversal or control characters detected in filename", code: ERROR_CODES.FILE_TYPE_NOT_ALLOWED };
   }
 

@@ -228,6 +228,23 @@ export function validateFileType(
     return { allowed: false, reason: "Filename must be a non-empty string", code: ERROR_CODES.FILE_TYPE_NOT_ALLOWED };
   }
 
+  // Decode a bounded number of times so double-encoded separators cannot
+  // become path traversal after a downstream proxy or storage layer decodes.
+  let decodedFilename = rawFilename;
+  try {
+    for (let depth = 0; depth < 3; depth += 1) {
+      const next = decodeURIComponent(decodedFilename);
+      if (next === decodedFilename) break;
+      decodedFilename = next;
+    }
+  } catch {
+    return { allowed: false, reason: "Filename contains malformed percent encoding", code: ERROR_CODES.FILE_TYPE_NOT_ALLOWED };
+  }
+  if (decodedFilename.includes("/") || decodedFilename.includes("\\\\") || decodedFilename.includes("..") ||
+      /[\\u0000-\\u001F\\u007F-\\u009F]/.test(decodedFilename)) {
+    return { allowed: false, reason: "Encoded path traversal or control characters detected in filename", code: ERROR_CODES.FILE_TYPE_NOT_ALLOWED };
+  }
+
   // Null byte injection check
   if (rawFilename.includes("\0") || rawFilename.includes("%00")) {
     return { allowed: false, reason: "Filename contains null bytes", code: ERROR_CODES.FILE_TYPE_NOT_ALLOWED };

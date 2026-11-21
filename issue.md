@@ -325,3 +325,70 @@
 - `docs/release-readiness-checklist.md`
 
 
+---
+
+## #1120 – Implement security-event session invalidation
+
+**Problem:** Under Stellar SEP-10 web authentication and multi-device sessions, security events (key rotation, account compromise, admin forced logout, password change, recovery completion) left active sessions authorized until tokens naturally expired, risking unauthorized actions.
+
+**Resolution:**
+- Implemented `SecuritySessionManager` in `lib/security-session-invalidation.ts` with dual-layer invalidation: explicit session revocation timestamps and monotonic token version bumps that immediately invalidate stale tokens (`STALE_TOKEN_VERSION`).
+- Supported invalidation scopes (`all_sessions`, `all_except_current`, `single_session`).
+- Added tamper-evident `SecurityInvalidationReceipt` with SHA-256 digest computation.
+- Built idempotent retry handling via `idempotencyKey` and deterministic rollback preservation.
+- Enforced strict authorization boundaries (self vs maintainer/admin).
+- Added test suite in `tests/security-session-invalidation.test.ts` covering normal, failure, retry, and authorization paths.
+
+**Files changed:**
+- `lib/security-session-invalidation.ts`
+- `tests/security-session-invalidation.test.ts`
+
+---
+
+## #840 – Build deterministic record merge workflow with conflict resolution
+
+**Problem:** Duplicate or overlapping records in protocol accounting, saved pools, and user state lacked a safe, deterministic merge workflow with dry-run previews, conflict categorization, explicit resolution policies, auditable merge records, and forward redirection.
+
+**Resolution:**
+- Implemented `RecordMergeWorkflow` in `lib/record-merge-workflow.ts` with eligibility checks, conflict taxonomy (`VALUE_MISMATCH`, `TYPE_INCOMPATIBILITY`, `STATE_CONFLICT`, `OWNERSHIP_MISMATCH`), and dry-run preview (`previewMerge`).
+- Implemented explicit conflict resolution strategies (`target_wins`, `source_wins`, `field_by_field`) and strict mode validation.
+- Implemented immutable `MergeDecisionRecord` persistence, source record archiving with forward redirect pointers, and cycle-protected lookup resolution (`resolveRecordWithRedirect`).
+- Implemented cryptographic rollback patches and reversible rollback execution (`rollbackMerge`).
+- Added test suite in `tests/record-merge-workflow.test.ts` covering clean merge, conflicting merge, denied merge, rollback notes, and merged-record lookup.
+
+**Files changed:**
+- `lib/record-merge-workflow.ts`
+- `tests/record-merge-workflow.test.ts`
+
+---
+
+## #1072 – Add accessibility coverage for async error recovery
+
+**Problem:** Asynchronous transaction errors, network failures, and RPC timeouts lacked complete WCAG 2.1 AA accessibility coverage across keyboard navigation, assertive/polite live regions, focus restoration on recovery/unmount, diagnostic ID clipboard confirmation, and authorization handling for disconnected Stellar wallets.
+
+**Resolution:**
+- Created `AsyncErrorRecovery` in `components/app/AsyncErrorRecovery.jsx` with full dialog/alert ARIA semantics (`role="alert"`, `aria-labelledby`, `aria-describedby`), dynamic live region status updates, and `aria-busy` during active async operations.
+- Implemented focus management with primary action auto-focus, `previousFocusRef` restoration upon unmount, and keyboard navigation (`Tab`, `Shift+Tab`, `Enter`, `Escape`).
+- Implemented disconnected wallet authorization gating with assertive alert announcements and accessible reconnect triggers.
+- Integrated `usePrefersReducedMotion` to pause spinner animations for users with motion sensitivities.
+- Added comprehensive test suite in `app/tests/a11y-async-error-recovery.spec.tsx` covering normal, failure, retry, authorization, and reduced-motion paths.
+
+**Files changed:**
+- `components/app/AsyncErrorRecovery.jsx`
+- `app/tests/a11y-async-error-recovery.spec.tsx`
+
+---
+
+## #1073 – Build property tests for financial and ownership invariants
+
+**Problem:** Protocol safety required formal invariant verification across wide generative input spaces for financial conservation ($\sum \text{Debits} = \sum \text{Credits} + \text{Fee}$), solvency, pool capacity bounds, and two-phase ownership handovers without edge-case regressions.
+
+**Resolution:**
+- Built comprehensive property-based test suite in `tests/property-financial-ownership-invariants.test.ts`.
+- Verified financial conservation across 500+ randomized multi-party debits, credits, and fees, verifying that any non-zero perturbation $\delta \neq 0$ strictly throws `InvariantViolationError`.
+- Verified non-negativity and capacity bounds ($B + \Delta \le C_{\max}$) and liquidity solvency.
+- Formally verified the single-owner invariant ($\forall t, |\text{Owners}(R, t)| = 1$) across proposed, accepted, cancelled, declined, and expired handover lifecycles.
+- Verified authorization boundaries preventing third-party impersonation or self-transfers, and verified terminal state immobility.
+
+**Files changed:**
+- `tests/property-financial-ownership-invariants.test.ts`

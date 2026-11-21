@@ -24,6 +24,11 @@ export interface DependencyHealthDeps {
   rpcUrls?: string;
   fetch?: typeof fetch;
   timeoutMs?: number;
+  /** Number of bounded attempts for transient dependency failures. Defaults to 2. */
+  retries?: number;
+  /** Delay between attempts; injectable for deterministic tests. */
+  retryDelayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 import type { DegradedModeService } from "../services/degradedModeService.js";
@@ -205,20 +210,32 @@ type DependencyResult = {
 export async function checkDependencies(deps: DependencyHealthDeps) {
   const fetcher = deps.fetch ?? globalThis.fetch;
   const timeoutMs = deps.timeoutMs ?? 2500;
+  const retries = Math.max(0, Math.min(deps.retries ?? 1, 3));
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const runWithRetry = async <T>(run: () => Promise<T>): Promise<T> => {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try { return await run(); } catch (error) {
+        lastError = error;
+        if (attempt < retries) await sleep(Math.max(0, deps.retryDelayMs ?? 100));
+      }
+    }
+    throw lastError;
+  };
   const results = await Promise.all([
-    probe("database", true, async () => {
+    probe("database", true, () => runWithRetry(async () => {
       await deps.prisma.$queryRaw`SELECT 1`;
       return { status: "healthy" as const, remediation: "No action required." };
-    }),
-    probe("redis_cache", false, async () => {
+    })),
+    probe("redis_cache", false, () => runWithRetry(async () => {
       const client = deps.cacheService?.redisClient;
       if (!client) {
         return { status: "degraded" as const, remediation: "REDIS_URL is unset; caching uses its documented fallback." };
       }
       await client.ping();
       return { status: "healthy" as const, remediation: "No action required." };
-    }),
-    probe("soroban_rpc", true, async () => {
+    })),
+    probe("soroban_rpc", true, () => runWithRetry(async () => {
       const raw = deps.rpcUrls?.split(",").map((url) => url.trim()).filter(Boolean) ?? [];
       if (raw.length === 0) {
         return { status: "misconfigured" as const, remediation: "Configure SOROBAN_RPC_URL with at least one valid HTTPS RPC endpoint." };
@@ -255,7 +272,7 @@ export async function checkDependencies(deps: DependencyHealthDeps) {
         return { status: "degraded" as const, remediation: "Some configured RPC endpoints are unhealthy; inspect provider status and failover configuration." };
       }
       throw new Error("RPC endpoints are unhealthy");
-    }),
+    })),
   ]);
   const required = results.filter((item) => item.required);
   const status = required.some((item) => item.status === "unavailable" || item.status === "misconfigured")

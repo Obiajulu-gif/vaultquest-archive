@@ -82,6 +82,9 @@ pub mod proxy;
 pub mod strategy_adapter;
 pub mod vault;
 
+#[cfg(test)]
+pub mod fuzz_tests;
+
 // ── Lockup duration (ledgers, ~7 days at 5 s/ledger) ──────────────────────
 const LOCKUP_LEDGERS: u32 = 120_960;
 

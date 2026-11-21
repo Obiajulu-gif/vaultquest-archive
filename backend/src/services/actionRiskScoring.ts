@@ -69,6 +69,32 @@ export function assessActionRisk(action: RiskSignals): ActionRiskAssessment {
     });
   }
 
+  return summarize(factors);
+}
+
+/**
+ * Risk of a maintainer marking an in-flight action failed by hand (recovery
+ * resolve). The ledger stops tracking the action, so if its transaction
+ * already reached the chain it can still confirm and leave the ledger wrong.
+ */
+export function assessManualFailureRisk(action: { actionType: string; txHash: string | null }): ActionRiskAssessment {
+  const actionRisk = ACTION_RISK[action.actionType as ActionRecord["actionType"]];
+  const factors: ActionRiskAssessment["factors"] = [
+    actionRisk
+      ? { code: `action_type:${action.actionType}`, points: actionRisk.points, explanation: actionRisk.explanation }
+      : { code: "action_type:unknown", points: 25, explanation: `Unrecognised action type "${action.actionType}" is treated as high impact.` },
+  ];
+  if (action.txHash) {
+    factors.push({
+      code: "submitted_on_chain",
+      points: 30,
+      explanation: "A transaction hash was recorded, so the transaction may still confirm on-chain after the ledger marks it failed.",
+    });
+  }
+  return summarize(factors);
+}
+
+function summarize(factors: ActionRiskAssessment["factors"]): ActionRiskAssessment {
   const score = Math.min(100, factors.reduce((total, factor) => total + factor.points, 0));
   const level: ActionRiskLevel =
     score >= 75 ? "critical" : score >= 50 ? "high" : score >= 25 ? "elevated" : "low";

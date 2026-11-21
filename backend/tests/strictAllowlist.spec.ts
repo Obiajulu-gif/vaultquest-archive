@@ -172,6 +172,7 @@ describe("Strict Allow-List Validation (#990)", () => {
         "report%5c..%5csecret.csv",
         "%252e%252e%255csecret.csv",
         "safe%00.json",
+        "%2525252e%2525252e%2525255csecret.csv",
       ]) {
         expect(validateFileType(filename).allowed).toBe(false);
       }

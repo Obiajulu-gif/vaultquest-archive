@@ -24,7 +24,7 @@ export interface DependencyHealthDeps {
   rpcUrls?: string;
   fetch?: typeof fetch;
   timeoutMs?: number;
-  /** Number of bounded attempts for transient dependency failures. Defaults to 2. */
+  /** Number of bounded attempts for transient dependency failures. Defaults to one retry (two attempts). */
   retries?: number;
   /** Delay between attempts; injectable for deterministic tests. */
   retryDelayMs?: number;

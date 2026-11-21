@@ -6,7 +6,7 @@
  */
 
 import { ERROR_CODES, type ErrorCode } from "./constants.js";
-import { describeError, toUserSafeError, type ErrorCategory } from "./errorTaxonomy.js";
+import { describeError, toUserSafeError, isKnownErrorCode, type ErrorCategory } from "./errorTaxonomy.js";
 
 export const PROBLEM_DETAILS_CONTENT_TYPE = "application/problem+json";
 export const PROBLEM_TYPE_BASE_URI = "https://api.vaultquest.io/errors";
@@ -93,12 +93,14 @@ export function formatProblemDetails(
   statusCode: number,
   opts: FormatProblemDetailsOptions
 ): ProblemDetails {
-  const safe = toUserSafeError(code, statusCode, opts.message);
-  const descriptor = describeError(code);
+  const stableCode = problemCode(code, statusCode);
+  const safe = toUserSafeError(stableCode, statusCode, isKnownErrorCode(code) ? opts.message : undefined);
+  const descriptor = describeError(stableCode);
   const title = CATEGORY_TITLES[safe.category] || "API Problem";
   const typeUri = `${PROBLEM_TYPE_BASE_URI}/${safe.code}`;
   const instanceUri = opts.instance || `/errors/${safe.code}/${opts.errorId}`;
-  const invalidParams = extractInvalidParams(opts.issues);
+  const exposeExtensions = statusCode < 500 && descriptor.exposeMessage;
+  const invalidParams = exposeExtensions ? extractInvalidParams(opts.issues) : undefined;
 
   return {
     type: typeUri,
@@ -113,6 +115,30 @@ export function formatProblemDetails(
     error_id: opts.errorId,
     timestamp: opts.timestamp || new Date().toISOString(),
     ...(invalidParams ? { invalid_params: invalidParams } : {}),
-    ...(opts.details !== undefined ? { details: opts.details } : {})
+    ...(exposeExtensions && opts.details !== undefined ? { details: opts.details } : {})
   };
+}
+
+/** Only explicit opt-in selects the new representation. Wildcards retain JSON. */
+export function acceptsProblemDetails(accept: string | undefined): boolean {
+  const quality = new Map<string, number>();
+  for (const entry of (accept ?? "").split(",")) {
+    const [media, ...params] = entry.trim().toLowerCase().split(";");
+    const qParam = params.map((p) => p.trim()).find((p) => p.startsWith("q="));
+    const q = qParam === undefined ? 1 : Number(qParam.slice(2));
+    if (media) quality.set(media, Number.isFinite(q) && q >= 0 && q <= 1 ? q : 0);
+  }
+  const problem = quality.get("application/problem+json") ?? 0;
+  return problem > 0 && problem >= (quality.get("application/json") ?? 0);
+}
+
+/** Framework-specific codes are intentionally not part of the public taxonomy. */
+export function problemCode(code: string, status: number): string {
+  if (isKnownErrorCode(code) && code !== ERROR_CODES.HTTP_ERROR) return code;
+  if (status === 401) return ERROR_CODES.UNAUTHORIZED;
+  if (status === 403) return ERROR_CODES.FORBIDDEN;
+  if (status === 404) return ERROR_CODES.NOT_FOUND;
+  if (status === 409) return ERROR_CODES.CONFLICT;
+  if (status === 429) return ERROR_CODES.RATE_LIMIT_EXCEEDED;
+  return status >= 500 ? ERROR_CODES.INTERNAL : ERROR_CODES.HTTP_ERROR;
 }

@@ -338,7 +338,7 @@ function maxRisk(a: PolicyRiskLevel, b: PolicyRiskLevel): PolicyRiskLevel {
 export function simulatePolicyChange(
   request: PolicyChangeRequest,
   impact: PolicyImpactMeasurement | null,
-  options: { impactError?: string } = {},
+  options: { impactError?: string; policyError?: string } = {},
 ): PolicyChangePreview {
   const spec = getPolicySpec(request.policyId);
 
@@ -363,6 +363,9 @@ export function simulatePolicyChange(
   }
 
   const issues: PolicyValidationIssue[] = [];
+  if (options.policyError) {
+    issues.push({ field: "policy", message: options.policyError });
+  }
   if (request.from !== spec.current) {
     issues.push({
       field: "stale",
@@ -453,10 +456,22 @@ export async function createPolicyPreview(
   const author = options.author ?? "maintainer";
 
   const changes: PolicyChangePreview[] = [];
+  const requestCounts = new Map<string, number>();
+  for (const request of requests) {
+    requestCounts.set(request.policyId, (requestCounts.get(request.policyId) ?? 0) + 1);
+  }
   for (const request of requests) {
     const spec = getPolicySpec(request.policyId);
     if (!spec) {
       changes.push(simulatePolicyChange(request, null));
+      continue;
+    }
+    if ((requestCounts.get(request.policyId) ?? 0) > 1) {
+      changes.push(
+        simulatePolicyChange(request, null, {
+          policyError: `Policy "${request.policyId}" appears more than once; submit one final change per policy.`,
+        }),
+      );
       continue;
     }
     try {

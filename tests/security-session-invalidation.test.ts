@@ -5,7 +5,7 @@ import {
   computeReceiptDigest,
 } from "../lib/security-session-invalidation";
 
-describe("Security-Event Session Invalidation (#1120)", () => {
+describe("Security-Event Session Invalidation (#1120, #1168)", () => {
   let manager: SecuritySessionManager;
 
   const USER_ALICE = "G_ALICE_WALLET_ADDRESS_7193";
@@ -209,6 +209,38 @@ describe("Security-Event Session Invalidation (#1120)", () => {
           idempotencyKey,
         })
       ).rejects.toThrow("Idempotency key already used for a different invalidation request");
+    });
+
+    it("rejects reuse when the invalidation scope changes", async () => {
+      const current = manager.createSession({ principalId: USER_ALICE });
+      const idempotencyKey = "idem_scope_change";
+      await manager.invalidateOnSecurityEvent({
+        targetPrincipalId: USER_ALICE,
+        event: "password_change",
+        scope: "all_sessions",
+        actor: { principalId: USER_ALICE, role: "user" },
+        idempotencyKey,
+      });
+      const versionAfterFirst = manager.getTokenVersion(USER_ALICE);
+
+      await expect(manager.invalidateOnSecurityEvent({
+        targetPrincipalId: USER_ALICE,
+        event: "password_change",
+        scope: "all_except_current",
+        currentSessionId: current.sessionId,
+        actor: { principalId: USER_ALICE, role: "user" },
+        idempotencyKey,
+      })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT", statusCode: 409 });
+      expect(manager.getTokenVersion(USER_ALICE)).toBe(versionAfterFirst);
+    });
+
+    it("requires a real in-scope session for scoped invalidation", async () => {
+      await expect(manager.invalidateOnSecurityEvent({
+        targetPrincipalId: USER_ALICE,
+        event: "password_change",
+        scope: "all_except_current",
+        actor: { principalId: USER_ALICE, role: "user" },
+      })).rejects.toMatchObject({ code: "SESSION_NOT_FOUND", statusCode: 404 });
     });
   });
 

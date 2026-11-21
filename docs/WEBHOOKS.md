@@ -1,4 +1,4 @@
-# Signed Webhook Verification & Replay-Window Enforcement (#799)
+# Signed Webhook Verification, Replay Prevention, and Deduplication (#799, #1165)
 
 ## Overview
 
@@ -94,6 +94,11 @@ When a duplicate webhook delivery arrives:
 2. The endpoint returns `200 OK` with `{ status: "processed", duplicate: true, result: cachedResponse }`.
 3. Side-effect handlers (e.g. prize distribution, vault settlement) are NOT re-executed.
 
+The duplicate must also have the same canonical payload hash. Reusing a
+processed `(provider, eventId)` with a different signed payload is rejected
+with `IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD` (`409`) and never returns
+the cached success response.
+
 ---
 
 ## Error Taxonomy Mapping
@@ -107,6 +112,7 @@ When a duplicate webhook delivery arrives:
 | `WEBHOOK_EVENT_MALFORMED` | `400` | `validation` | Body is invalid JSON or missing required fields |
 | `WEBHOOK_PROVIDER_UNSUPPORTED` | `400` | `validation` | Unknown provider route parameter |
 | `WEBHOOK_DUPLICATE_EVENT` | `409` | `conflict` | Concurrent duplicate event processing race |
+| `IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD` | `409` | `conflict` | Provider/event identity reused with different payload contents |
 
 ---
 

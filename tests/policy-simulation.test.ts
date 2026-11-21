@@ -133,6 +133,21 @@ describe("single-change simulation", () => {
 });
 
 describe("full preview", () => {
+  it("blocks duplicate policy changes instead of double-counting their affected records", async () => {
+    const measure = vi.fn(() => measurement());
+    const duplicate = { policyId: "featureFlag.rolloutPercent", from: 0, to: 10 };
+    const preview = await createPolicyPreview([duplicate, { ...duplicate, to: 20 }], { measure }, {
+      createdAt: CREATED_AT,
+    });
+
+    expect(measure).not.toHaveBeenCalled();
+    expect(preview.changes).toHaveLength(2);
+    expect(preview.changes.every((change) => change.state === "blocked")).toBe(true);
+    expect(preview.changes.every((change) => change.issues.some((issue) => issue.field === "policy"))).toBe(true);
+    expect(preview.summary).toMatchObject({ blocked: 2, totalAffectedRecords: 0, totalAffectedUsers: 0 });
+    expect(() => preparePolicyApplication(preview, { confirmedToken: preview.confirmationToken })).toThrow(/blocked/i);
+  });
+
   it("produces a deterministic preview with a confirmation token bound to impact", async () => {
     const requests = [
       { policyId: "notifications.optionalMuteDefaultDays", from: 0, to: 3 },

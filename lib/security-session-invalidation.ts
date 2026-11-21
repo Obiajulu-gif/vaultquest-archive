@@ -143,7 +143,10 @@ export class SecuritySessionManager {
   private sessions = new Map<string, SessionRecord>();
   private principalSessions = new Map<string, Set<string>>();
   private tokenVersions = new Map<string, number>();
-  private idempotencyStore = new Map<string, SecurityInvalidationReceipt>();
+  private idempotencyStore = new Map<
+    string,
+    { fingerprint: string; receipt: SecurityInvalidationReceipt }
+  >();
 
   /**
    * Register a new active session for a principal.
@@ -235,21 +238,30 @@ export class SecuritySessionManager {
       throw new SecurityInvalidationError("INVALID_INPUT", "Target principal ID is required");
     }
 
+    if (req.scope === "all_except_current" || req.scope === "single_session") {
+      const scopedSessionId = req.scope === "all_except_current" ? req.currentSessionId : req.targetSessionId;
+      const scopedSession = scopedSessionId ? this.sessions.get(scopedSessionId) : undefined;
+      if (!scopedSession || scopedSession.principalId !== req.targetPrincipalId) {
+        throw new SecurityInvalidationError(
+          "SESSION_NOT_FOUND",
+          `A valid session for scope "${req.scope}" is required.`,
+          404,
+        );
+      }
+    }
+
     // 3. Retry / Idempotency Check
     if (req.idempotencyKey) {
       const existing = this.idempotencyStore.get(req.idempotencyKey);
       if (existing) {
-        if (
-          existing.targetPrincipalId !== req.targetPrincipalId ||
-          existing.event !== req.event
-        ) {
+        if (existing.fingerprint !== this.invalidationFingerprint(req)) {
           throw new SecurityInvalidationError(
             "IDEMPOTENCY_CONFLICT",
             "Idempotency key already used for a different invalidation request",
             409
           );
         }
-        return existing;
+        return existing.receipt;
       }
     }
 
@@ -324,7 +336,10 @@ export class SecuritySessionManager {
       };
 
       if (req.idempotencyKey) {
-        this.idempotencyStore.set(req.idempotencyKey, receipt);
+        this.idempotencyStore.set(req.idempotencyKey, {
+          fingerprint: this.invalidationFingerprint(req),
+          receipt,
+        });
       }
 
       return receipt;
@@ -364,6 +379,21 @@ export class SecuritySessionManager {
         403
       );
     }
+  }
+
+  /** Bind retries to the complete security intent while ignoring retry timestamps. */
+  private invalidationFingerprint(req: SecurityInvalidationRequest): string {
+    const intent = [
+      req.targetPrincipalId,
+      req.event,
+      req.scope,
+      req.currentSessionId ?? null,
+      req.targetSessionId ?? null,
+      req.actor.principalId,
+      req.actor.role,
+      req.reasonDetail ?? null,
+    ];
+    return crypto.createHash("sha256").update(JSON.stringify(intent)).digest("hex");
   }
 
   /**

@@ -125,6 +125,12 @@ Actions run; retain it with the release record.
 - [ ] The disposable-database rehearsal creates a custom-format PostgreSQL
   backup, verifies the archive, restores it into a separate empty database, and
   compares the applied migration history.
+- [ ] The rehearsal's recovery evidence (`--evidence-out recovery-evidence.json`)
+  is embedded in the release evidence as `checks.rollback.recovery`: the backup
+  archive's SHA-256, the restored migration names, and the number of tables whose
+  row counts matched. The gate (`release-readiness.cjs`, evidence `schemaVersion`
+  2) refuses the release unless every directory in `backend/prisma/migrations`
+  appears among the restored migrations.
 - [ ] The change has a documented rollback or forward-fix plan. Database
   migrations are not assumed to be reversible; restore a verified pre-change
   backup for destructive data loss, otherwise prefer a forward fix.
@@ -169,6 +175,16 @@ Actions run; retain it with the release record.
   target with public tables, views, sequences, functions, or custom types is
   refused; the rehearsal resets only the blank `public` schema in its
   explicitly named local `_rollback_test` database before restoring.
+- Recovery evidence that is missing, unreadable, or does not list a migration
+  shipped in the release blocks the release: the restore did not prove that
+  migration can be recovered. Rerun the workflow on the release tag; never edit
+  `recovery-evidence.json` by hand. The rehearsal writes the file only after
+  every comparison passes and refuses to overwrite an existing one, so a failed
+  or partial rehearsal leaves no evidence behind.
+- Evidence written before this gate existed (`schemaVersion` 1, no recovery
+  section) is rejected. Evidence is produced and validated in the same workflow
+  run, so no migration of stored artifacts is needed; older artifacts stay as
+  historical records only.
 - A database backup restore rolls application data/schema back together; it may
   discard writes after the backup. Freeze writes and assess recovery point
   objectives before restoring production. Replay chain-derived state from

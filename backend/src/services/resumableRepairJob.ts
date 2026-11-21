@@ -405,6 +405,7 @@ export class ResumableRepairEngine {
       cp.status = "cancelled";
       cp.updatedAt = new Date().toISOString();
       await this.checkpointStore.save(cp);
+      this.cancelFlags.delete(jobId);
     }
     return this.checkpointStore.get(jobId);
   }

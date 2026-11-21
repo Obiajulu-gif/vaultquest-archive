@@ -53,6 +53,25 @@ export function parseScopeString(scope: string): FeatureFlagScope | null {
 }
 
 /**
+ * Emergency-disable latch, stored on a flag row as `metadata.emergency` by
+ * FeatureFlagRolloutGuard.emergencyDisable(). While it is set the flag reads
+ * as disabled whatever `enabled` says, so a stale writer cannot turn it back on.
+ */
+export interface EmergencyDisable {
+  disabledAt: string;
+  disabledBy: string;
+  reason: string;
+  /** Stored value when the latch was set, kept for the incident record. */
+  previousEnabled: boolean;
+}
+
+export function emergencyDisableOf(metadata: unknown): EmergencyDisable | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const latch = (metadata as Record<string, unknown>).emergency;
+  return latch && typeof latch === "object" ? (latch as EmergencyDisable) : null;
+}
+
+/**
  * Service for runtime feature flag resolution with database caching.
  * Falls back to safe defaults (disabled) when configuration is missing.
  */
@@ -95,7 +114,8 @@ export class FeatureFlagService {
         },
       });
 
-      const enabled = flag?.enabled ?? false; // Safe default: disabled
+      // Safe default: disabled. An emergency latch wins over the stored value.
+      const enabled = (flag?.enabled ?? false) && !emergencyDisableOf(flag?.metadata);
       this.flagCache.set(cacheKey, { enabled, timestamp: Date.now() });
       return enabled;
     } catch (err) {

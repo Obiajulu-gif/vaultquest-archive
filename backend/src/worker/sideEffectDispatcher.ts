@@ -82,10 +82,13 @@ export class SideEffectDispatcher {
       throw new NonRetryableJobError("invalid side effect key or type", "INVALID_PAYLOAD");
     }
     return withTelemetry({ operation: "side_effect.dispatch", actorType: "worker", detail: spec.type }, async () => {
+      // A per-attempt token fences stale executions even when the same worker
+      // instance reclaims an expired lease while its earlier call is still running.
+      const claimOwner = `${this.owner}:${randomUUID()}`;
       const { claimed, record } = await this.ledger.begin({
         key: spec.key,
         type: spec.type,
-        owner: this.owner,
+        owner: claimOwner,
         now: this.now(),
         leaseMs: this.leaseMs
       });
@@ -99,12 +102,12 @@ export class SideEffectDispatcher {
       try {
         result = await effect();
       } catch (err) {
-        if (!(await this.ledger.fail(spec.key, this.owner, errorCode(err), this.now()))) {
+        if (!(await this.ledger.fail(spec.key, claimOwner, errorCode(err), this.now()))) {
           this.logger?.warn({ effect_type: spec.type }, "side effect failed but its claim was lost; another worker owns it now");
         }
         throw err;
       }
-      if (!(await this.ledger.complete(spec.key, this.owner, result, this.now()))) {
+      if (!(await this.ledger.complete(spec.key, claimOwner, result, this.now()))) {
         this.logger?.warn({ effect_type: spec.type }, "side effect ran but its claim was lost; the new owner may repeat it");
       }
       return { status: "executed" as const, result, attempt: record.attempts };

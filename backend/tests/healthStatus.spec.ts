@@ -156,6 +156,18 @@ describe("checkDependencies — Issue #992 dependency-aware status", () => {
     expect(JSON.stringify(report)).not.toMatch(/secret|private-host/);
   });
 
+  it("does not retry deterministic invalid RPC configuration", async () => {
+    const sleep = vi.fn(async () => undefined);
+    const report = await checkDependencies(makeDeps({
+      rpcUrls: "not-a-valid-url",
+      retries: 3,
+      retryDelayMs: 0,
+      sleep,
+    }));
+    expect(report.status).toBe("unavailable");
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
   it("returns healthy when all three dependencies respond positively", async () => {
     const report = await checkDependencies(makeDeps());
     expect(report.status).toBe("healthy");

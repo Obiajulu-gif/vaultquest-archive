@@ -166,6 +166,23 @@ describe("Strict Allow-List Validation (#990)", () => {
       expect(res2.allowed).toBe(false);
     });
 
+    it("rejects encoded and double-encoded path separators and traversal", () => {
+      for (const filename of [
+        "report%2f..%2fsecret.json",
+        "report%5c..%5csecret.csv",
+        "%252e%252e%255csecret.csv",
+        "safe%00.json",
+      ]) {
+        expect(validateFileType(filename).allowed).toBe(false);
+      }
+    });
+
+    it("rejects malformed percent encoding instead of passing it downstream", () => {
+      const result = validateFileType("report%2.json");
+      expect(result.allowed).toBe(false);
+      if (!result.allowed) expect(result.reason).toContain("malformed percent encoding");
+    });
+
     it("detects and rejects null byte injections", () => {
       const res1 = validateFileType("legit.csv\0.exe");
       expect(res1.allowed).toBe(false);

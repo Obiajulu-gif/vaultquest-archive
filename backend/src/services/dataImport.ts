@@ -2,11 +2,25 @@ import { AppError } from "../errors.js";
 import { savedPoolRecord } from "../schemas/savedPools.js";
 import type { SavedPoolInput, SavedPoolRecord } from "./savedPools.js";
 import { randomUUID } from "node:crypto";
-import { provenanceManager } from "../../../lib/record-provenance.js";
+import {
+  provenanceManager,
+  type CryptographicProvenanceProof,
+  type ProvenanceVerificationResult,
+  type RecordProvenance,
+} from "../../../lib/record-provenance.js";
 
 /** Supported import format version (matches the `saved_pools` export section). */
 export const IMPORT_FORMAT_VERSION = "1.0.0";
 export const IMPORT_MAX_ROWS = 1000;
+
+export interface ProvenanceCryptoConfig {
+  /** Active signing key identifier (supports key rotation). */
+  keyId: string;
+  /** Active HMAC-SHA256 signing secret. */
+  signingSecret: string;
+  /** Optional map of historical keyId -> secret for verifying rotated records. */
+  verificationKeys?: Record<string, string>;
+}
 
 /** Narrow port over SavedPoolsService so dry runs can be proven write-free. */
 export interface ImportTarget {
@@ -21,8 +35,10 @@ export type ImportRowResult = {
   index: number;
   pool_id: string | null;
   action: ImportRowAction;
-  reason?: "unchanged" | "duplicate_in_file" | "invalid" | "write_failed" | "cancelled";
+  reason?: "unchanged" | "duplicate_in_file" | "invalid" | "write_failed" | "provenance_failed" | "cancelled";
   errors?: string[];
+  /** Cryptographic provenance proof attached when signing is configured. */
+  provenance_proof?: CryptographicProvenanceProof;
 };
 
 export type ImportReport = {
@@ -32,6 +48,8 @@ export type ImportReport = {
   wallet: string;
   cancelled?: boolean;
   cancellation_reason?: string;
+  /** True when cryptographic provenance signing was enabled for this run. */
+  provenance_signed?: boolean;
   summary: { total: number; create: number; update: number; skip: number; error: number };
   rows: ImportRowResult[];
   /** Present after a committed run: exactly how to undo it. */
@@ -114,7 +132,38 @@ function projectRecord(r: SavedPoolRecord) {
 export class DataImportService {
   private readonly activeControllers = new Map<string, AbortController>();
 
-  constructor(private readonly target: ImportTarget) {}
+  constructor(
+    private readonly target: ImportTarget,
+    private readonly provenanceCrypto?: ProvenanceCryptoConfig,
+  ) {}
+
+  /**
+   * Verify cryptographic provenance for an imported saved-pool record using
+   * the configured signing keyring.
+   */
+  verifyProvenance(input: {
+    recordId: string;
+    provenance?: RecordProvenance;
+    payload?: unknown;
+    expectedActor?: string;
+    allowLegacyUnsigned?: boolean;
+  }): ProvenanceVerificationResult {
+    const keys: Record<string, string> = {
+      ...(this.provenanceCrypto?.verificationKeys ?? {}),
+    };
+    if (this.provenanceCrypto?.keyId && this.provenanceCrypto.signingSecret) {
+      keys[this.provenanceCrypto.keyId] = this.provenanceCrypto.signingSecret;
+    }
+    return provenanceManager.verifyCryptographicProvenance(
+      { id: input.recordId, provenance: input.provenance },
+      {
+        payload: input.payload,
+        keys,
+        expectedActor: input.expectedActor,
+        allowLegacyUnsigned: input.allowLegacyUnsigned,
+      },
+    );
+  }
 
   registerActiveController(batchId: string, controller: AbortController): void {
     this.activeControllers.set(batchId, controller);
@@ -207,13 +256,51 @@ export class DataImportService {
         rows[index] = { index, pool_id: parsed.pool_id, action };
         continue;
       }
+      let poolInput: SavedPoolInput;
+      let provenanceProof: CryptographicProvenanceProof | undefined;
       try {
-        const poolInput = toInput(wallet, parsed);
-        poolInput.provenance = provenanceManager.attachImportProvenance(
-          { id: parsed.pool_id }, importBatchId, IMPORT_FORMAT_VERSION, wallet,
-        ).provenance;
+        poolInput = toInput(wallet, parsed);
+        if (this.provenanceCrypto) {
+          const signed = provenanceManager.attachCryptographicImportProvenance(
+            { id: parsed.pool_id },
+            {
+              importBatchId,
+              transformVersion: IMPORT_FORMAT_VERSION,
+              actor: wallet,
+              payload: parsed,
+              signingSecret: this.provenanceCrypto.signingSecret,
+              keyId: this.provenanceCrypto.keyId,
+            },
+          );
+          poolInput.provenance = signed.provenance;
+          provenanceProof = signed.provenance.cryptographicProof;
+        } else {
+          poolInput.provenance = provenanceManager.attachImportProvenance(
+            { id: parsed.pool_id },
+            importBatchId,
+            IMPORT_FORMAT_VERSION,
+            wallet,
+          ).provenance;
+        }
+      } catch {
+        rows[index] = {
+          index,
+          pool_id: parsed.pool_id,
+          action: "error",
+          reason: "provenance_failed",
+          errors: ["Failed to generate cryptographic provenance for imported record"],
+        };
+        continue;
+      }
+
+      try {
         await this.target.savePool(poolInput);
-        rows[index] = { index, pool_id: parsed.pool_id, action };
+        rows[index] = {
+          index,
+          pool_id: parsed.pool_id,
+          action,
+          ...(provenanceProof ? { provenance_proof: provenanceProof } : {}),
+        };
         if (prior) restore.push(projectRecord(prior));
         else created.push(parsed.pool_id);
       } catch {
@@ -239,6 +326,7 @@ export class DataImportService {
       wallet,
       cancelled: isCancelled,
       ...(isCancelled ? { cancellation_reason: "Import cancelled by client request" } : {}),
+      ...(this.provenanceCrypto ? { provenance_signed: true } : {}),
       summary,
       rows,
       ...(dryRun ? {} : { rollback: { delete_pool_ids: created, restore_records: restore } }),

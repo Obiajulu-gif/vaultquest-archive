@@ -329,19 +329,27 @@ export class RetentionEnforcementEngine {
       );
     }
 
-    const existingCert = this.certificatesByRunId.get(params.runId);
-    if (existingCert && existingCert.verified) {
-      return existingCert;
+    const previousCert = this.certificatesByRunId.get(params.runId);
+    if (previousCert?.verified) {
+      return previousCert;
     }
 
     const now = params.now ?? Date.now();
     const evictSecondary = params.evictSecondary ?? true;
+    // On a retry of a failed run, recheck the records that run already purged.
+    // Do not pull tombstones from unrelated older runs into this certificate.
+    const retryIds = new Set(previousCert?.purgedIds ?? []);
     const purgedIds: string[] = [];
     const skippedLegalHoldIds: string[] = [];
 
     for (const [id, rec] of this.records.entries()) {
+      if (previousCert) {
+        if (rec.state === RETENTION_RECORD_STATES.PURGED && retryIds.has(id)) {
+          purgedIds.push(id);
+        }
+        continue;
+      }
       if (rec.state === RETENTION_RECORD_STATES.PURGED) {
-        purgedIds.push(id);
         continue;
       }
       if (rec.state !== RETENTION_RECORD_STATES.QUARANTINED) continue;

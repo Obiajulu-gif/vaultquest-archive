@@ -835,6 +835,13 @@ export class WebhookService {
 
     if (!claim.claimed && claim.existing) {
       // Event was already registered
+      if (claim.existing.payloadHash !== verified.payloadHash) {
+        throw AppError.conflict(
+          ERROR_CODES.IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD,
+          `Webhook event ID ${verified.eventId} was reused with a different payload`,
+        );
+      }
+
       if (claim.existing.status === "processed") {
         return {
           duplicate: true,

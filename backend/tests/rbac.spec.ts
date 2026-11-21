@@ -13,6 +13,7 @@ import { reconciliationRoutes } from "../src/routes/reconciliation.js";
 import { receiptsRoutes } from "../src/routes/receipts.js";
 import { recoveryRoutes } from "../src/routes/recovery.js";
 import { auditTrailRoutes } from "../src/routes/auditTrail.js";
+import { permissionMatrixPreviewRoutes } from "../src/routes/permissionMatrixPreview.js";
 import { operationLimitsRoutes } from "../src/routes/operationLimits.js";
 import { featureFlagRolloutRoutes } from "../src/routes/featureFlagRollouts.js";
 import { FeatureFlagRolloutGuard, InMemoryFlagRolloutStore } from "../src/services/featureFlagRollout.js";
@@ -65,6 +66,7 @@ function buildApp(): FastifyInstance {
   const app = Fastify();
   app.setErrorHandler(errorHandler as any);
   const wallet = walletSessionResolver(walletAuth, [ADMIN]);
+  app.register(permissionMatrixPreviewRoutes(requirePermission("admin.permissions.preview", [wallet])));
   app.register(
     auditRoutes(auditSvc as any, {
       read: requirePermission("admin.audit.read", [wallet]),
@@ -141,6 +143,7 @@ const auditBody = { parameter_name: "fee", previous_value: 1, new_value: 2, acto
 
 /** Every privileged route and the credential family that may call it. */
 const ADMIN_ROUTES = [
+  { method: "POST", url: "/admin/permissions/matrix-preview", permission: "admin.permissions.preview", payload: { roles: { user: [] } } },
   { method: "GET", url: "/admin/audit", permission: "admin.audit.read" },
   { method: "POST", url: "/admin/audit", permission: "admin.audit.write", payload: auditBody },
   { method: "GET", url: "/admin/audit/export", permission: "admin.audit.export" },

@@ -1,16 +1,20 @@
-# Signed Audit Receipts for Privileged Actions (#1065)
+# Signed Audit Receipts for Administrative Changes
 
-## Overview
-`src/lib/signed-audit-receipts.mjs` issues and verifies Ed25519-signed audit receipts for privileged operations (`role_grant`, `role_revoke`, `config_change`, `repair_execute`, `key_rotation`, `emergency_pause`), preserving the canonical JSON and domain-separation contract from `backend/src/services/receipts.ts`.
+`lib/signed-audit-receipts.ts` provides cryptographically signed, hash-chained receipts for every administrative configuration or state change.
 
-## Cryptographic & Payload Contract
-- **Domain separation**: `vaultquest-receipt:v1\n` + canonical JSON payload (sorted keys).
-- **Deterministic ID**: `receiptId = sha256(actionId + ":" + stage)`.
-- **Privacy**: Raw privileged `params` are never stored in the receipt; `requestDigest` commits to the canonical request via SHA-256.
+## Receipt Format & Hash Chain
 
-## Authorization
-- Issuing receipts requires `admin` or `security_officer` role (or `audit:issue` scope). Unauthorized callers fail with `AuditReceiptAuthorizationError` (`AUDIT_RECEIPT_UNAUTHORIZED`, HTTP 403).
+1. **Canonical digest (`payloadHash`)**:
+   - Computed with SHA-256 over recursively key-sorted canonical JSON (`canonicalizeJson`), covering `receiptId`, `sequence`, `prevReceiptHash`, `changeId`, `actor`, `actorRole`, `action`, `targetType`, `targetId`, `beforeState`, `afterState`, `reason`, `issuedAt`, `keyId`, and optional `rollbackOfReceiptId`.
+2. **Cryptographic signature (`signature`)**:
+   - HMAC-SHA256 over `payloadHash` under `keyRing.keys[keyRing.activeKeyId]`, verified in constant time via `timingSafeEqual`.
+3. **Key rotation**:
+   - `SignedAuditReceiptLedger.rotateSigningKey` promotes a new `activeKeyId` while preserving historical keys in `keyRing.keys` so older receipts in the chain remain verifiable.
+4. **Idempotent retry (`changeId`)**:
+   - Re-submitting the same `changeId` with identical intent returns the original receipt (`deduplicatedRetry: true`) without advancing `sequence`. Re-using `changeId` for a different mutation fails with `AUDIT_RECEIPT_CONFLICTING_CHANGE_ID`.
+5. **Verified rollback (`rollbackReceipt`)**:
+   - Verifies the target receipt's signature first, then appends a new signed receipt with `beforeState` and `afterState` inverted and `rollbackOfReceiptId` linked.
 
-## Failure, Retry & Verification
-- **Idempotency / Retry**: `InMemoryAuditReceiptStore.insertIfAbsent` deduplicates by `receiptId` so duplicate/retried requests return the exact original envelope (`created: false`). Transient persistence errors are retried up to `maxRetries` before throwing `RECEIPT_PERSISTENCE_FAILED`.
-- **Tamper detection**: `verifyAuditReceipt(envelope, publicKeyPem)` checks algorithm/domain, `receiptId` derivation, `payloadDigest`, and the Ed25519 signature, returning structured failure reasons (`PAYLOAD_DIGEST_MISMATCH`, `INVALID_SIGNATURE`, `RECEIPT_ID_MISMATCH`).
+## Migration Plan
+
+Persist receipts in an append-only `admin_audit_receipts` table with unique constraints on `sequence` and `change_id`. Existing `services/adminConfig.ts` writes can emit receipts into the ledger without changing their public return types.

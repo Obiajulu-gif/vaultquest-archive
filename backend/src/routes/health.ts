@@ -217,6 +217,8 @@ export async function checkDependencies(deps: DependencyHealthDeps) {
     for (let attempt = 0; attempt <= retries; attempt += 1) {
       try { return await run(); } catch (error) {
         lastError = error;
+        // Invalid configuration is deterministic; retrying cannot repair it.
+        if ((error as { dependencyStatus?: string })?.dependencyStatus === "misconfigured") throw error;
         if (attempt < retries) await sleep(Math.max(0, deps.retryDelayMs ?? 100));
       }
     }

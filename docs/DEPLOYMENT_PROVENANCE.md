@@ -111,3 +111,59 @@ Scoped out of this PR — see #511 for the full design:
   deciding a rollout window (see the original proposal's compatibility
   note) so currently-deployed contracts aren't locked out before they have
   a recorded manifest entry.
+
+## Param-bound enforcement at the contract edge (#649)
+
+Administrative parameter changes on the settings page are simulated and
+never written directly — they route through governance proposals. The
+`vault-factory` contract enforces the same stringency bounds on-chain inside
+`update_pool_metadata` (see `contracts/vault-factory/src/lib.rs`), mirroring
+`lib/admin-parameter-simulation.ts`:
+
+| Bound | Value | Contract error |
+|---|---|---|
+| Treasury fee floor | `fee_bps >= 1` (1 bp; the UI carries the 0.5 bp floor, whole-bp floor here) | `FeeBelowStringency` |
+| Treasury fee cap | `fee_bps <= 10_000` (100.00%) | `FeeExceedsCap` |
+| Lockup cap | `lockup_days <= 3650` (10 years) | `LockupDaysExceedsCap` |
+
+A value the simulation UI marks as blocked can therefore never be written
+on-chain, even by the factory admin — the bounds are a contract-level
+invariant, not just a UI constraint. New pools default to a 75 bps treasury
+fee so registry metadata is never below the floor. Tests live in
+`contracts/vault-factory/src/test.rs`.
+
+---
+
+## Record Provenance Tracking (#867)
+
+`lib/record-provenance.ts` provides provenance metadata and lineage tracing for imported and derived domain records across VaultQuest workflows.
+
+### Capabilities
+- **Imported Records**: Captures `source: "import_batch"`, `importBatchId`, `transformVersion`, and `actor` metadata.
+- **Derived Records**: Links derived records to source records (`sourceRecordIds`, `derivedFrom`, `transformVersion`).
+- **Updates & Lineage**: Preserves original provenance metadata and tracks modification history over time (`updateRecordPreservingProvenance`).
+- **Deleted Source Resilience**: Source record deletion updates `parentDeleted: true` while preserving the full origin trace (`handleDeletedSourceRecord`).
+- **Maintainer Export**: Generates export reports (`exportProvenanceReport`) for maintainers containing summary statistics and detailed lineage.
+
+Saved-pool imports now generate one server-owned batch ID per run, returned as
+`import_batch_id`. Committed rows store metadata in `SavedPool.provenance`; dry
+runs do not write metadata. Submitted provenance is ignored. Ordinary saves and
+later imports preserve the first origin and append update history. The existing
+wallet-scoped JSON export includes provenance when present. Legacy rows remain
+nullable; no origin is invented for them.
+
+Derived metadata snapshots contain identifiers and provenance only, never source
+record values. They retain multi-step lineage if a source disappears, at the cost
+of larger metadata for deep transformation chains. Deletion marking is explicit
+and idempotent; callers processing source deletions must persist its returned
+record. `createArchiveExport(rounds, { includeProvenance: true })` includes a
+maintainer report for derived archive records (`archive:<round-id>`). Public
+archive exports omit actor metadata by default. Restrict this option to trusted
+maintainer export paths.
+
+Deploy the additive migration before deploying the updated backend:
+`pnpm --dir backend exec prisma migrate deploy`, then
+`pnpm --dir backend exec prisma generate`. Existing rows need no backfill.
+
+Validation: `pnpm exec vitest run --config vitest.config.ts tests/record-provenance.test.ts tests/archive-export.test.ts`
+and `pnpm --dir backend exec vitest run tests/dataImport.spec.ts tests/dataExport.spec.ts tests/saved-pool-provenance.spec.ts`.

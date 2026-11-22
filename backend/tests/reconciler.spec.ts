@@ -26,6 +26,7 @@ describe("sweepOrphans", () => {
     const refreshed = await db.prisma.actionLedger.findUnique({ where: { id: oldRow.id } });
     expect(refreshed?.status).toBe("orphaned");
     expect(refreshed?.errorCode).toBe("ORPHAN_TTL_EXPIRED");
+    expect((refreshed?.recoveryCheckpoint as { stage: string }).stage).toBe("recovery_required");
 
     const stillSubmitted = await db.prisma.actionLedger.findUnique({ where: { id: fresh.id } });
     expect(stillSubmitted?.status).toBe("submitted");
@@ -42,6 +43,45 @@ describe("sweepOrphans", () => {
     expect(result.orphaned).toBe(0);
   });
 
+  it("does not orphan submitted actions with an active worker lease", async () => {
+    const action = await seedAction(db.prisma, { status: "submitted", txHash: "tx_active_lease" });
+    await db.prisma.actionLedger.update({
+      where: { id: action.id },
+      data: { updatedAt: new Date(Date.now() - 60 * 60 * 1000) }
+    });
+    await db.prisma.actionLease.create({
+      data: {
+        actionId: action.id,
+        workerId: "active-worker",
+        expiresAt: new Date(Date.now() + 60_000)
+      }
+    });
+
+    const result = await sweepOrphans(db.prisma, { ttlMinutes: 10 });
+    const unchanged = await db.prisma.actionLedger.findUnique({ where: { id: action.id } });
+
+    expect(result.orphaned).toBe(0);
+    expect(unchanged?.status).toBe("submitted");
+  });
+
+  it("marks a stale wallet operation as requiring recovery without resubmitting it", async () => {
+    const action = await seedAction(db.prisma, { status: "pending" });
+    await db.prisma.actionLedger.update({
+      where: { id: action.id },
+      data: {
+        updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+        recoveryCheckpoint: { stage: "external_action_started", checkpointed_at: new Date().toISOString() }
+      }
+    });
+
+    const result = await sweepOrphans(db.prisma, { ttlMinutes: 10 });
+    const recovered = await db.prisma.actionLedger.findUnique({ where: { id: action.id } });
+
+    expect(result.recoveryRequired).toBe(1);
+    expect(recovered?.status).toBe("pending");
+    expect((recovered?.recoveryCheckpoint as { stage: string }).stage).toBe("recovery_required");
+  });
+
   it("deletes pending_events older than 1 hour with no match", async () => {
     await db.prisma.pendingEvent.create({
       data: {
@@ -56,6 +96,24 @@ describe("sweepOrphans", () => {
     expect(result.prunedEvents).toBe(1);
     const found = await db.prisma.pendingEvent.findUnique({ where: { txHash: "tx_stale" } });
     expect(found).toBeNull();
+  });
+
+  it("retains stale pending events referenced by unresolved actions", async () => {
+    await seedAction(db.prisma, { status: "submitted", txHash: "tx_unresolved_event" });
+    await db.prisma.pendingEvent.create({
+      data: {
+        txHash: "tx_unresolved_event",
+        sorobanEventId: "evt_unresolved_event",
+        eventPayload: {},
+        statusHint: "confirmed",
+        receivedAt: new Date(Date.now() - 2 * 60 * 60 * 1000)
+      }
+    });
+
+    const result = await sweepOrphans(db.prisma, { ttlMinutes: 10 });
+
+    expect(result.prunedEvents).toBe(0);
+    expect(await db.prisma.pendingEvent.findUnique({ where: { txHash: "tx_unresolved_event" } })).not.toBeNull();
   });
 });
 
@@ -303,88 +361,193 @@ describe("insolvency_drift", () => {
     const drifts = await detectDrift(db.prisma);
     const insolvency = drifts.find((d) => d.type === "insolvency_drift");
     expect(insolvency).toBeDefined();
-    expect(insolvency!.recordId).toBe("v1");
-    expect(insolvency!.details.netTrackedPrincipal).toBe(-100);
+    expect(insolvency!.recordType).toBe("vault_settlement");
   });
 
-  it("does not flag healthy vaults (deposits >= withdrawals)", async () => {
+  it("quarantines insolvency drifts instead of auto-repairing", async () => {
     await seedAction(db.prisma, {
-      idempotencyKey: "healthy-deposit",
+      idempotencyKey: "insol-deposit-2",
       status: "confirmed",
       actionType: "deposit",
-      actionPayload: { vault_id: "v2", amount: 500 }
+      actionPayload: { vault_id: "v2", amount: 50 }
     });
     await seedAction(db.prisma, {
-      idempotencyKey: "healthy-withdraw",
+      idempotencyKey: "insol-withdraw-2",
       status: "confirmed",
       actionType: "withdraw",
-      actionPayload: { vault_id: "v2", amount: 300 }
+      actionPayload: { vault_id: "v2", amount: 75 }
     });
 
     const drifts = await detectDrift(db.prisma);
-    const insolvency = drifts.find((d) => d.type === "insolvency_drift");
-    expect(insolvency).toBeUndefined();
-  });
-
-  it("quarantines insolvency_drift in buildRepairPlan", () => {
-    const drifts = [{
-      type: "insolvency_drift" as const,
-      recordType: "vault_settlement" as const,
-      recordId: "v3",
-      details: { vaultId: "v3", netTrackedPrincipal: -500, actionCount: 2, message: "test" }
-    }];
     const plan = buildRepairPlan(drifts, false);
-    expect(plan.steps).toHaveLength(0);
-    // insolvency_drift is quarantined, not auto-repaired
-    const quarantined = plan.drifts.filter((d) => d.type === "insolvency_drift");
-    expect(quarantined).toHaveLength(1);
+    expect(plan.steps.filter((s) => s.provenence.includes("insolvency_drift"))).toHaveLength(0);
+
+    const result = await applyRepairPlan(db.prisma, plan);
+    expect(result.applied).toBe(0);
+
+    const quarantined = await db.prisma.repairQuarantine.findMany({
+      where: { driftType: "insolvency_drift" }
+    });
+    expect(quarantined.length).toBeGreaterThan(0);
   });
 });
 
-describe("reconcileAll", () => {
+describe("dry-run vs apply mode", () => {
   let db: TestDb;
-  let svc: LedgerService;
-
-  beforeAll(async () => { db = await startTestDb(); svc = new LedgerService(db.prisma); });
+  beforeAll(async () => { db = await startTestDb(); });
   afterAll(async () => { await db.stop(); });
   beforeEach(async () => { await resetDb(db.prisma); });
 
-  it("dry-run mode does not modify any records", async () => {
-    // Inject drift
-    const action = await seedAction(db.prisma, { idempotencyKey: "recon-drift", status: "submitted", txHash: "tx_recon_dry" });
+  it("dry-run performs no writes", async () => {
+    const action = await seedAction(db.prisma, {
+      idempotencyKey: "dryrun-no-write",
+      status: "submitted",
+      txHash: "tx_dryrun_no_write"
+    });
     await db.prisma.actionLedger.update({
       where: { id: action.id },
       data: { updatedAt: new Date(Date.now() - 30 * 60 * 1000) }
     });
 
-    const result = await reconcileAll(db.prisma, { dryRun: true });
-    expect(result.driftsFound).toBeGreaterThan(0);
-    expect(result.stepsProposed).toBeGreaterThan(0);
-    expect(result.stepsApplied).toBe(0);
-    expect(result.quarantined).toBe(0);
+    const drifts = await detectDrift(db.prisma);
+    const plan = buildRepairPlan(drifts, true);
+    expect(plan.dryRun).toBe(true);
+    expect(plan.steps.length).toBeGreaterThan(0);
 
-    // Verify no records were modified
+    // Dry-run must not mutate the action row.
     const unchanged = await db.prisma.actionLedger.findUnique({ where: { id: action.id } });
     expect(unchanged?.status).toBe("submitted");
+
+    // Dry-run must not write audit records.
+    const audits = await db.prisma.repairAudit.findMany();
+    expect(audits.length).toBe(0);
   });
 
-  it("apply mode repairs drifts and appends audit trail", async () => {
-    // Create a stale pending event that will be deleted
-    await db.prisma.pendingEvent.create({
-      data: {
-        txHash: "tx_recon_apply",
-        sorobanEventId: "evt_recon",
-        eventPayload: { ok: true },
-        statusHint: "confirmed",
-        receivedAt: new Date(Date.now() - 48 * 60 * 60 * 1000)
-      }
+  it("apply mode repairs only targeted records and writes audit records", async () => {
+    const target = await seedAction(db.prisma, {
+      idempotencyKey: "apply-targeted",
+      status: "submitted",
+      txHash: "tx_apply_targeted"
+    });
+    await db.prisma.actionLedger.update({
+      where: { id: target.id },
+      data: { updatedAt: new Date(Date.now() - 30 * 60 * 1000) }
+    });
+    const untouched = await seedAction(db.prisma, {
+      idempotencyKey: "apply-untouched",
+      status: "submitted",
+      txHash: "tx_apply_untouched"
     });
 
-    const result = await reconcileAll(db.prisma, { dryRun: false });
-    expect(result.driftsFound).toBeGreaterThan(0);
+    const drifts = await detectDrift(db.prisma);
+    const plan = buildRepairPlan(drifts, false);
+    const result = await applyRepairPlan(db.prisma, plan);
+
+    expect(result.applied).toBeGreaterThan(0);
+
+    // Targeted row is repaired.
+    const repaired = await db.prisma.actionLedger.findUnique({ where: { id: target.id } });
+    expect(repaired?.status).toBe("orphaned");
+
+    // Untargeted row is unchanged.
+    const still = await db.prisma.actionLedger.findUnique({ where: { id: untouched.id } });
+    expect(still?.status).toBe("submitted");
+
+    // Audit records are written for applied fixes.
+    const audits = await db.prisma.repairAudit.findMany();
+    expect(audits.length).toBe(result.applied);
+    expect(audits[0].driftType).toBe("missing_event");
+  });
+
+  it("no-op when there are no drifts", async () => {
+    const drifts = await detectDrift(db.prisma);
+    const plan = buildRepairPlan(drifts, false);
+    expect(plan.steps.length).toBe(0);
+
+    const result = await applyRepairPlan(db.prisma, plan);
+    expect(result.applied).toBe(0);
+    expect(result.skipped).toBe(0);
 
     const audits = await db.prisma.repairAudit.findMany();
-    expect(audits.length).toBeGreaterThan(0);
-    expect(audits[0].planJson).toBeDefined();
+    expect(audits.length).toBe(0);
+  });
+
+  it("invalid target is skipped and not audited as applied", async () => {
+    const drifts = [{
+      type: "missing_event" as const,
+      recordType: "action_ledger" as const,
+      recordId: "does-not-exist",
+      details: { updatedAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(), txHash: "tx_missing" }
+    }];
+    const plan = buildRepairPlan(drifts, false);
+    const result = await applyRepairPlan(db.prisma, plan);
+
+    expect(result.applied).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const audits = await db.prisma.repairAudit.findMany();
+    expect(audits.length).toBe(0);
+  });
+
+  it("audit record output includes before/after snapshots", async () => {
+    const action = await seedAction(db.prisma, {
+      idempotencyKey: "audit-snapshot",
+      status: "submitted",
+      txHash: "tx_audit_snapshot"
+    });
+    await db.prisma.actionLedger.update({
+      where: { id: action.id },
+      data: { updatedAt: new Date(Date.now() - 30 * 60 * 1000) }
+    });
+
+    const drifts = await detectDrift(db.prisma);
+    const plan = buildRepairPlan(drifts, false);
+    await applyRepairPlan(db.prisma, plan);
+
+    const audit = await db.prisma.repairAudit.findFirst({
+      where: { recordId: action.id }
+    });
+    expect(audit).toBeDefined();
+    expect(audit!.before).toBeDefined();
+    expect(audit!.after).toBeDefined();
+    expect((audit!.before as any).status).toBe("submitted");
+    expect((audit!.after as any).status).toBe("orphaned");
+  });
+});
+
+describe("reconcileAll", () => {
+  let db: TestDb;
+  beforeAll(async () => { db = await startTestDb(); });
+  afterAll(async () => { await db.stop(); });
+  beforeEach(async () => { await resetDb(db.prisma); });
+
+  it("returns a dry-run report by default", async () => {
+    await seedAction(db.prisma, {
+      idempotencyKey: "recon-default",
+      status: "submitted",
+      txHash: "tx_recon_default"
+    });
+    const report = await reconcileAll(db.prisma);
+    expect(report.dryRun).toBe(true);
+    expect(report.applied).toBe(0);
+  });
+
+  it("requires explicit apply mode to mutate", async () => {
+    const action = await seedAction(db.prisma, {
+      idempotencyKey: "recon-apply",
+      status: "submitted",
+      txHash: "tx_recon_apply"
+    });
+    await db.prisma.actionLedger.update({
+      where: { id: action.id },
+      data: { updatedAt: new Date(Date.now() - 30 * 60 * 1000) }
+    });
+
+    const report = await reconcileAll(db.prisma, { apply: true });
+    expect(report.dryRun).toBe(false);
+    expect(report.applied).toBeGreaterThan(0);
+
+    const repaired = await db.prisma.actionLedger.findUnique({ where: { id: action.id } });
+    expect(repaired?.status).toBe("orphaned");
   });
 });

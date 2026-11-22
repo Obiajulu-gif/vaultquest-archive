@@ -158,7 +158,12 @@ describe("EscrowService settlement pipeline", () => {
   });
 
   it("SavingsService settles a concluded period across vaults", async () => {
-    const horizon = scriptedHorizon([{ hash: "h", successful: true, resultCode: "tx_success" }]);
+    // Distinct hashes: `tx_hash` is unique, and the scripted stub replays its
+    // last result for any additional submits.
+    const horizon = scriptedHorizon([
+      { hash: "h_release", successful: true, resultCode: "tx_success" },
+      { hash: "h_refund", successful: true, resultCode: "tx_success" }
+    ]);
     const escrow = new EscrowService({
       prisma: db.prisma, horizon, signer: makeSigner(), assembler,
       networkPassphrase: PASSPHRASE, sleep: async () => {}

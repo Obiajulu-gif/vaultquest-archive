@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import type { PrismaClient } from "@prisma/client";
+import { fingerprint, type AuditRecorder } from "./auditTrail.js";
 
 export interface AdminSession {
   sessionId: string;
@@ -15,7 +16,15 @@ export interface AdminSession {
 export class AdminSessionService {
   private sessionCache: Map<string, AdminSession> = new Map();
 
-  constructor(private readonly prisma: PrismaClient) {}
+  /**
+   * @param audit #814 — admin sessions grant maintainer access, so issue and
+   *   revoke are audited. The session id is itself the bearer credential, so
+   *   records reference a sha256 fingerprint of it, never the id.
+   */
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly audit?: AuditRecorder
+  ) {}
 
   generateSessionId(): string {
     return crypto.randomBytes(32).toString("hex");
@@ -55,51 +64,74 @@ export class AdminSessionService {
     };
 
     this.sessionCache.set(sessionId, result);
+    await this.audit?.record({
+      category: "access",
+      action: "admin_session.issue",
+      actor: { subject: result.walletAddress, role: "maintainer" },
+      target: { type: "admin_session", id: fingerprint(sessionId) },
+      before: null,
+      after: { audience: result.audience, roleVersion: result.roleVersion, expiresAt: result.expiresAt }
+    });
     return result;
   }
 
   async verifySession(sessionId: string): Promise<AdminSession | null> {
-    let session = this.sessionCache.get(sessionId);
-
-    if (!session) {
-      const row = await this.prisma.adminSession.findUnique({
-        where: { sessionId }
-      });
-      if (!row) return null;
-      session = {
-        sessionId: row.sessionId,
-        walletAddress: row.walletAddress,
-        signature: row.signature,
-        audience: row.audience,
-        roleVersion: row.roleVersion,
-        expiresAt: row.expiresAt,
-        createdAt: row.createdAt,
-        revokedAt: row.revokedAt
-      };
-    }
-
-    if (session.revokedAt || session.expiresAt < new Date()) {
+    // Never authorize from the process-local cache. Revocations may be made by
+    // another worker (or the bulk security-revocation endpoint), in which case
+    // a cached session would otherwise remain valid until this process restarts.
+    // The database is the revocation authority; failure to read it fails closed.
+    const row = await this.prisma.adminSession.findUnique({ where: { sessionId } });
+    if (!row || row.revokedAt || row.expiresAt <= new Date()) {
+      this.sessionCache.delete(sessionId);
       return null;
     }
 
+    const session: AdminSession = {
+      sessionId: row.sessionId,
+      walletAddress: row.walletAddress,
+      signature: row.signature,
+      audience: row.audience,
+      roleVersion: row.roleVersion,
+      expiresAt: row.expiresAt,
+      createdAt: row.createdAt,
+      revokedAt: row.revokedAt
+    };
+    this.sessionCache.set(sessionId, session);
     return session;
   }
 
-  async revokeSessionsByRole(roleVersion: number): Promise<number> {
+  async revokeSessionsByRole(roleVersion: number, actor = "system", reason = "role version rotated"): Promise<number> {
     const result = await this.prisma.adminSession.updateMany({
       where: { roleVersion },
       data: { revokedAt: new Date() }
     });
 
     this.sessionCache.clear();
+    await this.audit?.record({
+      category: "access",
+      action: "admin_session.revoke_role",
+      actor: { subject: actor, role: actor === "system" ? "system" : "maintainer" },
+      target: { type: "admin_role_version", id: String(roleVersion) },
+      reason,
+      before: { activeSessions: result.count },
+      after: { activeSessions: 0 }
+    });
     return result.count;
   }
 
-  async revokeSession(sessionId: string): Promise<void> {
+  async revokeSession(sessionId: string, actor = "system"): Promise<void> {
     await this.prisma.adminSession.update({
       where: { sessionId },
       data: { revokedAt: new Date() }
     });
     this.sessionCache.delete(sessionId);
+    await this.audit?.record({
+      category: "access",
+      action: "admin_session.revoke",
+      actor: { subject: actor, role: actor === "system" ? "system" : "maintainer" },
+      target: { type: "admin_session", id: fingerprint(sessionId) },
+      before: { revoked: false },
+      after: { revoked: true }
+    });
   }
 }

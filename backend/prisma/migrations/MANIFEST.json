@@ -10,23 +10,32 @@
           "id": "20260423000000_core_init",
           "timestamp": "2026-04-23T00:00:00Z",
           "description": "Initial schema with ActionLedger and PendingEvent tables",
-          "tables": ["action_ledger", "pending_events"],
+          "tables": [
+            "action_ledger",
+            "pending_events"
+          ],
           "breaking": false
         },
         {
           "id": "20260423000001_core_nullable_action_payload",
           "timestamp": "2026-04-23T00:01:00Z",
           "description": "Make action_payload nullable in ActionLedger",
-          "tables": ["action_ledger"],
+          "tables": [
+            "action_ledger"
+          ],
           "breaking": false
         },
         {
           "id": "20260528000000_core_unique_tx_hash",
           "timestamp": "2026-05-28T00:00:00Z",
           "description": "Add unique constraint on tx_hash for idempotency",
-          "tables": ["action_ledger"],
+          "tables": [
+            "action_ledger"
+          ],
           "breaking": false,
-          "relatedIssues": ["#72"]
+          "relatedIssues": [
+            "#72"
+          ]
         }
       ]
     },
@@ -38,40 +47,71 @@
           "id": "20260529000000_feature_saved_pools",
           "timestamp": "2026-05-29T00:00:00Z",
           "description": "User pool watchlist functionality",
-          "tables": ["saved_pools"],
+          "tables": [
+            "saved_pools"
+          ],
           "breaking": false,
-          "relatedIssues": ["#89", "#90"]
+          "relatedIssues": [
+            "#89",
+            "#90"
+          ]
         },
         {
           "id": "20260530000000_feature_indexer_checkpoint",
           "timestamp": "2026-05-30T00:00:00Z",
           "description": "Blockchain indexer state tracking",
-          "tables": ["indexer_checkpoints"],
+          "tables": [
+            "indexer_checkpoints"
+          ],
           "breaking": false
         },
         {
           "id": "20260531000000_feature_user_quests",
           "timestamp": "2026-05-31T00:00:00Z",
           "description": "Quest progress tracking system",
-          "tables": ["user_quests"],
+          "tables": [
+            "user_quests"
+          ],
           "breaking": false,
-          "relatedIssues": ["#26"]
+          "relatedIssues": [
+            "#26"
+          ]
         },
         {
           "id": "20260531000001_feature_vault_settlements",
           "timestamp": "2026-05-31T00:01:00Z",
           "description": "Vault settlement and escrow pipeline",
-          "tables": ["vault_settlements"],
+          "tables": [
+            "vault_settlements"
+          ],
           "breaking": false,
-          "relatedIssues": ["#settlement"]
+          "relatedIssues": [
+            "#settlement"
+          ]
         },
         {
           "id": "20260729000000_add_protocol_audit",
           "timestamp": "2026-07-29T00:00:00Z",
           "description": "Add protocol parameter change audit log table",
-          "tables": ["protocol_audits"],
+          "tables": [
+            "protocol_audits"
+          ],
           "breaking": false,
-          "relatedIssues": ["#415"]
+          "relatedIssues": [
+            "#415"
+          ]
+        },
+        {
+          "id": "20260930000000_add_action_recovery_checkpoints",
+          "timestamp": "2026-09-30T00:00:00Z",
+          "description": "Persist recovery checkpoints for interrupted wallet actions",
+          "tables": [
+            "action_ledger"
+          ],
+          "breaking": false,
+          "relatedIssues": [
+            "#788"
+          ]
         }
       ]
     },
@@ -91,6 +131,22 @@
             "saved_pools_pool_id_idx"
           ],
           "breaking": false
+        },
+        {
+          "id": "20260927000000_add_record_change_history",
+          "timestamp": "2026-09-27T00:00:00Z",
+          "description": "Tamper-evident change history chain for critical domain records (#787)",
+          "tables": [
+            "record_change_history"
+          ],
+          "indexes": [
+            "record_change_history_record_idx",
+            "record_change_history_actor_timestamp_idx"
+          ],
+          "breaking": false,
+          "relatedIssues": [
+            "#787"
+          ]
         }
       ]
     }
@@ -130,6 +186,11 @@
       "phase": "features",
       "createdIn": "20260729000000_add_protocol_audit",
       "description": "Protocol parameter change audit log"
+    },
+    "record_change_history": {
+      "phase": "optimization",
+      "createdIn": "20260927000000_add_record_change_history",
+      "description": "Hash-chained change history for critical domain records (#787)"
     }
   }
 }

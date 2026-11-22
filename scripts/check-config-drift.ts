@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFileSync, writeFileSync } from "fs";
+import { readFileSync, writeFileSync, existsSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { loadManifest, validateManifestAgainstEnv } from "../lib/deployment-manifest.js";
@@ -16,6 +16,81 @@ const ENV_MAP: Record<string, string> = {
   "contracts.escrow.contractId": "NEXT_PUBLIC_TRUSTLESS_WORK_ESCROW_CONTRACT_ID",
   "version": "MANIFEST_VERSION",
 };
+
+// #854 — Cross-environment configuration drift detection
+// Compares configurations across multiple environment files to detect
+// unintended divergence before deployment.
+const ENV_FILES = [".env", ".env.local", ".env.production", ".env.staging"];
+const CRITICAL_KEYS = [
+  "DATABASE_URL",
+  "NEXT_PUBLIC_SOROBAN_RPC_URL",
+  "NEXT_PUBLIC_HORIZON_URL",
+  "NETWORK_PASSPHRASE",
+  "INTERNAL_SERVICE_SECRET",
+];
+
+interface EnvSnapshot {
+  source: string;
+  values: Record<string, string>;
+}
+
+interface DriftEntry {
+  key: string;
+  sources: Record<string, string | undefined>;
+  severity: "critical" | "warning" | "info";
+  message: string;
+}
+
+function loadEnvFile(path: string): Record<string, string> {
+  if (!existsSync(path)) return {};
+  const content = readFileSync(path, "utf-8");
+  const values: Record<string, string> = {};
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eqIndex = trimmed.indexOf("=");
+    if (eqIndex > 0) {
+      const key = trimmed.substring(0, eqIndex).trim();
+      const value = trimmed.substring(eqIndex + 1).trim().replace(/^["']|["']$/g, "");
+      values[key] = value;
+    }
+  }
+  return values;
+}
+
+function detectCrossEnvDrift(snapshots: EnvSnapshot[]): DriftEntry[] {
+  const drift: DriftEntry[] = [];
+  const allKeys = new Set<string>();
+
+  for (const snap of snapshots) {
+    for (const key of Object.keys(snap.values)) {
+      allKeys.add(key);
+    }
+  }
+
+  for (const key of allKeys) {
+    const sources: Record<string, string | undefined> = {};
+    const uniqueValues = new Set<string>();
+
+    for (const snap of snapshots) {
+      const value = snap.values[key];
+      sources[snap.source] = value;
+      if (value !== undefined) uniqueValues.add(value);
+    }
+
+    if (uniqueValues.size > 1) {
+      const severity = CRITICAL_KEYS.includes(key) ? "critical" : "warning";
+      drift.push({
+        key,
+        sources,
+        severity,
+        message: `Key '${key}' has ${uniqueValues.size} different values across environments`,
+      });
+    }
+  }
+
+  return drift;
+}
 
 function getNestedValue(obj: any, path: string): string | undefined {
   const parts = path.split(".");
@@ -73,52 +148,90 @@ function runDriftCheck() {
     }
   }
 
-  // 3. Human-Readable Output Summary
-  if (mismatches.length === 0) {
-    console.log("[+] Config Check: PASSED. No drift detected between manifest and active environment.");
-  } else {
-    console.error(`[-] Config Check: FAILED. Detected ${mismatches.length} configuration mismatch(es).`);
-    console.error("\nDetailed Configuration Drift Report:");
-    console.error("--------------------------------------------------------------------------------");
-    console.error(
-      sprintf("%-30s %-30s %-25s %-25s", "Field", "Env Key Reference", "Expected (Manifest)", "Active (Env)")
-    );
-    console.error("--------------------------------------------------------------------------------");
-
-    for (const m of mismatches) {
-      console.error(
-        sprintf(
-          "%-30s %-30s %-25s %-25s",
-          m.field,
-          m.envKey,
-          maskSecrets(m.expected, m.envKey),
-          maskSecrets(m.active, m.envKey)
-        )
-      );
+  // 3. Cross-Environment Configuration Drift Detection (#854)
+  console.log("\n=== Cross-Environment Configuration Drift Check ===");
+  const envSnapshots: EnvSnapshot[] = [];
+  for (const file of ENV_FILES) {
+    const values = loadEnvFile(resolve(ROOT, file));
+    if (Object.keys(values).length > 0) {
+      envSnapshots.push({ source: file, values });
+      console.log(`  Loaded ${Object.keys(values).length} keys from ${file}`);
     }
-    console.error("--------------------------------------------------------------------------------");
   }
 
-  // 4. Produce Machine-Readable JSON Report
+  const crossEnvDrift = detectCrossEnvDrift(envSnapshots);
+  if (crossEnvDrift.length > 0) {
+    console.error(`\n[-] Cross-environment drift detected: ${crossEnvDrift.length} issue(s)`);
+    for (const entry of crossEnvDrift) {
+      console.error(`  [${entry.severity.toUpperCase()}] ${entry.message}`);
+      for (const [source, value] of Object.entries(entry.sources)) {
+        if (value !== undefined) {
+          console.error(`    ${source}: ${maskSecrets(value, entry.key)}`);
+        }
+      }
+    }
+  } else {
+    console.log("[+] No cross-environment drift detected.");
+  }
+
+  // 4. Human-Readable Output Summary
+  if (mismatches.length === 0 && crossEnvDrift.length === 0) {
+    console.log("[+] Config Check: PASSED. No drift detected.");
+  } else {
+    if (mismatches.length > 0) {
+      console.error(`[-] Config Check: FAILED. Detected ${mismatches.length} manifest mismatch(es).`);
+      console.error("\nDetailed Configuration Drift Report:");
+      console.error("--------------------------------------------------------------------------------");
+      console.error(
+        sprintf("%-30s %-30s %-25s %-25s", "Field", "Env Key Reference", "Expected (Manifest)", "Active (Env)")
+      );
+      console.error("--------------------------------------------------------------------------------");
+
+      for (const m of mismatches) {
+        console.error(
+          sprintf(
+            "%-30s %-30s %-25s %-25s",
+            m.field,
+            m.envKey,
+            maskSecrets(m.expected, m.envKey),
+            maskSecrets(m.active, m.envKey)
+          )
+        );
+      }
+      console.error("--------------------------------------------------------------------------------");
+    }
+  }
+
+  // 5. Produce Machine-Readable JSON Report
   const report = {
     timestamp: new Date().toISOString(),
-    success: mismatches.length === 0,
+    success: mismatches.length === 0 && crossEnvDrift.length === 0,
     mismatchCount: mismatches.length,
+    crossEnvDriftCount: crossEnvDrift.length,
     mismatches: mismatches.map((m) => ({
       field: m.field,
       envKey: m.envKey,
       expected: maskSecrets(m.expected, m.envKey),
       active: maskSecrets(m.active, m.envKey),
       critical: m.critical
-    }))
+    })),
+    crossEnvDrift: crossEnvDrift.map((d) => ({
+      key: d.key,
+      severity: d.severity,
+      message: d.message,
+      sources: Object.fromEntries(
+        Object.entries(d.sources).map(([k, v]) => [k, v !== undefined ? maskSecrets(v, d.key) : undefined])
+      ),
+    })),
   };
 
   const reportPath = resolve(ROOT, "config-drift-report.json");
   writeFileSync(reportPath, JSON.stringify(report, null, 2) + "\n");
-  console.log(`[+] Machine-readable report saved to ${reportPath}`);
+  console.log(`\n[+] Machine-readable report saved to ${reportPath}`);
 
   // Exit with failure if critical drift is found
-  if (mismatches.some((m) => m.critical)) {
+  const hasCriticalDrift = mismatches.some((m) => m.critical) || crossEnvDrift.some((d) => d.severity === "critical");
+  if (hasCriticalDrift) {
     process.exit(1);
   }
 }

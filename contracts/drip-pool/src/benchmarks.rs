@@ -24,18 +24,33 @@
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger as _},
-    Address, Env, IntoVal, Vec,
+    token::{StellarAssetClient, TokenClient},
+    Address, BytesN, Env, IntoVal, Vec,
 };
 
 // ── Helper functions ────────────────────────────────────────────────────────
 
-fn setup() -> (Env, DripPoolClient<'static>, Address) {
+fn setup() -> (Env, DripPoolClient<'static>, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
     let id = env.register_contract(None, DripPool);
     let client = DripPoolClient::new(&env, &id);
     let admin = Address::generate(&env);
-    (env, client, admin)
+    // Deposit/join paths require a configured token (#376/#524); register a
+    // SAC and hand its id to each test so it can be wired up post-`create`.
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    (env, client, admin, sac.address())
+}
+
+/// Configure the pool token and mint an operating budget to the admin.
+fn token_setup(env: &Env, client: &DripPoolClient, admin: &Address, token_id: &Address) {
+    client.set_token(admin, token_id);
+    StellarAssetClient::new(env, token_id).mint(admin, &100_000_000);
+}
+
+/// Mint `amount` tokens to `to` for participant-funded operations.
+fn mint(env: &Env, token_id: &Address, to: &Address, amount: &i128) {
+    StellarAssetClient::new(env, token_id).mint(to, amount);
 }
 
 fn skip_lockup(env: &Env) {
@@ -46,13 +61,20 @@ fn skip_lockup(env: &Env) {
 /// Advance ledger sequence past the high-risk governance timelock (#533).
 fn skip_high_risk_delay(env: &Env) {
     let current = env.ledger().sequence();
-    env.ledger().set_sequence_number(current + HIGH_RISK_DELAY_LEDGERS + 1);
+    env.ledger()
+        .set_sequence_number(current + HIGH_RISK_DELAY_LEDGERS + 1);
 }
 
-fn create_participants(env: &Env, client: &DripPoolClient, count: u32) -> Vec<Address> {
+fn create_participants(
+    env: &Env,
+    client: &DripPoolClient,
+    token_id: &Address,
+    count: u32,
+) -> Vec<Address> {
     let mut participants = Vec::new(env);
     for _ in 0..count {
         let user = Address::generate(env);
+        mint(env, token_id, &user, &1_000_000);
         client.join(&user);
         participants.push_back(user);
     }
@@ -66,14 +88,42 @@ fn deposit_all(env: &Env, client: &DripPoolClient, participants: &Vec<Address>, 
     }
 }
 
+/// Benchmark helper (#715): resolves a single depositor as a round's winner
+/// via the full commit-reveal flow, so `draw_winner` benchmarks exercise the
+/// real post-#715 signature/lookup path.
+///
+/// Seeds a second admin first (#657): `open_round` now refuses to open with
+/// fewer than `Threshold` approved admins - see the equivalent note on
+/// `setup_round_with_winner` in `src/test.rs`.
+fn resolve_round_winner(
+    env: &Env,
+    client: &DripPoolClient,
+    admin: &Address,
+    depositor: &Address,
+    amount: i128,
+) -> u32 {
+    client.seed_admin(admin, &Address::generate(env));
+    let round_id = client.open_round(admin);
+    client.round_deposit(depositor, &round_id, &amount);
+    let seed = BytesN::from_array(env, &[7u8; 32]);
+    let commitment: BytesN<32> = env.crypto().sha256(&seed.to_bytes()).to_bytes();
+    client.commit_round_randomness(admin, &round_id, &commitment);
+    client.lock_round(admin, &round_id);
+    client.reveal_round_randomness(admin, &round_id, &seed);
+    let candidates = soroban_sdk::vec![env, depositor.clone()];
+    client.select_round_winner(admin, &round_id, &candidates);
+    round_id
+}
+
 // ── Benchmark: Join Operations ──────────────────────────────────────────────
 
 #[test]
 fn bench_join_1_participant() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let _participants = create_participants(&env, &client, 1);
+    let _participants = create_participants(&env, &client, &token_id, 1);
 
     let pool = client.pool();
     assert_eq!(pool.total_drips, 0);
@@ -81,10 +131,11 @@ fn bench_join_1_participant() {
 
 #[test]
 fn bench_join_10_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let _participants = create_participants(&env, &client, 10);
+    let _participants = create_participants(&env, &client, &token_id, 10);
 
     let pool = client.pool();
     assert_eq!(pool.total_drips, 0);
@@ -92,10 +143,11 @@ fn bench_join_10_participants() {
 
 #[test]
 fn bench_join_100_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let _participants = create_participants(&env, &client, 100);
+    let _participants = create_participants(&env, &client, &token_id, 100);
 
     let pool = client.pool();
     assert_eq!(pool.total_drips, 0);
@@ -103,10 +155,11 @@ fn bench_join_100_participants() {
 
 #[test]
 fn bench_join_1000_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let _participants = create_participants(&env, &client, 1000);
+    let _participants = create_participants(&env, &client, &token_id, 1000);
 
     let pool = client.pool();
     assert_eq!(pool.total_drips, 0);
@@ -116,10 +169,11 @@ fn bench_join_1000_participants() {
 
 #[test]
 fn bench_deposit_1_participant() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 1);
+    let participants = create_participants(&env, &client, &token_id, 1);
     deposit_all(&env, &client, &participants, 1_000);
 
     let pool = client.pool();
@@ -129,10 +183,11 @@ fn bench_deposit_1_participant() {
 
 #[test]
 fn bench_deposit_10_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 10);
+    let participants = create_participants(&env, &client, &token_id, 10);
     deposit_all(&env, &client, &participants, 1_000);
 
     let pool = client.pool();
@@ -142,10 +197,11 @@ fn bench_deposit_10_participants() {
 
 #[test]
 fn bench_deposit_100_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 100);
+    let participants = create_participants(&env, &client, &token_id, 100);
     deposit_all(&env, &client, &participants, 1_000);
 
     let pool = client.pool();
@@ -155,10 +211,11 @@ fn bench_deposit_100_participants() {
 
 #[test]
 fn bench_deposit_1000_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 1000);
+    let participants = create_participants(&env, &client, &token_id, 1000);
     deposit_all(&env, &client, &participants, 1_000);
 
     let pool = client.pool();
@@ -170,10 +227,11 @@ fn bench_deposit_1000_participants() {
 
 #[test]
 fn bench_claim_1_participant() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 1);
+    let participants = create_participants(&env, &client, &token_id, 1);
     deposit_all(&env, &client, &participants, 1_000);
 
     let user = participants.get(0).unwrap();
@@ -184,10 +242,11 @@ fn bench_claim_1_participant() {
 
 #[test]
 fn bench_claim_10_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 10);
+    let participants = create_participants(&env, &client, &token_id, 10);
     deposit_all(&env, &client, &participants, 1_000);
 
     for i in 0..participants.len() {
@@ -199,10 +258,11 @@ fn bench_claim_10_participants() {
 
 #[test]
 fn bench_claim_100_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 100);
+    let participants = create_participants(&env, &client, &token_id, 100);
     deposit_all(&env, &client, &participants, 1_000);
 
     for i in 0..participants.len() {
@@ -214,10 +274,11 @@ fn bench_claim_100_participants() {
 
 #[test]
 fn bench_claim_1000_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 1000);
+    let participants = create_participants(&env, &client, &token_id, 1000);
     deposit_all(&env, &client, &participants, 1_000);
 
     for i in 0..participants.len() {
@@ -231,10 +292,11 @@ fn bench_claim_1000_participants() {
 
 #[test]
 fn bench_withdraw_1_participant() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 1);
+    let participants = create_participants(&env, &client, &token_id, 1);
     deposit_all(&env, &client, &participants, 1_000);
 
     skip_lockup(&env);
@@ -246,10 +308,11 @@ fn bench_withdraw_1_participant() {
 
 #[test]
 fn bench_withdraw_10_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 10);
+    let participants = create_participants(&env, &client, &token_id, 10);
     deposit_all(&env, &client, &participants, 1_000);
 
     skip_lockup(&env);
@@ -263,10 +326,11 @@ fn bench_withdraw_10_participants() {
 
 #[test]
 fn bench_withdraw_100_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 100);
+    let participants = create_participants(&env, &client, &token_id, 100);
     deposit_all(&env, &client, &participants, 1_000);
 
     skip_lockup(&env);
@@ -280,10 +344,11 @@ fn bench_withdraw_100_participants() {
 
 #[test]
 fn bench_withdraw_1000_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 1000);
+    let participants = create_participants(&env, &client, &token_id, 1000);
     deposit_all(&env, &client, &participants, 1_000);
 
     skip_lockup(&env);
@@ -299,10 +364,11 @@ fn bench_withdraw_1000_participants() {
 
 #[test]
 fn bench_full_round_1_participant() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 1);
+    let participants = create_participants(&env, &client, &token_id, 1);
     deposit_all(&env, &client, &participants, 1_000);
 
     skip_lockup(&env);
@@ -321,10 +387,11 @@ fn bench_full_round_1_participant() {
 
 #[test]
 fn bench_full_round_10_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 10);
+    let participants = create_participants(&env, &client, &token_id, 10);
     deposit_all(&env, &client, &participants, 1_000);
 
     skip_lockup(&env);
@@ -341,10 +408,11 @@ fn bench_full_round_10_participants() {
 
 #[test]
 fn bench_full_round_100_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 100);
+    let participants = create_participants(&env, &client, &token_id, 100);
     deposit_all(&env, &client, &participants, 1_000);
 
     skip_lockup(&env);
@@ -361,10 +429,11 @@ fn bench_full_round_100_participants() {
 
 #[test]
 fn bench_full_round_1000_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 1000);
+    let participants = create_participants(&env, &client, &token_id, 1000);
     deposit_all(&env, &client, &participants, 1_000);
 
     skip_lockup(&env);
@@ -383,10 +452,11 @@ fn bench_full_round_1000_participants() {
 
 #[test]
 fn bench_add_yield_and_credit_1_participant() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 1);
+    let participants = create_participants(&env, &client, &token_id, 1);
     deposit_all(&env, &client, &participants, 1_000);
 
     client.add_yield(&admin, &100);
@@ -403,10 +473,11 @@ fn bench_add_yield_and_credit_1_participant() {
 
 #[test]
 fn bench_add_yield_and_credit_10_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 10);
+    let participants = create_participants(&env, &client, &token_id, 10);
     deposit_all(&env, &client, &participants, 1_000);
 
     client.add_yield(&admin, &1_000);
@@ -425,10 +496,11 @@ fn bench_add_yield_and_credit_10_participants() {
 
 #[test]
 fn bench_add_yield_and_credit_100_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 100);
+    let participants = create_participants(&env, &client, &token_id, 100);
     deposit_all(&env, &client, &participants, 1_000);
 
     client.add_yield(&admin, &10_000);
@@ -447,10 +519,11 @@ fn bench_add_yield_and_credit_100_participants() {
 
 #[test]
 fn bench_add_yield_and_credit_1000_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 1000);
+    let participants = create_participants(&env, &client, &token_id, 1000);
     deposit_all(&env, &client, &participants, 1_000);
 
     client.add_yield(&admin, &100_000);
@@ -471,8 +544,9 @@ fn bench_add_yield_and_credit_1000_participants() {
 
 #[test]
 fn bench_propose_and_approve_2_of_2() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
     let signer2 = Address::generate(&env);
     client.seed_admin(&admin, &signer2);
@@ -485,7 +559,10 @@ fn bench_propose_and_approve_2_of_2() {
         &ProposalAction::ReleaseEscrow(recipient.clone(), 5_000),
     );
     let executed = client.approve(&signer2, &pid);
-    assert!(!executed, "high-risk action must not execute before its delay");
+    assert!(
+        !executed,
+        "high-risk action must not execute before its delay"
+    );
     skip_high_risk_delay(&env);
     client.execute_proposal(&signer2, &pid);
 
@@ -495,8 +572,9 @@ fn bench_propose_and_approve_2_of_2() {
 
 #[test]
 fn bench_propose_and_approve_3_of_5() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
     let signer2 = Address::generate(&env);
     let signer3 = Address::generate(&env);
@@ -521,7 +599,10 @@ fn bench_propose_and_approve_3_of_5() {
     );
     let _ = client.approve(&signer2, &pid);
     let executed = client.approve(&signer3, &pid);
-    assert!(!executed, "high-risk action must not execute before its delay");
+    assert!(
+        !executed,
+        "high-risk action must not execute before its delay"
+    );
     skip_high_risk_delay(&env);
     client.execute_proposal(&signer3, &pid);
 
@@ -533,10 +614,11 @@ fn bench_propose_and_approve_3_of_5() {
 
 #[test]
 fn bench_renew_participant_1() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 1);
+    let participants = create_participants(&env, &client, &token_id, 1);
 
     for i in 0..participants.len() {
         let user = participants.get(i).unwrap();
@@ -546,10 +628,11 @@ fn bench_renew_participant_1() {
 
 #[test]
 fn bench_renew_participant_10() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 10);
+    let participants = create_participants(&env, &client, &token_id, 10);
 
     for i in 0..participants.len() {
         let user = participants.get(i).unwrap();
@@ -559,10 +642,11 @@ fn bench_renew_participant_10() {
 
 #[test]
 fn bench_renew_participant_100() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 100);
+    let participants = create_participants(&env, &client, &token_id, 100);
 
     for i in 0..participants.len() {
         let user = participants.get(i).unwrap();
@@ -572,10 +656,11 @@ fn bench_renew_participant_100() {
 
 #[test]
 fn bench_renew_participant_1000() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 1000);
+    let participants = create_participants(&env, &client, &token_id, 1000);
 
     for i in 0..participants.len() {
         let user = participants.get(i).unwrap();
@@ -587,10 +672,11 @@ fn bench_renew_participant_1000() {
 
 #[test]
 fn bench_pool_view_1_participant() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 1);
+    let participants = create_participants(&env, &client, &token_id, 1);
     deposit_all(&env, &client, &participants, 1_000);
 
     let _pool = client.pool();
@@ -598,10 +684,11 @@ fn bench_pool_view_1_participant() {
 
 #[test]
 fn bench_pool_view_10_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 10);
+    let participants = create_participants(&env, &client, &token_id, 10);
     deposit_all(&env, &client, &participants, 1_000);
 
     let _pool = client.pool();
@@ -609,10 +696,11 @@ fn bench_pool_view_10_participants() {
 
 #[test]
 fn bench_pool_view_100_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 100);
+    let participants = create_participants(&env, &client, &token_id, 100);
     deposit_all(&env, &client, &participants, 1_000);
 
     let _pool = client.pool();
@@ -620,10 +708,11 @@ fn bench_pool_view_100_participants() {
 
 #[test]
 fn bench_pool_view_1000_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 1000);
+    let participants = create_participants(&env, &client, &token_id, 1000);
     deposit_all(&env, &client, &participants, 1_000);
 
     let _pool = client.pool();
@@ -633,10 +722,11 @@ fn bench_pool_view_1000_participants() {
 
 #[test]
 fn bench_savings_view_1_participant() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 1);
+    let participants = create_participants(&env, &client, &token_id, 1);
     deposit_all(&env, &client, &participants, 1_000);
 
     let user = participants.get(0).unwrap();
@@ -645,10 +735,11 @@ fn bench_savings_view_1_participant() {
 
 #[test]
 fn bench_savings_view_10_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 10);
+    let participants = create_participants(&env, &client, &token_id, 10);
     deposit_all(&env, &client, &participants, 1_000);
 
     for i in 0..participants.len() {
@@ -659,10 +750,11 @@ fn bench_savings_view_10_participants() {
 
 #[test]
 fn bench_savings_view_100_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 100);
+    let participants = create_participants(&env, &client, &token_id, 100);
     deposit_all(&env, &client, &participants, 1_000);
 
     for i in 0..participants.len() {
@@ -673,10 +765,11 @@ fn bench_savings_view_100_participants() {
 
 #[test]
 fn bench_savings_view_1000_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 1000);
+    let participants = create_participants(&env, &client, &token_id, 1000);
     deposit_all(&env, &client, &participants, 1_000);
 
     for i in 0..participants.len() {
@@ -689,16 +782,18 @@ fn bench_savings_view_1000_participants() {
 
 #[test]
 fn bench_admins_view_1_admin() {
-    let (_env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
     let _admins = client.admins();
 }
 
 #[test]
 fn bench_admins_view_5_admins() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
     let signer2 = Address::generate(&env);
     let signer3 = Address::generate(&env);
@@ -717,8 +812,9 @@ fn bench_admins_view_5_admins() {
 
 #[test]
 fn bench_threshold_view() {
-    let (_env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
     let _threshold = client.threshold();
 }
@@ -727,60 +823,73 @@ fn bench_threshold_view() {
 
 #[test]
 fn bench_draw_winner_1_participant() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 1);
+    let participants = create_participants(&env, &client, &token_id, 1);
     deposit_all(&env, &client, &participants, 1_000);
+    let winning_depositor = participants.get(0).unwrap();
+    let round_id = resolve_round_winner(&env, &client, &admin, &winning_depositor, 1_000);
 
-    let winner = client.draw_winner(&admin, &100);
-    assert_eq!(winner, admin);
+    let winner = client.draw_winner(&admin, &round_id, &100);
+    assert_eq!(winner, winning_depositor);
 }
 
 #[test]
 fn bench_draw_winner_10_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 10);
+    let participants = create_participants(&env, &client, &token_id, 10);
     deposit_all(&env, &client, &participants, 1_000);
+    let winning_depositor = participants.get(0).unwrap();
+    let round_id = resolve_round_winner(&env, &client, &admin, &winning_depositor, 1_000);
 
-    let winner = client.draw_winner(&admin, &100);
-    assert_eq!(winner, admin);
+    let winner = client.draw_winner(&admin, &round_id, &100);
+    assert_eq!(winner, winning_depositor);
 }
 
 #[test]
 fn bench_draw_winner_100_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 100);
+    let participants = create_participants(&env, &client, &token_id, 100);
     deposit_all(&env, &client, &participants, 1_000);
+    let winning_depositor = participants.get(0).unwrap();
+    let round_id = resolve_round_winner(&env, &client, &admin, &winning_depositor, 1_000);
 
-    let winner = client.draw_winner(&admin, &100);
-    assert_eq!(winner, admin);
+    let winner = client.draw_winner(&admin, &round_id, &100);
+    assert_eq!(winner, winning_depositor);
 }
 
 #[test]
 fn bench_draw_winner_1000_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 1000);
+    let participants = create_participants(&env, &client, &token_id, 1000);
     deposit_all(&env, &client, &participants, 1_000);
+    let winning_depositor = participants.get(0).unwrap();
+    let round_id = resolve_round_winner(&env, &client, &admin, &winning_depositor, 1_000);
 
-    let winner = client.draw_winner(&admin, &100);
-    assert_eq!(winner, admin);
+    let winner = client.draw_winner(&admin, &round_id, &100);
+    assert_eq!(winner, winning_depositor);
 }
 
 // ── Benchmark: Multiple Deposits per Participant ────────────────────────────
 
 #[test]
 fn bench_multiple_deposits_10_participants_10_each() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 10);
+    let participants = create_participants(&env, &client, &token_id, 10);
 
     for _ in 0..10 {
         deposit_all(&env, &client, &participants, 100);
@@ -793,10 +902,11 @@ fn bench_multiple_deposits_10_participants_10_each() {
 
 #[test]
 fn bench_multiple_deposits_100_participants_10_each() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 100);
+    let participants = create_participants(&env, &client, &token_id, 100);
 
     for _ in 0..10 {
         deposit_all(&env, &client, &participants, 100);
@@ -809,10 +919,11 @@ fn bench_multiple_deposits_100_participants_10_each() {
 
 #[test]
 fn bench_multiple_deposits_1000_participants_10_each() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 1000);
+    let participants = create_participants(&env, &client, &token_id, 1000);
 
     for _ in 0..10 {
         deposit_all(&env, &client, &participants, 100);
@@ -827,10 +938,11 @@ fn bench_multiple_deposits_1000_participants_10_each() {
 
 #[test]
 fn bench_large_amount_deposits() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 10);
+    let participants = create_participants(&env, &client, &token_id, 10);
     deposit_all(&env, &client, &participants, 1_000_000_000_000_000_000);
 
     let pool = client.pool();
@@ -841,10 +953,11 @@ fn bench_large_amount_deposits() {
 
 #[test]
 fn bench_mixed_operations_small_vault() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 10);
+    let participants = create_participants(&env, &client, &token_id, 10);
 
     // Deposits
     deposit_all(&env, &client, &participants, 1_000);
@@ -875,10 +988,11 @@ fn bench_mixed_operations_small_vault() {
 
 #[test]
 fn bench_mixed_operations_medium_vault() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 100);
+    let participants = create_participants(&env, &client, &token_id, 100);
 
     // Deposits
     deposit_all(&env, &client, &participants, 1_000);
@@ -909,10 +1023,11 @@ fn bench_mixed_operations_medium_vault() {
 
 #[test]
 fn bench_mixed_operations_large_vault() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 1000);
+    let participants = create_participants(&env, &client, &token_id, 1000);
 
     // Deposits
     deposit_all(&env, &client, &participants, 1_000);
@@ -945,8 +1060,9 @@ fn bench_mixed_operations_large_vault() {
 
 #[test]
 fn bench_proposal_with_5_admins() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
     let signer2 = Address::generate(&env);
     let signer3 = Address::generate(&env);
@@ -968,7 +1084,10 @@ fn bench_proposal_with_5_admins() {
     let _ = client.approve(&signer2, &pid);
     let _ = client.approve(&signer3, &pid);
     let executed = client.approve(&signer4, &pid);
-    assert!(!executed, "high-risk action must not execute before its delay");
+    assert!(
+        !executed,
+        "high-risk action must not execute before its delay"
+    );
     skip_high_risk_delay(&env);
     client.execute_proposal(&signer4, &pid);
 
@@ -980,10 +1099,11 @@ fn bench_proposal_with_5_admins() {
 
 #[test]
 fn bench_deposit_with_duration_short() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 10);
+    let participants = create_participants(&env, &client, &token_id, 10);
 
     for i in 0..participants.len() {
         let user = participants.get(i).unwrap();
@@ -999,10 +1119,11 @@ fn bench_deposit_with_duration_short() {
 
 #[test]
 fn bench_deposit_with_duration_long() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 10);
+    let participants = create_participants(&env, &client, &token_id, 10);
 
     for i in 0..participants.len() {
         let user = participants.get(i).unwrap();
@@ -1020,10 +1141,11 @@ fn bench_deposit_with_duration_long() {
 
 #[test]
 fn bench_withdraw_locked_10_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 10);
+    let participants = create_participants(&env, &client, &token_id, 10);
 
     for i in 0..participants.len() {
         let user = participants.get(i).unwrap();
@@ -1043,8 +1165,9 @@ fn bench_withdraw_locked_10_participants() {
 
 #[test]
 fn bench_cancel_proposal() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
     let signer2 = Address::generate(&env);
     client.seed_admin(&admin, &signer2);
@@ -1067,8 +1190,9 @@ fn bench_cancel_proposal() {
 
 #[test]
 fn bench_renew_instance() {
-    let (_env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
     client.renew_instance();
 }
@@ -1077,8 +1201,9 @@ fn bench_renew_instance() {
 
 #[test]
 fn bench_seed_admin() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
     let signer2 = Address::generate(&env);
     client.seed_admin(&admin, &signer2);
@@ -1091,10 +1216,12 @@ fn bench_seed_admin() {
 
 #[test]
 fn bench_minimum_deposit() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
     let alice = Address::generate(&env);
+    mint(&env, &token_id, &alice, &1_000_000);
     client.join(&alice);
     client.deposit(&alice, &1);
 
@@ -1104,10 +1231,12 @@ fn bench_minimum_deposit() {
 
 #[test]
 fn bench_maximum_deposit() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
     let alice = Address::generate(&env);
+    mint(&env, &token_id, &alice, &i128::MAX);
     client.join(&alice);
     client.deposit(&alice, &i128::MAX);
 
@@ -1117,8 +1246,9 @@ fn bench_maximum_deposit() {
 
 #[test]
 fn bench_zero_claim() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
     let alice = Address::generate(&env);
     client.join(&alice);
@@ -1131,10 +1261,11 @@ fn bench_zero_claim() {
 
 #[test]
 fn bench_concurrent_deposits_and_claims() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 100);
+    let participants = create_participants(&env, &client, &token_id, 100);
 
     // First round: deposits
     deposit_all(&env, &client, &participants, 1_000);
@@ -1158,10 +1289,11 @@ fn bench_concurrent_deposits_and_claims() {
 
 #[test]
 fn bench_stress_max_operations() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
 
-    let participants = create_participants(&env, &client, 1000);
+    let participants = create_participants(&env, &client, &token_id, 1000);
 
     // 10 rounds of deposits
     for _ in 0..10 {
@@ -1200,11 +1332,13 @@ fn bench_stress_max_operations() {
 /// the number of participants in the round.
 #[test]
 fn bench_prune_round_1000_participants() {
-    let (env, client, admin) = setup();
+    let (env, client, admin, token_id) = setup();
     client.create(&admin);
+    token_setup(&env, &client, &admin, &token_id);
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
 
     let round_id = client.open_round(&admin);
-    let participants = create_participants(&env, &client, 1000);
+    let participants = create_participants(&env, &client, &token_id, 1000);
 
     for i in 0..participants.len() {
         let user = participants.get(i).unwrap();
@@ -1224,8 +1358,5 @@ fn bench_prune_round_1000_participants() {
     client.prune_round(&admin, &round_id, &participants);
 
     // Verify the round is gone.
-    assert_eq!(
-        client.try_round(&round_id),
-        Err(Ok(Error::RoundNotFound))
-    );
+    assert_eq!(client.try_round(&round_id), Err(Ok(Error::RoundNotFound)));
 }

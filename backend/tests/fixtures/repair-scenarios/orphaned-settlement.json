@@ -1,0 +1,7 @@
+{
+  "id": "orphaned-settlement",
+  "recordType": "vault_settlement",
+  "driftType": "orphaned_settlement",
+  "state": { "state": "Unresolved", "attempts": 3 },
+  "repair": { "action": "update", "operatorSteps": ["Verify the recipient and amount", "Retry settlement with a fresh lease", "Confirm the resulting transaction"] }
+}

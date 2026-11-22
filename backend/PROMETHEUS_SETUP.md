@@ -120,15 +120,44 @@ Total number of cache evictions.
 
 #### `indexer_latest_ledger` (Gauge)
 
-Latest ledger number processed by the indexer.
+Ledger the indexer has provably scanned through (#752). Reaches the chain tip
+only when a tick's page came back short and the scan started within the
+RPC's 10,000-ledger per-request scan window; otherwise it holds the last
+processed event's ledger, so a stuck cursor shows up as lag.
+
+#### `indexer_chain_latest_ledger` (Gauge)
+
+Chain tip (`latestLedger`) reported by Soroban RPC on the last fetch (#752).
+Lag in ledgers: `max(indexer_chain_latest_ledger) - max(indexer_latest_ledger)`.
 
 #### `indexer_last_sync_timestamp` (Gauge)
 
-Timestamp of the last successful indexer sync (Unix timestamp).
+Timestamp of the last successful indexer sync (Unix timestamp, seconds).
+Set on every successful tick; its age is the ingestion-stall signal.
 
 #### `indexer_sync_errors_total` (Counter)
 
-Total number of indexer sync errors.
+Total number of indexer sync errors (failed ticks).
+
+#### `indexer_quarantined_events` (Gauge)
+
+Unresolved quarantined (poison) events (#752). Any non-zero value holds the
+indexer cursor. `pending_events_total` is set on the same tick to the number
+of ingested events still waiting for a matching intent (queue depth).
+
+Only the replica holding the `stellar-indexer` job lease updates these, so
+aggregate with `max()` across replicas.
+
+### Replay-Equivalence Metrics (#751)
+
+#### `replay_equivalence_divergences` (Gauge)
+
+Rows that differed between live state and a fresh replay of the chain event
+log on the last run. Must be 0; see `docs/REPLAY_DETERMINISM.md`.
+
+#### `replay_equivalence_last_run_timestamp_seconds` (Gauge)
+
+Unix time the last replay-equivalence run completed.
 
 ### Reconciliation Metrics
 
@@ -360,7 +389,13 @@ Import pre-built dashboards or create custom ones using the metrics. Some popula
 
 ## Alerting
 
-Example alert rules (`alerts.yml`):
+The production rules — ingestion leading indicators (#752) and
+replay-equivalence (#751) — live in `prometheus/alerts.yml` with promtool
+unit tests in `prometheus/alerts.test.yml`
+(`promtool test rules prometheus/alerts.test.yml`); the operator runbook is
+`docs/INDEXER_RUNBOOK.md` §2b.
+
+Further example alert rules:
 
 ```yaml
 groups:

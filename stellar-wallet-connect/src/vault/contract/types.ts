@@ -56,7 +56,21 @@ export interface PoolSummary {
    * this flag yet.
    */
   isEmergency?: boolean;
+  /**
+   * Strategy exposure allocation in basis points (e.g. 8000 = 80.00%) (#685).
+   * Represents the portion of pool TVL deployed to yield strategies.
+   */
+  strategyExposureBps?: number;
+  /** Un-deployed available pool liquidity in asset display units (#685). */
+  idleLiquidity?: string;
+  /** Total value of pending queued withdrawal requests in asset units (#685). */
+  queuedWithdrawals?: string;
+  /** Maximum strategy exposure threshold in basis points before risk warning (#685). Default 8500 (85.00%). */
+  maxStrategyExposureBps?: number;
+  /** Minimum idle reserve ratio threshold in basis points before risk warning (#685). Default 1500 (15.00%). */
+  minIdleRatioBps?: number;
 }
+
 
 export interface SavedPoolEntry extends PoolSummary {
   walletAddress: string;

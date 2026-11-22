@@ -1,0 +1,17 @@
+{
+  "name": "@vaultquest/draw-verifier",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone zero-dependency verifier for VaultQuest round draws (#718). Recomputes a round's winner from public chain data only.",
+  "type": "module",
+  "bin": {
+    "vaultquest-verify-draw": "./verify-draw.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "verify": "node verify-draw.mjs verify-fixture --fixture testdata/round-fixture.json",
+    "test": "node --test test/verify-draw.test.mjs"
+  }
+}

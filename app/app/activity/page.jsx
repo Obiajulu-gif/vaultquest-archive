@@ -1,15 +1,13 @@
 "use client";
 
-import React, { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { useAccount } from "wagmi";
 import { useConnectModal } from "@rainbow-me/rainbowkit";
 import {
   ArrowDownRight, ArrowUpRight, Gift, RefreshCw, Wallet,
-  ChevronLeft, ChevronRight, Filter, Clock, History, AlertCircle, EyeOff, Eye
+  ChevronLeft, ChevronRight, Filter, Clock, AlertCircle, EyeOff, Eye
 } from "lucide-react";
-import { DEMO_TRANSACTIONS } from "@/lib/demo-portfolio";
-import { ActivityExport } from "@vaultquest/stellar-wallet-connect/src/vault/components/ActivityExport";
-import TransactionHistoryModal from "@/components/app/TransactionHistoryModal";
+import UserActivityTimeline from "@/components/app/UserActivityTimeline";
 
 /**
  * Client-side-only "privacy mode" preference (#655). Hides identifying
@@ -159,45 +157,6 @@ export function ActivityFeed({ transactions, privacyMode = false }) {
   );
 }
 
-function ActivitySummary({ transactions }) {
-  const stats = useMemo(() => {
-    const deposits = transactions.filter((t) => t.type === "deposit" && t.status === "confirmed");
-    const withdrawals = transactions.filter((t) => t.type === "withdraw" && t.status === "confirmed");
-    const claims = transactions.filter((t) => t.type === "reward" && t.status === "confirmed");
-    return {
-      totalDeposits: deposits.reduce((s, t) => s + t.amount, 0),
-      totalWithdrawals: withdrawals.reduce((s, t) => s + t.amount, 0),
-      totalClaims: claims.reduce((s, t) => s + t.amount, 0),
-      depositCount: deposits.length,
-      withdrawCount: withdrawals.length,
-      claimCount: claims.length,
-    };
-  }, [transactions]);
-
-  return (
-    <div className="grid gap-4 sm:grid-cols-3">
-      <div className="vq-glass-hover p-5">
-        <span className="flex h-10 w-10 items-center justify-center rounded-xl border border-vault-border bg-vault-surface text-emerald-500"><ArrowDownRight className="h-5 w-5" /></span>
-        <p className="mt-4 text-xs font-medium uppercase tracking-wide text-vault-muted">Total Deposits</p>
-        <p className="mt-1 text-2xl font-bold tabular-nums text-vault-text">${stats.totalDeposits.toLocaleString()}</p>
-        <p className="text-sm text-vault-muted">{stats.depositCount} deposits</p>
-      </div>
-      <div className="vq-glass-hover p-5">
-        <span className="flex h-10 w-10 items-center justify-center rounded-xl border border-vault-border bg-vault-surface text-vault-muted"><ArrowUpRight className="h-5 w-5" /></span>
-        <p className="mt-4 text-xs font-medium uppercase tracking-wide text-vault-muted">Total Withdrawals</p>
-        <p className="mt-1 text-2xl font-bold tabular-nums text-vault-text">${stats.totalWithdrawals.toLocaleString()}</p>
-        <p className="text-sm text-vault-muted">{stats.withdrawCount} withdrawals</p>
-      </div>
-      <div className="vq-glass-hover p-5">
-        <span className="flex h-10 w-10 items-center justify-center rounded-xl border border-vault-border bg-vault-surface text-amber-500"><Gift className="h-5 w-5" /></span>
-        <p className="mt-4 text-xs font-medium uppercase tracking-wide text-vault-muted">Total Claims</p>
-        <p className="mt-1 text-2xl font-bold tabular-nums text-vault-text">${stats.totalClaims.toLocaleString()}</p>
-        <p className="text-sm text-vault-muted">{stats.claimCount} prizes</p>
-      </div>
-    </div>
-  );
-}
-
 function EmptyActivity() {
   const { openConnectModal } = useConnectModal();
   return (
@@ -216,9 +175,7 @@ function EmptyActivity() {
 
 export default function ActivityPage() {
   const { isConnected, address } = useAccount();
-  const [historyOpen, setHistoryOpen] = useState(false);
   const [privacyMode, setPrivacyMode] = useState(false);
-  const enrichedTx = useMemo(() => DEMO_TRANSACTIONS.map((tx) => ({ ...tx })), []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -235,21 +192,12 @@ export default function ActivityPage() {
     });
   }, []);
 
-  const summary = useMemo(() => {
-    if (!isConnected) return null;
-    return {
-      deposits: enrichedTx.filter((t) => t.type === "deposit" && t.status === "confirmed").length,
-      withdrawals: enrichedTx.filter((t) => t.type === "withdraw" && t.status === "confirmed").length,
-      rewards: enrichedTx.filter((t) => t.type === "reward" && t.status === "confirmed").length,
-    };
-  }, [isConnected, enrichedTx]);
-
   return (
     <div className="space-y-8">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold text-vault-text">Account Activity</h1>
-          <p className="mt-2 text-vault-muted">Track all deposits, withdrawals, prize claims, and status changes.</p>
+          <p className="mt-2 text-vault-muted">Track deposits, withdrawals, and prize claims from your wallet.</p>
         </div>
         {isConnected && (
           <button
@@ -266,29 +214,7 @@ export default function ActivityPage() {
       </header>
 
       {isConnected ? (
-        <>
-          <ActivitySummary transactions={enrichedTx} />
-          <ActivityFeed transactions={enrichedTx} privacyMode={privacyMode} />
-          <ActivityExport
-            walletAddress={address || null}
-            walletConnected={isConnected}
-            summary={summary}
-          />
-          <div className="vq-glass flex items-center justify-between p-4 sm:p-6">
-            <div>
-              <h3 className="text-base font-semibold text-vault-text">Full transaction history</h3>
-              <p className="text-sm text-vault-muted">View paginated deposits, withdrawals, and claims from the backend.</p>
-            </div>
-            <button type="button" onClick={() => setHistoryOpen(true)} className="vq-btn-primary">
-              <History className="h-4 w-4" /> View history
-            </button>
-          </div>
-          <TransactionHistoryModal
-            open={historyOpen}
-            onClose={() => setHistoryOpen(false)}
-            walletAddress={address ?? null}
-          />
-        </>
+        <UserActivityTimeline key={address} walletAddress={address ?? null} privacyMode={privacyMode} />
       ) : (
         <EmptyActivity />
       )}

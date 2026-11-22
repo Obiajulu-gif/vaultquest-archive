@@ -1,5 +1,9 @@
 import '@testing-library/jest-dom';
+import '@testing-library/jest-dom/vitest';
+import React from 'react';
 import { vi } from 'vitest';
+
+(global as any).React = React;
 
 // Mock matchMedia for components that use it (like Radix UI)
 Object.defineProperty(window, 'matchMedia', {
@@ -63,3 +67,14 @@ Object.defineProperty(global, 'sessionStorage', {
   value: sessionStorageMock,
   writable: true,
 });
+
+if (typeof Blob !== "undefined" && !Blob.prototype.text) {
+  Blob.prototype.text = function() {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsText(this);
+    });
+  };
+}

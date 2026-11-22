@@ -32,8 +32,8 @@ function isPlaceholder(value: string): boolean {
 
 function isValidUrl(value: string): boolean {
   try {
-    new URL(value);
-    return true;
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.hash;
   } catch {
     return false;
   }
@@ -159,6 +159,25 @@ export function parseFrontendEnv(
     env.TRUSTLESS_WORK_API_BASE_URL
   );
   if (trustlessBaseUrlError) errors.push(trustlessBaseUrlError);
+
+  const publicNetwork = "Public Global Stellar Network ; September 2015";
+  const supportedNetworks = [publicNetwork, "Test SDF Network ; September 2015", "Test SDF Future Network ; October 2022", "Standalone Network ; February 2017"];
+  if (!supportedNetworks.includes(env.NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE)) {
+    errors.push("NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE must be a supported Stellar network passphrase");
+  }
+  const mode = source.APP_ENV ?? (source.NODE_ENV === "production" ? "production" : "local");
+  if (!["local", "staging", "production"].includes(mode)) errors.push("APP_ENV must be local, staging, or production");
+  if (mode !== "production" && env.NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE === publicNetwork) errors.push("NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE mainnet requires production mode");
+  for (const key of ["NEXT_PUBLIC_HORIZON_URL", "NEXT_PUBLIC_SOROBAN_RPC_URL", "TRUSTLESS_WORK_API_BASE_URL"] as const) {
+    const value = env[key];
+    if (value && mode !== "local" && !value.startsWith("https://")) errors.push(`${key} requires HTTPS in shared environments`);
+  }
+  for (const key of ["NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID", "NEXT_PUBLIC_TRUSTLESS_WORK_ESCROW_CONTRACT_ID"] as const) {
+    if (env[key] && !/^C[A-Z2-7]{55}$/.test(env[key])) errors.push(`${key} must be a Stellar contract ID (C… 56 characters)`);
+  }
+  for (const key of Object.keys(source)) {
+    if (/^NEXT_PUBLIC_.*(?:SECRET|PRIVATE_KEY|API_KEY|SIGNING_SEED)/i.test(key) && source[key]) errors.push(`${key} must remain server-only; remove the NEXT_PUBLIC_ prefix`);
+  }
 
   if (errors.length > 0) {
     throw new Error(`Invalid frontend env: ${errors.join("; ")}`);

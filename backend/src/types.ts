@@ -27,4 +27,10 @@ export type ActionRecord = {
   updatedAt: Date;
   submittedAt: Date | null;
   confirmedAt: Date | null;
+  finalityStatus: string;
+  observedLedger: number | null;
+  finalizedLedger: number | null;
+  confirmationDepth: number | null;
+  compensatesId: string | null;
+  recoveryCheckpoint: unknown;
 };

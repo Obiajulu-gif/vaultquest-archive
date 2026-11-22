@@ -13,6 +13,38 @@
  * but keyed by a stable jobName instead of a per-action id, and adds a
  * fencingToken that increments on every successful acquisition (including
  * takeovers).
+ *
+ * ## Concurrency strategy
+ *
+ * The invariant this service protects is: **at most one worker holds a
+ * given job lease at any instant, and the fencing token of the current
+ * holder is strictly greater than any token previously issued for that
+ * job.** This is enforced by three layers:
+ *
+ * 1. Initial acquisition is a unique-constraint insert on `job_name`;
+ *    concurrent inserts lose with Prisma P2002 and fall back to the
+ *    conditional takeover path.
+ * 2. Takeover is a single conditional `UPDATE ... WHERE expires_at <=
+ *    now RETURNING` statement. The database serializes concurrent
+ *    updates on the same row, so only one taker observes the row as
+ *    expired and advances the token; the loser gets zero rows back and
+ *    returns null. The token bump and the ownership transfer are the
+ *    same atomic write, so two holders can never share a token.
+ * 3. Renewal is a conditional `updateMany` that requires matching
+ *    `workerId`, matching `fencingToken`, and a non-expired lease. A
+ *    stale holder whose lease lapsed cannot resurrect it; it must go
+ *    through the explicit takeover path, which bumps the token.
+ *
+ * The consumer of a lease is responsible for the final fencing check:
+ * before committing any irreversible write, call `isFencingTokenCurrent` or
+ * fold the equivalent condition into the write's own WHERE clause. This
+ * gives at-most-once semantics for guarded writes even when a lease is
+ * taken over mid-tick.
+ *
+ * See `backend/src/services/_________/leaseService.concurrency.test.ts`
+ * for the deterministic race simulations and concurrency stress tests
+ * covering simultaneous success, conflicting requests, duplicate retries,
+ * and timeout behavior.
  */
 
 import type { PrismaClient } from "@prisma/client";

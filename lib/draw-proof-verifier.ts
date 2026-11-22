@@ -259,6 +259,8 @@ export interface ReconcileRewardEntryInput {
    * claimTxHash exists.  Truthy means confirmed-successful.
    */
   claimTxSuccessful?: boolean;
+  /** Optional HMAC signing secret for version 1.1.0 proofs */
+  signatureSecret?: string;
 }
 
 /**
@@ -283,7 +285,7 @@ export async function reconcileRewardEntry(
     proofStatus = "tampered";
     proofDetail = `Round ID mismatch: proof.roundId=${input.proof.roundId}, expected=${input.roundId}`;
   } else {
-    const result = await verifyProofIntegrity(input.proof);
+    const result = await verifyProofIntegrity(input.proof, input.signatureSecret);
     const failingField = result.fields.find((f) => f.status === "fail");
     const unverifiedField = result.fields.find((f) => f.status === "unverified");
 

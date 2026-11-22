@@ -21,12 +21,13 @@ import WalletFundingWrapper from "./WalletFundingWrapper.tsx";
 <WalletFundingWrapper client:load />
 
 <script>
-  import { connectedPublicKey } from "../core/store";
+  import { subscribeWalletState, connectedPublicKey } from "../core/store";
   import {
     initializeConnection,
     loadedPublicKey,
     setConnection,
     disconnect,
+    disconnectWallet,
     loadedProvider,
     checkAndNotifyFunding,
   } from "../core/walletService";
@@ -36,10 +37,11 @@ import WalletFundingWrapper from "./WalletFundingWrapper.tsx";
     initializeConnection();
 
     const button = document.querySelector("[data-connect]") as HTMLButtonElement;
+    if (!button) return;
     const textSpan = button.querySelector("span");
 
     function updateButtonUI(publicKey: string | null) {
-      if (publicKey && textSpan) {
+      if (publicKey && publicKey.length > 0 && textSpan) {
         textSpan.textContent = `${publicKey.slice(0, 4)}...${publicKey.slice(-4)}`;
         button.title = publicKey;
         button.classList.add("bg-black", "text-white");
@@ -56,17 +58,19 @@ import WalletFundingWrapper from "./WalletFundingWrapper.tsx";
       }
     }
 
-    const initialPublicKey = loadedPublicKey();
-    if (initialPublicKey) {
-      updateButtonUI(initialPublicKey);
-      checkAndNotifyFunding();
-    }
+    // Subscribe to framework-agnostic store — updates instantly when ANY React island mutates state
+    const unsubscribe = subscribeWalletState((snapshot) => {
+      updateButtonUI(snapshot.publicKey);
+      if (snapshot.isConnected) {
+        checkAndNotifyFunding();
+      }
+    });
 
     async function connectWallet() {
       const provider = loadedProvider();
 
       if (button.title) {
-        // Simple disconnect for this abstracted version, or emit event
+        // Open profile modal or trigger disconnect
         window.dispatchEvent(new CustomEvent("openProfileModal"));
         return;
       }
@@ -78,7 +82,6 @@ import WalletFundingWrapper from "./WalletFundingWrapper.tsx";
               kit.setWallet(option.id);
               const { address } = await kit.getAddress();
               setConnection(address, option.id);
-              updateButtonUI(address);
               await checkAndNotifyFunding();
             } catch (err) {
               console.error("Connection failed", err);
@@ -93,13 +96,17 @@ import WalletFundingWrapper from "./WalletFundingWrapper.tsx";
     button.addEventListener("click", connectWallet);
 
     window.addEventListener("walletDisconnected", () => {
-      disconnect();
-      updateButtonUI(null);
+      disconnectWallet();
     });
 
     const provider = loadedProvider();
     if (provider) {
       kit.setWallet(provider);
     }
+
+    // Cleanup subscription on page swap
+    document.addEventListener("astro:before-swap", () => {
+      unsubscribe();
+    }, { once: true });
   });
 </script>

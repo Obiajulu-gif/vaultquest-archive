@@ -8,6 +8,10 @@ const IGNORED_DIRS = new Set([
   "node_modules",
   ".git",
   ".next",
+  ".kilo",
+  ".agents",
+  ".gemini",
+  ".system_generated",
   "dist",
   "build",
   "out",
@@ -61,6 +65,7 @@ function resolveLinkTarget(fromFile, rawTarget) {
     target.startsWith("mailto:") ||
     target.startsWith("tel:") ||
     target.startsWith("data:") ||
+    target.startsWith("file://") ||
     target.startsWith("#")
   ) {
     return null;
@@ -72,6 +77,9 @@ function resolveLinkTarget(fromFile, rawTarget) {
   }
 
   if (pathTarget.startsWith("/")) {
+    if (!path.extname(pathTarget)) {
+      return null;
+    }
     return path.resolve(ROOT_DIR, `.${pathTarget}`);
   }
 

@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "description": "Golden fixtures for ownership transfer acceptance and expiry (#1123).",
+  "structs": {
+    "PendingOwnershipTransfer": {
+      "fields": [
+        { "name": "proposed_owner", "type": "address" },
+        { "name": "current_owner",  "type": "address" },
+        { "name": "expires_at",     "type": "u32" },
+        { "name": "proposed_at",    "type": "u32" }
+      ]
+    }
+  },
+  "errors": {
+    "OwnershipTransferNotFound": {
+      "code": 98,
+      "backend_error": "NOT_FOUND",
+      "wallet_error_kind": "contract_error",
+      "description": "accept/cancel/expire called with no pending transfer record."
+    },
+    "OwnershipTransferExpired": {
+      "code": 99,
+      "backend_error": "INVALID_PAYLOAD",
+      "wallet_error_kind": "contract_error",
+      "description": "Acceptance attempted after the expires_at ledger sequence."
+    }
+  },
+  "events": {
+    "ownership_proposed": {
+      "topics": ["ownership", "proposed"],
+      "data": "(current_owner: address, new_owner: address, expires_at: u32)",
+      "description": "Emitted when propose_ownership_transfer is called."
+    },
+    "ownership_accepted": {
+      "topics": ["ownership", "accepted"],
+      "data": "(old_owner: address, new_owner: address)",
+      "description": "Emitted when accept_ownership_transfer succeeds."
+    },
+    "ownership_cancelled": {
+      "topics": ["ownership", "cancelled"],
+      "data": "(current_owner: address, proposed_owner: address)",
+      "description": "Emitted when cancel_ownership_transfer succeeds."
+    },
+    "ownership_expired": {
+      "topics": ["ownership", "expired"],
+      "data": "(current_owner: address, proposed_owner: address, expires_at: u32)",
+      "description": "Emitted when expire_ownership_transfer cleans up a stale record."
+    }
+  },
+  "storage": {
+    "PendingOwner": {
+      "key": "PendingOwner",
+      "type": "PendingOwnershipTransfer",
+      "scope": "instance",
+      "lifecycle": "created by propose_ownership_transfer; deleted by accept, cancel, or expire",
+      "description": "Exists only while a two-phase transfer is pending. Absence means no transfer is in progress."
+    }
+  },
+  "rare_failure_fixtures": [
+    {
+      "name": "ownership_expiry_exact_boundary_success",
+      "description": "Accepting at ledger == expires_at is still valid (boundary inclusive).",
+      "ledgers_to_advance": 10,
+      "ttl": 10,
+      "expected_error": null
+    },
+    {
+      "name": "ownership_expiry_one_past",
+      "description": "Accepting at ledger == expires_at + 1 must return OwnershipTransferExpired.",
+      "ledgers_to_advance": 11,
+      "ttl": 10,
+      "expected_error": "OwnershipTransferExpired"
+    },
+    {
+      "name": "expire_before_deadline",
+      "description": "expire_ownership_transfer before expires_at must return InvalidAction.",
+      "ledgers_to_advance": 5,
+      "ttl": 10,
+      "expected_error": "InvalidAction"
+    },
+    {
+      "name": "expire_at_exact_deadline",
+      "description": "expire_ownership_transfer at ledger == expires_at must return InvalidAction (not yet past).",
+      "ledgers_to_advance": 10,
+      "ttl": 10,
+      "expected_error": "InvalidAction"
+    },
+    {
+      "name": "expire_one_past_deadline",
+      "description": "expire_ownership_transfer at ledger == expires_at + 1 must succeed.",
+      "ledgers_to_advance": 11,
+      "ttl": 10,
+      "expected_error": null
+    },
+    {
+      "name": "accept_after_cancel",
+      "description": "After cancel_ownership_transfer, any accept attempt returns OwnershipTransferNotFound.",
+      "ledgers_to_advance": 0,
+      "ttl": 0,
+      "expected_error": "OwnershipTransferNotFound"
+    },
+    {
+      "name": "self_transfer_rejected",
+      "description": "propose_ownership_transfer(admin, admin) must return InvalidAction.",
+      "ledgers_to_advance": 0,
+      "ttl": 0,
+      "expected_error": "InvalidAction"
+    },
+    {
+      "name": "ttl_beyond_max",
+      "description": "propose with ttl > OWNERSHIP_TRANSFER_MAX_TTL (17_280*90) must return InvalidAction.",
+      "ledgers_to_advance": 0,
+      "ttl": 1555201,
+      "expected_error": "InvalidAction"
+    },
+    {
+      "name": "accept_no_proposal",
+      "description": "accept_ownership_transfer with no pending record returns OwnershipTransferNotFound.",
+      "ledgers_to_advance": 0,
+      "ttl": 0,
+      "expected_error": "OwnershipTransferNotFound"
+    },
+    {
+      "name": "cancel_no_proposal",
+      "description": "cancel_ownership_transfer with no pending record returns OwnershipTransferNotFound.",
+      "ledgers_to_advance": 0,
+      "ttl": 0,
+      "expected_error": "OwnershipTransferNotFound"
+    },
+    {
+      "name": "non_admin_propose",
+      "description": "An address that is not Pool.admin cannot propose a transfer.",
+      "ledgers_to_advance": 0,
+      "ttl": 0,
+      "expected_error": "Unauthorized"
+    },
+    {
+      "name": "wrong_acceptor",
+      "description": "An address other than proposed_owner cannot accept.",
+      "ledgers_to_advance": 0,
+      "ttl": 0,
+      "expected_error": "Unauthorized"
+    }
+  ]
+}

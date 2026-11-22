@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { createMockVaultClient, SAMPLE_ADDRESS } from "./mockClient";
 import { ContractInterfaceError, type PoolActionType, type PoolSummary } from "./types";
+import { BusinessPolicyEngine } from "../../../../lib/business-policy";
 
 const pool: PoolSummary = {
   id: "pool-1",
@@ -63,6 +64,24 @@ describe("mock VaultContractClient — write flows", () => {
     const client = createMockVaultClient({ failActions: { claim: "contract_error" } });
     await expect(client.submitAction("claim", { poolId: "pool-1", walletAddress: SAMPLE_ADDRESS }))
       .rejects.toBeInstanceOf(ContractInterfaceError);
+  });
+
+  it("applies the injected business policy and preserves the configured boundary", async () => {
+    const client = createMockVaultClient({
+      businessPolicy: new BusinessPolicyEngine({ maximumDeposit: 100 })
+    });
+
+    await expect(client.submitAction("drip", {
+      poolId: "pool-1",
+      walletAddress: SAMPLE_ADDRESS,
+      amount: "100.01"
+    })).rejects.toMatchObject({ kind: "contract_error", message: expect.stringContaining("Lower the amount") });
+
+    await expect(client.submitAction("drip", {
+      poolId: "pool-1",
+      walletAddress: SAMPLE_ADDRESS,
+      amount: "100"
+    })).resolves.toMatchObject({ status: "submitted" });
   });
 });
 

@@ -1,0 +1,20 @@
+services:
+  sandbox-db:
+    image: postgres:16-alpine
+    container_name: vaultquest-sandbox-postgres
+    environment:
+      POSTGRES_DB: vaultquest_sandbox
+      POSTGRES_USER: vaultquest_sandbox
+      POSTGRES_PASSWORD: vaultquest_sandbox_local_only
+    ports:
+      - "55432:5432"
+    volumes:
+      - vaultquest-sandbox-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vaultquest_sandbox -d vaultquest_sandbox"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  vaultquest-sandbox-db:

@@ -1,0 +1,16 @@
+{
+  "schema": "vaultquest.backup-snapshot.v1",
+  "capturedAt": "2026-10-20T10:00:00.000Z",
+  "rowCounts": { "users": 1, "action_ledger": 1, "chain_events": 1, "indexer_checkpoints": 1, "pool_registry": 1, "saved_pools": 1, "vault_settlements": 1, "user_quests": 1, "reward_grants": 1 },
+  "tables": {
+    "users": [{ "id": "user-1", "walletAddress": "fixture-wallet", "email": null }],
+    "action_ledger": [{ "id": "action-1", "idempotencyKey": "intent-1", "status": "confirmed", "txHash": "fixture-tx", "sorobanEventId": "0000000429496729600-0000000001", "confirmedAt": "2026-10-20T09:00:00.000Z", "redactedAt": null, "verifiedPayload": { "amount": "100" } }],
+    "chain_events": [{ "id": "0000000429496729600-0000000001", "ledger": 100, "txHash": "fixture-tx", "contractId": "fixture-pool", "topicXdr": ["ZGVwb3NpdA=="], "valueXdr": "e30=", "successful": true }],
+    "indexer_checkpoints": [{ "id": "singleton", "lastProcessedEventId": "0000000429496729600-0000000001", "latestLedger": 100 }],
+    "pool_registry": [{ "id": "pool-1", "poolAddress": "fixture-pool" }],
+    "saved_pools": [{ "id": "save-1", "walletAddress": "fixture-wallet", "poolId": "fixture-pool" }],
+    "vault_settlements": [{ "id": "settle-1", "state": "Unresolved", "resolvedAt": null }],
+    "user_quests": [{ "id": "quest-1", "walletAddress": "fixture-wallet", "questId": "first-deposit" }],
+    "reward_grants": [{ "id": "reward-1", "walletAddress": "fixture-wallet", "questId": "first-deposit", "idempotencyKey": "reward-key-1", "status": "granted", "grantedAt": "2026-10-20T09:00:00.000Z" }]
+  }
+}

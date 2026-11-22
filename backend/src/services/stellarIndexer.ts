@@ -7,7 +7,7 @@
  * is declared a failure.
  */
 
-import type { LedgerService } from "./ledger.js";
+import type { LedgerService, ReconcileEventInput } from "./ledger.js";
 import { withRetry, type RetryOptions } from "../utils/retry.js";
 import type { Logger } from "pino";
 import { rpc as StellarRpc, xdr as StellarXdr, scValToNative } from "@stellar/stellar-sdk";
@@ -26,6 +26,12 @@ export interface RawHorizonEvent {
   topicXdr: string[];   // array of base-64 encoded XDR symbol/value pairs
   valueXdr: string;     // base-64 encoded XDR value
   successful: boolean;
+  /**
+   * ISO-8601 close time of the emitting ledger (RPC `ledgerClosedAt`).
+   * Always set by SorobanRpcEventSource; it is the only clock event
+   * processing may use, so replaying the log stays deterministic (#751).
+   */
+  ledgerClosedAt?: string;
 }
 
 export interface DecodedEvent {
@@ -48,10 +54,44 @@ export interface IndexResult {
   cursor: string | null;
   /** Highest ledger sequence observed in this batch (successfully processed events only). */
   latestLedger: number | null;
+  /** Chain tip reported by the source on this fetch, or null when the source doesn't report one (#752). */
+  chainLatestLedger: number | null;
+  /**
+   * Ledger the indexer has provably scanned through (#752). Equals the chain
+   * tip only when the page came back short AND the scan started within the
+   * RPC's per-request scan window; otherwise the last processed event's
+   * ledger, so a cursor stuck behind an empty stretch shows up as lag.
+   */
+  ingestedLedger: number | null;
 }
 
 export interface HorizonEventSource {
   fetchEvents(opts: { cursor?: string | null; startLedger?: number; endLedger?: number; limit?: number }): Promise<RawHorizonEvent[]>;
+  /** Chain tip (`latestLedger`) seen by the most recent fetch, if the source reports it (#752). */
+  latestObservedLedger?(): number | null;
+}
+
+/**
+ * Stellar RPC scans at most 10,000 ledgers per getEvents request (stellar-rpc
+ * v21.5.0), so a short page only proves the tip was reached when the scan
+ * started less than this many ledgers behind it.
+ */
+export const RPC_MAX_SCAN_LEDGERS = 10_000;
+
+/**
+ * Extracts the ledger sequence from a Soroban RPC event id. The id is a
+ * 19-digit TOID ("-" 10-digit event index) whose top 32 bits are the ledger
+ * sequence. Returns null for ids that aren't TOID-shaped (test doubles).
+ */
+export function ledgerOfEventId(eventId: string): number | null {
+  const [toid = ""] = eventId.split("-");
+  if (!/^\d{19}$/.test(toid)) return null;
+  return Number(BigInt(toid) >> 32n);
+}
+
+/** Smallest possible event id in `ledger` — the TOID-ordered lower bound for that ledger. */
+export function firstEventIdOfLedger(ledger: number): string {
+  return `${(BigInt(ledger) << 32n).toString().padStart(19, "0")}-${"0".repeat(10)}`;
 }
 
 export interface XdrDecoder {
@@ -222,6 +262,22 @@ export const sorobanNativeXdrDecoder: XdrDecoder = {
   }
 };
 
+/** Maps a decoded event onto the ledger's reconcile input; event-derived fields only (#751). */
+function toReconcileInput(e: {
+  raw: RawHorizonEvent;
+  payload: Record<string, unknown>;
+  statusHint: "confirmed" | "reverted";
+}): ReconcileEventInput {
+  return {
+    txHash: e.raw.txHash,
+    sorobanEventId: e.raw.id,
+    eventPayload: e.payload,
+    statusHint: e.statusHint,
+    ledger: e.raw.ledger,
+    ledgerClosedAt: e.raw.ledgerClosedAt ? new Date(e.raw.ledgerClosedAt) : undefined
+  };
+}
+
 // ─── StellarIndexer ───────────────────────────────────────────────────────────
 
 /**
@@ -303,12 +359,29 @@ export class StellarIndexer {
     }
 
     // ── Fetch with retry ──────────────────────────────────────────────────
+    const scanFrom = this.cursor;
     const rawEvents = await withRetry(
-      () => source.fetchEvents({ cursor: this.cursor, limit: batchSize }),
+      () => source.fetchEvents({ cursor: scanFrom, limit: batchSize }),
       this.opts.retryOptions
     );
 
-    return this.processRawEvents(rawEvents);
+    const result = await this.processRawEvents(rawEvents);
+
+    // ── Ingestion progress (#752) ─────────────────────────────────────────
+    const chainLatestLedger = source.latestObservedLedger?.() ?? null;
+    const scanFromLedger = scanFrom ? ledgerOfEventId(scanFrom) : null;
+    const reachedTip =
+      rawEvents.length < batchSize &&
+      result.quarantined === 0 &&
+      chainLatestLedger !== null &&
+      scanFromLedger !== null &&
+      chainLatestLedger - scanFromLedger < RPC_MAX_SCAN_LEDGERS;
+
+    return {
+      ...result,
+      chainLatestLedger,
+      ingestedLedger: reachedTip ? chainLatestLedger : result.latestLedger ?? scanFromLedger
+    };
   }
 
   /**
@@ -317,209 +390,75 @@ export class StellarIndexer {
    */
   async processRawEvents(rawEvents: RawHorizonEvent[]): Promise<IndexResult> {
     const { ledger, decoder } = this.opts;
+    const ordered = [...rawEvents].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    // Persist the original bytes and their manifest before decoding or writing any projection.
+    await ledger.appendChainEvents(ordered);
     let imported = 0;
     let duplicates = 0;
     let quarantined = 0;
     let latestLedger: number | null = null;
-
-    // Track txHashes seen within this batch to detect intra-batch duplicates
-    // before they reach the DB (reconcileEvent uses upsert with update:{} so
-    // it would silently accept a second write of the same hash).
-    const seenInBatch = new Set<string>();
-
-    // ── Decode phase ─────────────────────────────────────────────────────
-    // Decode every event first, quarantining-and-halting at the first
-    // unresolvable one (so the cursor can never advance past a gap), and
-    // collect the decodable events for a single batched write below.
-    const batchEvents: Array<{
-      raw: RawHorizonEvent;
-      payload: Record<string, unknown>;
-      statusHint: "confirmed" | "reverted";
-    }> = [];
-    const poolRegistryEvents: Array<{
-      raw: RawHorizonEvent;
-      payload: Record<string, unknown>;
-    }> = [];
-
-    for (const raw of rawEvents) {
-      // Intra-batch duplicate: same txHash appeared earlier in this tick.
-      if (seenInBatch.has(raw.txHash)) {
-        duplicates += 1;
-        this.cursor = raw.id;
-        latestLedger = raw.ledger;
-        continue;
+    const seen = new Set<string>();
+    const seenTransactions = new Set<string>();
+    let pending: ReconcileEventInput[] = [];
+    let pendingTip: RawHorizonEvent | null = null;
+    const flush = async () => {
+      if (pending.length) {
+        const outcomes = await ledger.reconcileEvents(pending);
+        for (let i = 0; i < pending.length; i++) {
+          const input = pending[i]!;
+          this.opts.logger?.info({ txHash: input.txHash, eventId: input.sorobanEventId,
+            ledger: input.ledger, matched: outcomes[i]!.matched }, "indexer: event reconciled");
+        }
+        imported += pending.length;
       }
-      seenInBatch.add(raw.txHash);
-
+      if (pendingTip) { this.cursor = pendingTip.id; latestLedger = pendingTip.ledger; }
+      pending = [];
+      pendingTip = null;
+    };
+    for (const raw of ordered) {
+      if (seen.has(raw.id)) { duplicates++; pendingTip = raw; continue; }
+      seen.add(raw.id);
       let payload: Record<string, unknown>;
       try {
         payload = decoder.decode(raw);
-      } catch (err) {
-        // Malformed or unrecognized event: quarantine it and halt this batch
-        // *without* advancing the cursor past it, so a gap can't silently
-        // slip by. The next tick will re-fetch and retry the same event
-        // until it's resolved (fixed decoder/backfill) or manually cleared.
-        // Events decoded before the gap are still written by the write phase
-        // below — nothing after the gap is touched.
-        await ledger.quarantineEvent({
-          sorobanEventId: raw.id,
-          ledger: raw.ledger,
-          contractId: raw.contractId,
-          txHash: raw.txHash,
-          rawEvent: raw as unknown as Record<string, unknown>,
-          reason: err instanceof Error ? err.message : String(err)
-        });
-        quarantined += 1;
-        this.opts.logger?.warn(
-          { eventId: raw.id, txHash: raw.txHash, err },
-          "indexer: quarantined event, halting batch at gap"
-        );
+      } catch (error) {
+        await flush();
+        await ledger.quarantineEvent({ sorobanEventId: raw.id, ledger: raw.ledger,
+          contractId: raw.contractId, txHash: raw.txHash, rawEvent: raw as unknown as Record<string, unknown>,
+          reason: error instanceof Error ? error.message : String(error) });
+        this.opts.logger?.warn({ eventId: raw.id, txHash: raw.txHash }, "indexer: quarantined event; halted at gap");
+        quarantined++;
         break;
       }
-
-      const statusHint: "confirmed" | "reverted" = raw.successful ? "confirmed" : "reverted";
-
-      // vault-factory's registry event (#507) isn't an action confirmation
-      // against a pre-existing ActionLedger row — it announces a brand new
-      // pool. Route it to the registry upsert instead of reconcileEvent,
-      // which would otherwise park it as an orphaned pendingEvent forever.
+      const statusHint = raw.successful ? "confirmed" as const : "reverted" as const;
       if (payload.type === FACTORY_POOL_DEPLOYED_EVENT_TYPE && statusHint === "confirmed") {
-        // #507 "spoofed pools": only trust this event if it was emitted BY
-        // the configured, known vault-factory contract address. Without
-        // this check, ANY contract in the watched set emitting a
-        // topic-matching fpooldep event — including a malicious or
-        // unrelated contract — would get its (fully attacker-controlled)
-        // payload fields upserted into the registry as if it were a
-        // genuine factory deployment. Fails closed: if factoryAddress
-        // isn't configured, or doesn't match the emitting contract, the
-        // event is logged and skipped rather than trusted.
-        if (!this.opts.factoryAddress) {
-          this.opts.logger?.warn(
-            { txHash: raw.txHash, contractId: raw.contractId },
-            "indexer: received fpooldep event but no factoryAddress is configured — refusing to trust it, skipping"
-          );
-          this.cursor = raw.id;
-          latestLedger = raw.ledger;
-          continue;
+        // Flush before registry writes so mixed batches preserve chain order.
+        await flush();
+        if (this.opts.factoryAddress && raw.contractId === this.opts.factoryAddress) {
+          await ledger.upsertPoolRegistryEntry({ salt: bytesToHex(payload.salt),
+            poolAddress: String(payload.pool_address), factoryAddress: raw.contractId,
+            admin: String(payload.admin), asset: String(payload.asset), wasmHash: bytesToHex(payload.wasm_hash),
+            deployedLedger: raw.ledger });
+          imported++;
+        } else {
+          this.opts.logger?.warn({ eventId: raw.id, contractId: raw.contractId }, "indexer: refusing registry event from an untrusted factory");
         }
-        if (raw.contractId !== this.opts.factoryAddress) {
-          this.opts.logger?.warn(
-            { txHash: raw.txHash, contractId: raw.contractId, expectedFactoryAddress: this.opts.factoryAddress },
-            "indexer: received fpooldep event from a contract that is NOT the configured vault-factory — possible spoofed pool, skipping"
-          );
-          this.cursor = raw.id;
-          latestLedger = raw.ledger;
-          continue;
-        }
-
-        poolRegistryEvents.push({ raw, payload });
-        continue;
-      }
-
-      batchEvents.push({ raw, payload, statusHint });
-    }
-
-    // ── Write phase ───────────────────────────────────────────────────────
-    // Batch-reconcile the independent (non-conflicting) events in ONE
-    // transaction instead of one round-trip per event (#588). Outcomes align
-    // 1:1 with batchEvents (distinct tx hashes are guaranteed by
-    // seenInBatch), so each queued event advances the cursor exactly as the
-    // per-event path did — only the *timing* changes, never the outcomes.
-    if (batchEvents.length > 0) {
-      try {
-        const outcomes = await ledger.reconcileEvents(
-          batchEvents.map((e) => ({
-            txHash: e.raw.txHash,
-            sorobanEventId: e.raw.id,
-            eventPayload: e.payload,
-            statusHint: e.statusHint
-          }))
-        );
-        for (let i = 0; i < outcomes.length; i++) {
-          imported += 1;
-          // outcomes is 1:1 with batchEvents (both built in the same loop).
-          const event = batchEvents[i]!;
-          this.cursor = event.raw.id;
-          latestLedger = event.raw.ledger;
-        }
-      } catch (err) {
-        // A batch-wide failure (lock timeout, connection loss) leaves the
-        // whole batch unwritten. Fall back to per-event reconciliation so a
-        // transient conflict can't silently drop events: the cursor only
-        // advances past events that were actually written.
-        this.opts.logger?.warn(
-          { err, count: batchEvents.length },
-          "indexer: batch reconcile failed, falling back to per-event writes"
-        );
-        for (const e of batchEvents) {
-          try {
-            await ledger.reconcileEvent({
-              txHash: e.raw.txHash,
-              sorobanEventId: e.raw.id,
-              eventPayload: e.payload,
-              statusHint: e.statusHint
-            });
-            imported += 1;
-          } catch (err2: unknown) {
-            // Unique constraint violation on pending_events.tx_hash means we
-            // already have this event from a previous tick — safe to skip.
-            const isDuplicate =
-              err2 instanceof Error &&
-              (err2.message.includes("Unique constraint") ||
-                err2.message.includes("P2002") ||
-                (err2 as any).code === "P2002");
-
-            if (isDuplicate) {
-              duplicates += 1;
-            } else {
-              this.opts.logger?.warn({ err: err2, txHash: e.raw.txHash }, "indexer: skipping event due to error");
-              this.cursor = e.raw.id;
-              latestLedger = e.raw.ledger;
-              continue;
-            }
-          }
-          this.cursor = e.raw.id;
-          latestLedger = e.raw.ledger;
-        }
+        this.cursor = raw.id;
+        latestLedger = raw.ledger;
+      } else {
+        if (seenTransactions.has(raw.txHash)) { duplicates++; pendingTip = raw; continue; }
+        seenTransactions.add(raw.txHash);
+        pending.push(toReconcileInput({ raw, payload, statusHint }));
+        pendingTip = raw;
       }
     }
-
-    // Pool registry upserts (rare — one per deployed pool) stay per-event:
-    // batching them would gain nothing and the registry is uncontended.
-    for (const { raw, payload } of poolRegistryEvents) {
-      try {
-        // `salt`/`wasm_hash` are BytesN<32> on-chain; scValToNative
-        // decodes those to Buffers, not strings — hex-encode them so the
-        // registry stores a stable, human-inspectable value instead of
-        // mangling raw bytes through String() coercion. Address fields
-        // (`pool_address`/`admin`/`asset`) already decode to their G...
-        // strkey strings.
-        await ledger.upsertPoolRegistryEntry({
-          salt: bytesToHex(payload.salt),
-          poolAddress: String(payload.pool_address),
-          factoryAddress: raw.contractId,
-          admin: String(payload.admin),
-          asset: String(payload.asset),
-          wasmHash: bytesToHex(payload.wasm_hash),
-          deployedLedger: raw.ledger
-        });
-        imported += 1;
-      } catch (err) {
-        this.opts.logger?.warn({ err, txHash: raw.txHash }, "indexer: failed to upsert pool registry entry");
-      }
-      this.cursor = raw.id;
-      latestLedger = raw.ledger;
-    }
-
-    return {
-      processed: rawEvents.length,
-      imported,
-      duplicates,
-      quarantined,
-      cursor: this.cursor,
-      latestLedger
-    };
+    // Failed batches propagate without advancing the cursor. A retry repeats
+    // the already committed prefix, whose ledger writes are idempotent.
+    await flush();
+    return { processed: rawEvents.length, imported, duplicates, quarantined,
+      cursor: this.cursor, latestLedger, chainLatestLedger: null, ingestedLedger: latestLedger };
   }
+
 }
 
 // ─── SorobanRpcEventSource ────────────────────────────────────────────────────
@@ -535,6 +474,7 @@ const RPC_PAGE_LIMIT = 200;
  */
 export class SorobanRpcEventSource implements HorizonEventSource {
   private servers: StellarRpc.Server[];
+  private latestLedger: number | null = null;
 
   constructor(private options: SorobanRpcEventSourceOptions) {
     const urls = Array.isArray(options.rpcUrl) ? options.rpcUrl : [options.rpcUrl];
@@ -551,6 +491,10 @@ export class SorobanRpcEventSource implements HorizonEventSource {
    */
   setContractIds(contractIds: string[]): void {
     this.options = { ...this.options, contractIds };
+  }
+
+  latestObservedLedger(): number | null {
+    return this.latestLedger;
   }
 
   private async callWithFailover(request: StellarRpc.Api.GetEventsRequest): Promise<StellarRpc.Api.GetEventsResponse> {
@@ -590,6 +534,7 @@ export class SorobanRpcEventSource implements HorizonEventSource {
         : { filters, startLedger, limit: pageSize };
 
       const response = await this.callWithFailover(request);
+      this.latestLedger = response.latestLedger;
       const events = response.events ?? [];
 
       for (const evt of events) {
@@ -599,8 +544,10 @@ export class SorobanRpcEventSource implements HorizonEventSource {
         collected.push({
           id: evt.id,
           ledger: evt.ledger,
+          ledgerClosedAt: evt.ledgerClosedAt,
           txHash: evt.txHash,
-          contractId: evt.contractId,
+          // The SDK parses contractId into a Contract; persist its strkey.
+          contractId: typeof evt.contractId === "string" ? evt.contractId : evt.contractId?.contractId() ?? "",
           topicXdr: (evt.topic ?? []).map((t) => (typeof t === "string" ? t : (t as StellarXdr.ScVal).toXDR("base64"))),
           valueXdr: typeof evt.value === "string" ? evt.value : (evt.value as StellarXdr.ScVal).toXDR("base64"),
           successful: evt.inSuccessfulContractCall !== false

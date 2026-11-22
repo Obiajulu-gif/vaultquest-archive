@@ -35,6 +35,98 @@ Sync lag is calculated dynamically by checking the last successful sync time and
 
 ---
 
+## 2b. Ingestion Leading-Indicator Alerts (#752)
+
+These are the fast-path signals for the failure mode users feel first — the
+ingestion pipeline stalling or silently dropping events. They are cheap
+(one gauge update and two `COUNT`s per indexer tick, no state diff) and are
+evaluated by Prometheus every 15s. They are distinct from the batch
+reconciliation job ([`RECONCILIATION.md`](RECONCILIATION.md)), which finds
+drift after the fact, and from the daily replay-equivalence job
+([`REPLAY_DETERMINISM.md`](REPLAY_DETERMINISM.md)).
+
+### Metrics
+
+Exported on `GET /metrics` by the replica holding the `stellar-indexer` job
+lease (alerts aggregate with `max()` across replicas):
+
+| Metric | Meaning |
+|---|---|
+| `indexer_last_sync_timestamp` | Unix seconds of the last successful tick. Its age is the stall signal. |
+| `indexer_chain_latest_ledger` | Chain tip (`latestLedger`) reported by Soroban RPC on the last fetch. |
+| `indexer_latest_ledger` | Ledger the indexer has *provably* scanned through. The RPC scans at most 10,000 ledgers per `getEvents` request (stellar-rpc v21.5.0), so a short page counts as "reached the tip" only when the scan started inside that window; otherwise it stays at the last processed event's ledger and the lag grows. |
+| `pending_events_total` | Queue depth: ingested events waiting for a matching intent. |
+| `indexer_quarantined_events` | Unresolved poison events; any non-zero value holds the cursor. |
+| `indexer_sync_errors_total` | Failed ticks. |
+
+### Alerts (`backend/prometheus/alerts.yml`)
+
+| Alert | Condition | Severity | Detection bound |
+|---|---|---|---|
+| `IngestionStalled` | `time() - max(indexer_last_sync_timestamp) > 180` for 1m | Page | ≤ 5 min after the last successful tick |
+| `IngestionLagging` | tip − scanned > 60 ledgers (~5-6 min) for 2m | Page | ~7-8 min after progress stops while ticks still "succeed" |
+| `IngestionQuarantineHalt` | `max(indexer_quarantined_events) > 0` for 2m | Page | ~2 min |
+| `IngestionErrorsRising` | > 3 failed ticks in 10m | Warning | — |
+| `PendingEventsBacklog` | > 100 parked events for 30m | Warning | — |
+
+The bounds are enforced by `promtool test rules backend/prometheus/alerts.test.yml`
+(CI workflow `alert-rules.yml`). Its induced-stall case stops successful
+ticks at t=240s and asserts `IngestionStalled` is not firing at 8m and is
+firing at 8m15s — 255s after the last success, inside the 5-minute bound.
+Thresholds assume the default 1-minute indexer schedule; once real history
+exists, set them from the observed p99 tick interval and lag.
+
+Load the rules by keeping `rule_files: ["alerts.yml"]` in `prometheus.yml`
+(see `backend/prometheus.yml.example`; `docker-compose.monitoring.yml` mounts
+the file) and route `severity="page"` to the on-call receiver in
+Alertmanager.
+
+### Operator response
+
+**`IngestionStalled`** — no successful tick for 3+ minutes.
+1. `GET /health/indexer`: read `last_error`.
+2. Check the backend logs for `indexer tick failed` / `job lease held by another worker`.
+   A lease held by a dead replica expires after its 5-minute TTL; if a live
+   replica holds it but never logs `indexer tick complete`, restart that replica.
+3. RPC failures (`429`, timeouts, `all Soroban RPC endpoints failed`): add or
+   switch endpoints in `SOROBAN_RPC_URL` (comma-separated failover list).
+4. Database unreachable (`indexer tick skipped: database unreachable`): see
+   Step B.3 below.
+5. Resolved when `indexer_last_sync_timestamp` advances again.
+
+**`IngestionLagging`** — ticks succeed but the indexer is falling behind.
+1. Compare `indexer_chain_latest_ledger` and `indexer_latest_ledger` on `/metrics`.
+2. A steadily widening gap with near-empty ticks means the cursor is stuck
+   behind a stretch of more than 10,000 ledgers without matching events.
+   Move the cursor forward: stop the indexer, set
+   `indexer_checkpoints.last_processed_event_id` to the first event id of a
+   ledger inside the RPC retention window (`getHealth` → `oldestLedger`;
+   the id is `(ledger << 32)` zero-padded to 19 digits + `-0000000000`,
+   `firstEventIdOfLedger` in `stellarIndexer.ts`), delete the
+   `indexer:checkpoint` Redis key when `REDIS_URL` is set (the cached
+   checkpoint is read first), and restart — the indexer resumes from that
+   cursor on boot.
+3. A gap with full ticks means backlog: temporarily shorten the indexer
+   schedule or raise `batchSize`.
+4. If the cursor ever falls behind the RPC's `oldestLedger`, those events are
+   no longer available from RPC — backfill from an archive (see
+   [`DISASTER_RECOVERY.md`](DISASTER_RECOVERY.md)).
+
+**`IngestionQuarantineHalt`** — a poison event is blocking every later event.
+1. `SELECT soroban_event_id, reason, tx_hash FROM poison_events WHERE resolved_at IS NULL;`
+2. Fix the decoder (deploy) so the event decodes, **or** if the event is
+   genuinely irrelevant, set `resolved_at = NOW()`, stop the indexer, set
+   `indexer_checkpoints.last_processed_event_id` to that event's id (and
+   delete the `indexer:checkpoint` Redis key if `REDIS_URL` is set), and
+   restart. Resolved poison events are skipped by replay as well.
+3. `GET /internal/trace/:txHash` shows the event and its effect.
+
+**`PendingEventsBacklog`** — events are not meeting their intents. Trace a
+few `pending_events.tx_hash` values: the gap is usually a client that never
+calls `PATCH /actions/:id/submitted`.
+
+---
+
 ## 3. Stale Orphan Alert
 
 ### What triggers it

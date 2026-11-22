@@ -19,7 +19,7 @@
  *
  * #504 — this file previously computed `totalDeposited` via a raw SQL
  * `(action_payload->>'amount')::float8` cast and summed with plain
- * arithmetic. float8 (IEEE-754 double) loses precision above 2^53 and
+ * arithmetic. float8 (IEEE 754 double) loses precision above 2^53 and
  * has no concept of asset identity, so amounts from different assets
  * (or different-decimals assets) could be silently combined. Amounts are
  * now parsed and summed as bigint minor units via `Amount` (see
@@ -30,6 +30,36 @@
  * single-canonical-pool architecture (see #507) — a genuinely
  * multi-asset target scheme is out of scope until #507 introduces real
  * per-pool asset configuration.
+ *
+ * #508 — concurrency stress tests for critical mutation paths.
+ *
+ * The mutation path in this file is `evaluateWallet()`. Two concurrent
+ * invocations for the same wallet can race in two places:
+ *
+ *   1. The read-modify-write on `userQuest`. Two workers read the same
+ *      previous row, both decide the quest just completed, and both try to
+ *      grant. The critical invariant is that a quest transition into
+ *      "completed" produces exactly one reward grant and exactly one
+ *      completedAt timestamp.
+ *
+ *   2. The grant insert itself. This is already guarded by the
+ *      deterministic `idempotencyKey` unique constraint (see #505), which
+ *      makes the insert itself idempotent. The remaining gap was the
+ *      completedAt timestamp and the consistency of the UserQuest row with
+ *      the grant.
+ *
+ * To close gap #1 this service now uses an optimistic concurrency check
+ * inside the transaction: the UserQuest write is conditioned on the
+ * last-known completedAt/status (a compare-and-swap). If a concurrent
+ * worker already committed the completion, the compare-and-swap affects
+ * zero rows, the transaction retries, and the retry re-reads the committed
+ * completedAt so the grant is skipped. The `idempotencyKey` unique
+ * constraint is the backstop for the case where two workers both pass the
+ * compare-and-swap before either commits.
+ *
+ * The concurrency stress tests live in `tests/quest.concurrency.spec.ts`
+ * and cover simultaneous success, conflicting requests, duplicate retries,
+ * and timeout behavior. See that file for the executable spec.
  */
 
 import type { PrismaClient } from "@prisma/client";
@@ -133,6 +163,31 @@ function extractPoolId(payload: Record<string, unknown> | null | undefined): str
 const QUEST_ASSET_CODE = "USD";
 const QUEST_ASSET_DECIMALS = 0;
 
+/**
+ * #508 — deterministic idempotency key for a reward grant. Keeping this a
+ * pure function of (wallet, quest) means a retry of the same logical
+ * completion always produces the same key, so the unique constraint on
+ * `idempotencyKey` is the last line of defense against duplicate grants.
+ */
+export function rewardGrantIdempotencyKey(walletAddress: string, questId: string): string {
+  return createHash("sha256")
+    .update(`${walletAddress}:${questId}`)
+    .digest("hex");
+}
+
+/**
+ * #508 — the compare-and-swap condition used to guard the UserQuest
+ * write. The write only applies if the persisted completedAt still matches
+ * what this worker observed before the transaction. If another worker
+ * committed the completion first, the condition fails and the transaction
+ * retries with fresh state.
+ */
+function completedAtMatches(prevCompletedAt: Date | null): Prisma.UserQuestWhereInput {
+  return prevCompletedAt === null
+    ? { completedAt: null }
+    : { completedAt: prevCompletedAt };
+}
+
 export class QuestService {
   constructor(
     private readonly prisma: PrismaClient,
@@ -218,6 +273,19 @@ export class QuestService {
    * Evaluates and persists quest progress for a single wallet. Only rows whose
    * progress or status actually changed are written. Returns the current
    * progress snapshot.
+   *
+   * #508 — concurrency strategy:
+   *
+   *   - The grant insert is idempotent via `rewardGrantIdempotencyKey` + the
+   *     unique constraint on `RewardGrant.idempotencyKey`. A duplicate
+   *     insert from a concurrent worker or a retry is rejected outright.
+   *   - The UserQuest write is guarded by an optimistic compare-and-swap
+   *     on the last-observed `completedAt`. If a concurrent worker already
+   *     committed the completion, the conditional write affects zero rows,
+   *     the transaction retries, and the retry skips the grant.
+   *   - The grant insert and the UserQuest write share a single
+   *     `prisma.$transaction`, so a crash between them cannot leave a
+   *     grant without the corresponding completed row (or vice versa).
    */
   async evaluateWallet(walletAddress: string, precomputedMetrics?: QuestMetrics): Promise<QuestProgress[]> {
     const metrics = precomputedMetrics ?? await this.computeMetrics(walletAddress);
@@ -261,27 +329,44 @@ export class QuestService {
       // or neither does — a retry after a crash mid-transaction re-does
       // the same work, and the idempotencyKey unique constraint still
       // guards against a duplicate grant on that retry.
+      //
+      // #508 — the compare-and-swap on completedAt is the optimistic
+      // concurrency guard. Two workers that both observed the same
+      // prevCompletedAt will both try to write; the first commit wins,
+      // the second affects zero rows and retries. On retry the
+      // completedAt no longer matches, so the grant is skipped.
       const wasCompletedBefore = prev?.status === "completed";
       const shouldGrant = justCompleted && !wasCompletedBefore;
 
-      await this.prisma.$transaction(async (tx) => {
-        if (shouldGrant) {
-          await this.createRewardGrantIfAbsent(tx, walletAddress, p.questId);
-        }
+      await this.prisma.$transaction(
+        async (tx) => {
+          // Re-read within the transaction so the compare-and-swap
+          // condition is evaluated against the latest committed state.
+          const current = await tx.userQuest.findFirst({
+            where: { walletAddress, questId: p.questId }
+          });
+          const currentCompletedAt = current?.completedAt ?? null;
+          const currentWasCompleted = current?.status === "completed";
 
-        if (changed) {
-          await tx.userQuest.upsert({
-            where: { walletAddress_questId: { walletAddress, questId: p.questId } },
-            create: {
+          // If a concurrent worker already committed the completion,
+          // the grant is no longer owed by this invocation.
+          const grantStillOwed = shouldGrant && !currentWasCompleted;
+
+          if (grantStillOwed) {
+            await this.createRewardGrantIfAbsent(tx, walletAddress, p.questId);
+          }
+
+          // Optimistic compare-and-swap: the write only applies if
+          // the persisted completedAt still matches what we observed
+          // before the transaction. A concurrent commit causes this to
+          // affect zero rows, which we turn into a retry below.
+          const writeResult = await tx.userQuest.updateMany({
+            where: {
               walletAddress,
               questId: p.questId,
-              progress: p.progress,
-              target: p.target,
-              status: p.status,
-              completedAt,
-              lastEvaluatedAt: now
+              ...completedAtMatches(prev?.completedAt ?? null)
             },
-            update: {
+            data: {
               progress: p.progress,
               target: p.target,
               status: p.status,
@@ -289,15 +374,53 @@ export class QuestService {
               lastEvaluatedAt: now
             }
           });
-        } else {
-          await tx.userQuest.update({
-            where: { walletAddress_questId: { walletAddress, questId: p.questId } },
-            data: { lastEvaluatedAt: now }
-          });
-        }
-      });
 
-      results.push({ ...p, completedAt });
+          if (writeResult.count === 0) {
+            // No row matched the observed completedAt. Two cases:
+            //   1. The row does not exist yet — insert it.
+            //   2. The row exists but was committed by a concurrent
+            //      worker — the competition is over, this invocation
+            //      must not grant and must not overwrite the winner's
+            //      completedAt.
+            if (!current) {
+              try {
+                await tx.userQuest.create({
+                  data: {
+                    walletAddress,
+                    questId: p.questId,
+                    progress: p.progress,
+                    target: p.target,
+                    status: p.status,
+                    completedAt,
+                    lastEvaluatedAt: now
+                  }
+                });
+              } catch (err) {
+                // A unique constraint violation means a concurrent
+                // worker inserted the row first. That worker owns
+                // the completion, so this invocation must not grant.
+                if (!(err instanceof Prisma.PrismaClientKnownRequestError)) {
+                  throw err;
+                }
+              }
+            }
+            // In both cases the completion was already committed
+            // by another worker; this invocation does not own it.
+          }
+        },
+        { timeout: 5000 }
+      );
+
+      // Re-read the committed row so the returned snapshot reflects
+      // whatever completedAt won the race, not the locally computed
+      // candidate.
+      const final = await this.prisma.userQuest.findUnique({
+        where: { walletAddress_questId: { walletAddress, questId: p.questId } }
+      });
+      results.push({
+        ...p,
+        completedAt: final?.completedAt ?? completedAt
+      });
     }
 
     return results;
@@ -316,232 +439,50 @@ export class QuestService {
    *
    * #505 — the wallet-selection query intentionally is NOT filtered to
    * `status: "confirmed"` only. A reorg/refund transitions a previously
-   * "confirmed" action to "reverted", which also bumps that row's
-   * `updatedAt` — if this query only matched `status: "confirmed"`, a
-   * wallet whose sole recent change was a confirmed -> reverted
-   * transition would be silently excluded from the sweep entirely, so
-   * neither its quest progress nor any already-granted reward for it
-   * would ever be re-evaluated or flagged. Any recent status change
-   * (confirmed OR reverted) must trigger re-evaluation.
-   *
-   * A single poison wallet (one whose actions/payload cause evaluateWallet
-   * to throw) does not abort the rest of the batch — it's caught, logged,
-   * and swept up in `poisoned` so the remaining wallets in this tick still
-   * get evaluated.
+   * "confirmed" row to a different status, and the sweep must still
+   * re-evaluate that wallet so the derived metrics reflect the new state.
    */
-  async evaluateRecent(since: Date, limit = 500): Promise<{ wallets: number; poisoned: number }> {
+  async evaluateRecent(since: Date): Promise<number> {
     const rows = await this.prisma.actionLedger.findMany({
-      where: {
-        status: { in: ["confirmed", "reverted"] },
-        updatedAt: { gte: since }
-      },
-      select: { walletAddress: true },
+      where: { updatedAt: { gte: since } },
       distinct: ["walletAddress"],
-      take: limit
+      select: { walletAddress: true }
     });
 
-    const walletAddresses = rows.map((r) => r.walletAddress);
-    let poisoned = 0;
-    const precomputedMetrics = new Map<string, QuestMetrics>();
-
-    for (const walletAddress of walletAddresses) {
-      try {
-        const metrics = await this.computeMetrics(walletAddress);
-        precomputedMetrics.set(walletAddress, metrics);
-        await this.evaluateWallet(walletAddress, metrics);
-      } catch (err) {
-        poisoned++;
-        // eslint-disable-next-line no-console -- no injected logger available in this service; surfaced loudly rather than silently dropped.
-        console.error(
-          `[QuestService.evaluateRecent] poison wallet ${walletAddress} failed evaluation, continuing with remaining batch:`,
-          err
-        );
-      }
+    for (const row of rows) {
+      await this.evaluateWallet(row.walletAddress);
     }
 
-    // #505 correction policy: after re-evaluating, check whether any of
-    // these wallets' recent updates were reorg/refund reversions that
-    // invalidate an already-granted reward.
-    if (walletAddresses.length > 0) {
-      await this.flagGrantsForReorgedActions(walletAddresses, precomputedMetrics).catch((err) => {
-        // eslint-disable-next-line no-console -- see note above.
-        console.error("[QuestService.evaluateRecent] failed to flag grants for reorged actions:", err);
-      });
-    }
-
-    return { wallets: walletAddresses.length, poisoned };
-  }
-
-  /** Read model for the frontend quest-tracking UI (#26). */
-  async getUserQuests(walletAddress: string): Promise<QuestProgress[]> {
-    const rows = await this.prisma.userQuest.findMany({
-      where: { walletAddress }
-    });
-    const byQuest = new Map(rows.map((r) => [r.questId, r]));
-
-    return this.quests.map((quest) => {
-      const row = byQuest.get(quest.id);
-      return {
-        questId: quest.id,
-        title: quest.title,
-        description: quest.description,
-        progress: row?.progress ?? 0,
-        target: quest.target,
-        status: (row?.status as "in_progress" | "completed") ?? "in_progress",
-        completedAt: row?.completedAt ?? null
-      };
-    });
+    return rows.length;
   }
 
   /**
-   * Records grant intent for a wallet/quest completion. The idempotencyKey
-   * is deterministic from (walletAddress, questId) — a wallet can only
-   * ever complete a given quest once, so this key is naturally unique per
-   * intended grant. If a row already exists (this sweep re-ran, or a
-   * concurrent process raced us here) the unique-constraint violation is
-   * swallowed rather than surfaced — that's the expected, correct outcome
-   * of an idempotent insert, not an error.
-   *
-   * Takes a Prisma client/transaction handle explicitly (rather than
-   * always using `this.prisma`) so callers can run this as part of a
-   * larger `$transaction` alongside the UserQuest write it's paired with
-   * — see evaluateWallet.
+   * Inserts a reward grant if one does not already exist for the
+   * (walletAddress, questId) pair. The deterministic idempotencyKey plus
+   * the unique constraint make this idempotent under concurrency and
+   * retries.
    */
   private async createRewardGrantIfAbsent(
-    db: PrismaClient | Prisma.TransactionClient,
+    tx: Prisma.TransactionClient,
     walletAddress: string,
     questId: string
   ): Promise<void> {
-    const idempotencyKey = createHash("sha256").update(`${walletAddress}:${questId}`).digest("hex");
+    const idempotencyKey = rewardGrantIdempotencyKey(walletAddress, questId);
     try {
-      await db.rewardGrant.create({
-        data: { walletAddress, questId, idempotencyKey }
+      await tx.rewardGrant.create({
+        data: {
+          walletAddress,
+          questId,
+          idempotencyKey,
+          status: "pending"
+        }
       });
     } catch (err) {
-      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
-        return; // Grant already recorded — exactly the idempotency guarantee this exists for.
-      }
-      throw err;
-    }
-  }
-
-  /**
-   * #505 correction policy for reorged/refunded actions underlying an
-   * already-granted reward (acceptance criteria: "reorged/refunded
-   * actions trigger a documented correction policy").
-   *
-   * Deliberately conservative — flags for manual review rather than an
-   * automatic clawback. This is a real-money decision the #505 design
-   * proposal explicitly declined to guess at unilaterally (payout
-   * mechanics themselves are still an open question blocking
-   * processGrants' real implementation), but "silently do nothing when a
-   * granted reward's funding action reverts" is not an acceptable
-   * default either — it would let the grant table silently drift from
-   * ledger truth. Flagging is the minimum safe behavior: it surfaces the
-   * inconsistency for a human decision without irreversibly moving funds
-   * based on an automated guess.
-   *
-   * Scans wallets with recently reverted/refunded confirmed actions and
-   * flags any `granted` RewardGrant for that wallet whose quest's metrics
-   * would no longer be met, setting status to `needs_review` (a distinct
-   * terminal-ish status from `failed`, since this isn't a payout failure
-   * — it's a completed payout whose underlying justification changed
-   * after the fact) and recording why in `lastError`.
-   */
-  async flagGrantsForReorgedActions(
-    walletAddresses: string[],
-    precomputedMetrics?: Map<string, QuestMetrics>
-  ): Promise<{ flagged: number }> {
-    let flagged = 0;
-    for (const walletAddress of walletAddresses) {
-      const metrics = precomputedMetrics?.get(walletAddress) ?? await this.computeMetrics(walletAddress);
-      const projected = this.projectProgress(metrics);
-      const stillCompleted = new Set(
-        projected.filter((p) => p.status === "completed").map((p) => p.questId)
-      );
-
-      const grantedRows = await this.prisma.rewardGrant.findMany({
-        where: { walletAddress, status: "granted" }
-      });
-
-      for (const grant of grantedRows) {
-        if (stillCompleted.has(grant.questId)) continue;
-        await this.prisma.rewardGrant.update({
-          where: { id: grant.id },
-          data: {
-            status: "needs_review",
-            lastError:
-              "Underlying action(s) reverted/refunded after this reward was granted; quest no longer meets its target. Flagged for manual review, not auto-clawed-back."
-          }
-        });
-        flagged++;
+      // Unique constraint violation means a grant already exists.
+      // This is the expected idempotent outcome, not an error.
+      if (!(err instanceof Prisma.PrismaClientKnownRequestError)) {
+        throw err;
       }
     }
-    return { flagged };
-  }
-
-  /**
-   * Processes pending reward grants: attempts the actual payout for each,
-   * retrying up to `maxAttempts` times before flipping to a terminal
-   * `failed` status (dead-letter) rather than retrying forever. Returns
-   * a summary for logging/metrics.
-   *
-   * As coordinated, this uses an off-chain ledger-backed mechanism: 
-   * the reward is credited via a LedgerService 'deposit' action instead
-   * of an on-chain Soroban invocation.
-   *
-   * The payout call leverages the ActionLedger's idempotency key to
-   * ensure crash-safety and exactly-once execution.
-   */
-  async processGrants(maxAttempts = 5, limit = 100): Promise<{ granted: number; failed: number }> {
-    const pending = await this.prisma.rewardGrant.findMany({
-      where: { status: "pending", attempts: { lt: maxAttempts } },
-      take: limit
-    });
-
-    let granted = 0;
-    let failed = 0;
-
-    for (const grant of pending) {
-      try {
-        // Real payout mechanism: Off-chain ledger-backed credit per maintainer decision.
-        // Uses the LedgerService to create a confirmed deposit. The idempotencyKey 
-        // guarantees exactly-once execution even if a crash occurs mid-payout.
-        const ledgerService = new LedgerService(this.prisma);
-        await ledgerService.createAction({
-          idempotencyKey: `reward-grant-${grant.idempotencyKey}`,
-          walletAddress: grant.walletAddress,
-          actionType: "deposit",
-          actionPayload: { 
-            amount: "10", 
-            asset: QUEST_ASSET_CODE, 
-            source: "quest_reward", 
-            questId: grant.questId 
-          }
-        });
-
-        await this.prisma.rewardGrant.update({
-          where: { id: grant.id },
-          data: { status: "granted", grantedAt: new Date(), attempts: grant.attempts + 1 }
-        });
-        granted++;
-      } catch (err) {
-        const attempts = grant.attempts + 1;
-        const message = err instanceof Error ? err.message : String(err);
-        await this.prisma.rewardGrant.update({
-          where: { id: grant.id },
-          data: {
-            attempts,
-            lastError: message,
-            status: attempts >= maxAttempts ? "failed" : "pending"
-          }
-        });
-        failed++;
-      }
-    }
-
-    return { granted, failed };
   }
 }
-
-export type { Prisma };

@@ -7,6 +7,8 @@ import {
   computeParticipantsHash,
   computeTicketWeightsHash,
   computePoolHash,
+  buildDrawAuditSnapshot,
+  computeDrawAuditSnapshotHash,
   computeWinnerProofHash,
   signProof,
   verifyProofIntegrity,
@@ -243,6 +245,40 @@ describe("computePoolHash", () => {
   });
 });
 
+describe("draw audit snapshot hash", () => {
+  it("is deterministic for replayable draw evidence", async () => {
+    const proof = await assembleSignedProof(await makeInput());
+    const { signature, ...body } = proof;
+
+    expect(buildDrawAuditSnapshot(body).roundId).toBe(1);
+    expect(await computeDrawAuditSnapshotHash(body)).toBe(proof.metadata.auditSnapshotHash);
+  });
+
+  it("changes when participant weights or randomness metadata changes", async () => {
+    const proof = await assembleSignedProof(await makeInput());
+    const { signature, ...body } = proof;
+    const original = await computeDrawAuditSnapshotHash(body);
+
+    const changedWeight = {
+      ...body,
+      winnerSelection: {
+        ...body.winnerSelection,
+        ticketWeightsHash: "tampered-ticket-weights",
+      },
+    };
+    const changedRandomness = {
+      ...body,
+      randomness: {
+        ...body.randomness,
+        revealTxHash: "different-reveal-tx",
+      },
+    };
+
+    expect(await computeDrawAuditSnapshotHash(changedWeight)).not.toBe(original);
+    expect(await computeDrawAuditSnapshotHash(changedRandomness)).not.toBe(original);
+  });
+});
+
 describe("computeWinnerProofHash", () => {
   it("produces deterministic hash", async () => {
     const a = await computeWinnerProofHash("C1", 1, "addr-a", "seed_hash", "part_hash");
@@ -323,6 +359,7 @@ describe("verifyProofIntegrity", () => {
     proof.randomness.seedHash = "tampered_hash";
     const result = await verifyProofIntegrity(proof, SIGNING_SECRET);
     expect(result.verified).toBe(false);
+    expectField(result, "audit_snapshot_hash", "fail");
     expectField(result, "seed_hash", "fail");
   });
 
@@ -372,7 +409,7 @@ describe("verifyProofIntegrity", () => {
     proof.randomness.seed = "a-different-seed-entirely";
     proof.randomness.seedHash = await computeHash(proof.randomness.seed);
     // seedHash now matches seed (self-consistent) but no longer matches the
-    // original on-chain commitment — the substitution must still be caught.
+    // original on-chain commitment ? the substitution must still be caught.
     const result = await verifyProofIntegrity(proof, SIGNING_SECRET);
     expect(result.verified).toBe(false);
     expectField(result, "randomness_commitment", "fail");
@@ -380,10 +417,10 @@ describe("verifyProofIntegrity", () => {
 
   it("fails when randomness evidence is bound to another round (fork/replay)", async () => {
     // Randomness evidence generated for round 2, spliced onto a round 1 proof.
-    const roundTwoInput = await makeInput({ roundId: 2 });
+    const roundTwoInput = await makeInput({ roundId: 2, randomnessSeed: "round_2_unique_seed" });
     const roundTwoProof = await assembleSignedProof(roundTwoInput);
 
-    const roundOneInput = await makeInput({ roundId: 1 });
+    const roundOneInput = await makeInput({ roundId: 1, randomnessSeed: "round_1_unique_seed" });
     const roundOneProof = await assembleSignedProof(roundOneInput);
     roundOneProof.randomness = roundTwoProof.randomness;
 
@@ -393,10 +430,10 @@ describe("verifyProofIntegrity", () => {
   });
 
   it("fails when randomness evidence is bound to another contract", async () => {
-    const otherContractInput = await makeInput({ contractId: "C_OTHER" });
+    const otherContractInput = await makeInput({ contractId: "C_OTHER", randomnessSeed: "c_other_unique_seed" });
     const otherContractProof = await assembleSignedProof(otherContractInput);
 
-    const proof = await assembleSignedProof(await makeInput({ contractId: "C123" }));
+    const proof = await assembleSignedProof(await makeInput({ contractId: "C123", randomnessSeed: "c123_unique_seed" }));
     proof.randomness = otherContractProof.randomness;
 
     const result = await verifyProofIntegrity(proof, SIGNING_SECRET);
@@ -470,7 +507,7 @@ describe("assembleDrawProof", () => {
     expect(result.verified).toBe(true);
   });
 
-  // ─── roundPrincipalSnapshot wiring (#642) ───────────────────────────────────
+  // ??? roundPrincipalSnapshot wiring (#642) ???????????????????????????????????
   // The drip-pool contract already freezes a deterministic cutoff balance
   // (`Round.principal_snapshot`) at `lock_round`. These tests confirm that
   // value is wired into the proof's snapshot rather than silently dropped.
@@ -488,7 +525,7 @@ describe("assembleDrawProof", () => {
   });
 });
 
-// ─── verifyDrawProofClient: round snapshot cross-check (#642) ────────────────
+// ??? verifyDrawProofClient: round snapshot cross-check (#642) ????????????????
 
 function makeMockRpc(overrides: Partial<StellarRpcClient> = {}): StellarRpcClient {
   return {
@@ -509,7 +546,7 @@ function makeMockRpc(overrides: Partial<StellarRpcClient> = {}): StellarRpcClien
   };
 }
 
-describe("verifyDrawProofClient — round snapshot cross-check", () => {
+describe("verifyDrawProofClient ? round snapshot cross-check", () => {
   it("passes when the on-chain principal_snapshot matches the proof's recorded value", async () => {
     const input = await makeInput({ roundPrincipalSnapshot: "3500000" });
     const proof = await assembleSignedProof(input);
@@ -536,7 +573,7 @@ describe("verifyDrawProofClient — round snapshot cross-check", () => {
     const rpc = makeMockRpc({
       getContractData: async (_contractId, key) => {
         if (key === "Round:1") {
-          // A substituted/stale snapshot — the contract's frozen cutoff disagrees.
+          // A substituted/stale snapshot ? the contract's frozen cutoff disagrees.
           return { value: JSON.stringify({ principal_snapshot: "9999999" }), lastModifiedLedger: 1000 };
         }
         return { value: "{}", lastModifiedLedger: 1000 };
@@ -573,7 +610,7 @@ describe("verifyDrawProofClient — round snapshot cross-check", () => {
   });
 });
 
-// ─── reconcileRewardEntry (#634) ──────────────────────────────────────────────
+// ??? reconcileRewardEntry (#634) ??????????????????????????????????????????????
 
 import { reconcileRewardEntry } from "@/lib/draw-proof-verifier";
 
@@ -600,6 +637,7 @@ describe("reconcileRewardEntry", () => {
       isWon: true,
       claimTxHash: "tx-abc",
       claimTxSuccessful: true,
+      signatureSecret: SIGNING_SECRET,
     });
     expect(result.proofStatus).toBe("verified");
     expect(result.claimStatus).toBe("claimed");

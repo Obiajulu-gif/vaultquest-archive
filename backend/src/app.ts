@@ -151,6 +151,8 @@ import { projectionRebuildRoutes } from "./routes/projectionRebuilds.js";
 import { MaintainerNotesService } from "./services/maintainerNotes.js";
 import { FailureEscalationService } from "./services/failureEscalation.js";
 import { maintainerOperationsRoutes, startMaintainerOperations } from "./routes/maintainerOperations.js";
+import { PublicStatusService } from "./services/publicStatusService.js";
+import { registerStatusRoutes } from "./routes/status.js";
 
 export type AppDeps = {
   prisma: PrismaClient;
@@ -458,6 +460,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     walletAuthSvc,
     deps.adminWalletAddresses ?? [],
   );
+  const publicStatusSvc = new PublicStatusService(deps.degradedModeService);
   const categorySvc = new CategoryService(
     deps.prisma,
     deps.cacheService,
@@ -479,6 +482,15 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     }),
   );
   app.register(walletAuthRoutes(walletAuthSvc));
+  app.register(async (statusApp) => {
+    await registerStatusRoutes(statusApp, publicStatusSvc, {
+      userRead: requirePermission("own.data.read", [walletPrincipal]),
+      write: chainPreHandlers(
+        requirePermission("admin.recovery.write", [walletPrincipal]),
+        requireMaintainerApproval("admin.recovery.write"),
+      ),
+    });
+  });
   app.register(
     healthRoutes(
       svc,

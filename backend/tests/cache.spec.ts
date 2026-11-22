@@ -212,6 +212,9 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
         sourceVersion: 4,
         cachedVersion: 3,
         recommendation: "invalidate_and_refetch",
+      });
+    });
+
     it("detects a cache hit with matching source version", async () => {
       const service = new CacheService(
         mockPrisma,
@@ -252,8 +255,6 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
           cachedVersion: 2,
           recommendation: "invalidate_and_refetch",
         },
-      const result = await service.detectStaleEntries([
-        { key: "vault:v1:summary", sourceVersion: 7 },
       ]);
       expect(mockRedisInstance.sscan).toHaveBeenCalledWith(
         "vaultquest:cache:index",
@@ -323,6 +324,11 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
       const result = await service.repairStaleCache({
         dryRun: false,
         kind: "checkpoint",
+      });
+      expect(result.repaired).toEqual(["indexer:checkpoint"]);
+      expect(mockRedisInstance.eval).toHaveBeenCalled();
+    });
+
     it("detects a stale cache entry when source version differs", async () => {
       const service = new CacheService(
         mockPrisma,
@@ -342,8 +348,13 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
         payload: { totalDeposits: 500 },
         updatedAt: new Date(),
       });
-      expect(result.repaired).toEqual(["indexer:checkpoint"]);
-      expect(mockRedisInstance.eval).toHaveBeenCalled();
+      const result = await service.detectStaleEntries([
+        { key: "vault:v1:summary", sourceVersion: 7 },
+      ]);
+
+      expect(result).toHaveLength(1);
+      expect(result[0].key).toBe("vault:v1:summary");
+      expect(result[0].reason).toBe("version_mismatch");
     });
 
     it("atomically defers checkpoint eviction if a write-behind update races with repair", async () => {
@@ -373,9 +384,6 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
         dryRun: false,
         kind: "checkpoint",
       });
-      const result = await service.detectStaleEntries([
-        { key: "vault:v1:summary", sourceVersion: 7 },
-      ]);
 
       expect(result.repaired).toHaveLength(0);
       expect(result.failed).toMatchObject([
@@ -390,6 +398,12 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
       const connectCallback = mockRedisInstance.on.mock.calls.find((call) => call[0] === "connect")?.[1];
       connectCallback?.();
       mockRedisInstance.get.mockResolvedValueOnce("true");
+
+      const findings = await service.detectStale({ kind: "checkpoint" });
+      expect(findings).toHaveLength(0);
+      expect(mockPrisma.indexerCheckpoint.findUnique).not.toHaveBeenCalled();
+    });
+
     it("reports a missing cache entry as stale", async () => {
       const service = new CacheService(
         mockPrisma,
@@ -403,14 +417,14 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
         connectCallback();
       }
 
-      const findings = await service.detectStale({ kind: "checkpoint" });
-
-      expect(findings).toHaveLength(0);
-      expect(mockPrisma.indexerCheckpoint.findUnique).not.toHaveBeenCalled();
-    });
+      mockPrisma.cacheEntry.findUnique.mockResolvedValue(null);
       const result = await service.detectStaleEntries([
         { key: "vault:v1:summary", sourceVersion: 7 },
       ]);
+
+      expect(result).toHaveLength(1);
+      expect(result[0].reason).toBe("missing");
+    });
 
     it("requires manual review for a malformed checkpoint payload", async () => {
       const service = new CacheService(mockPrisma, mockLogger, "redis://127.0.0.1:6379");
@@ -465,6 +479,15 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
         asset: "XLM",
         decimals: 7,
         lastUpdated: new Date("2020-01-01T00:00:00.000Z"),
+      });
+
+      const findings = await service.detectStale({
+        kind: "asset_metadata",
+        now: new Date("2020-01-01T00:06:00.000Z"),
+      });
+      expect(findings).toMatchObject([{ key: "asset:XLM", reason: "stale" }]);
+    });
+
     it("repair job is idempotent and supports dry-run", async () => {
       const service = new CacheService(
         mockPrisma,
@@ -499,6 +522,8 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
 
       expect(result).toHaveLength(1);
       expect(result[0]).toMatchObject({ reason: "stale" });
+      expect(dryRun.repaired).toHaveLength(1);
+      expect(mockPrisma.cacheEntry.upsert).not.toHaveBeenCalled();
     });
 
     it("keeps dry-run read-only and makes eviction idempotent", async () => {
@@ -508,16 +533,6 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
         decimals: 7,
         lastUpdated: new Date("2020-01-01T00:00:00.000Z"),
       });
-      const applied = await service.repairStaleEntries(
-        [
-          {
-            key: "vault:v1:summary",
-            sourceVersion: 7,
-            payload: { totalDeposits: 1000 },
-          },
-        ],
-        { dryRun: false },
-      );
 
       const dryRun = await service.repairStaleCache({
         dryRun: true,
@@ -596,6 +611,13 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
         ],
         { dryRun: false },
       );
+
+      expect(result.repaired).toHaveLength(0);
+      expect(result.failed).toMatchObject([
+        { key: "vault:v1:summary", error: expect.stringContaining("db write failed") },
+      ]);
+      expect(mockLogger.error).toHaveBeenCalled();
+    });
 
     it("does not mutate cache when the repair audit cannot be started", async () => {
       const service = new CacheService(mockPrisma, mockLogger);

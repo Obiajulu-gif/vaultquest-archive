@@ -16,7 +16,7 @@
  */
 
 import type { Prisma, PrismaClient } from "@prisma/client";
-import type { AuditActor, AuditRecorder } from "./auditTrail.js";
+import { sanitizeAuditState, type AuditActor, type AuditRecorder } from "./auditTrail.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -97,62 +97,49 @@ export class PartialFailureService {
     private readonly audit: AuditRecorder,
   ) {}
 
-  /** Records a new partial failure. Idempotent on (operationType, operationId). */
+  /** Records a failure once per operation, even when concurrent detectors report it. */
   async record(input: RecordPartialFailureInput): Promise<PartialFailureRecord> {
-    const row = await this.prisma.partialFailure.upsert({
-      where: {
-        // Prisma requires a unique field for upsert; we use a compound unique
-        // enforced by the DB. Since schema uses individual indexes, we match
-        // the first found row instead.
-        id: "00000000-0000-0000-0000-000000000000", // triggers "not found" → create path
-      },
-      create: {
-        operationType: input.operationType,
-        operationId: input.operationId,
-        externalRef: input.externalRef ?? null,
-        severity: input.severity ?? "medium",
-        state: "unresolved",
-        retryable: input.retryable ?? false,
-        description: input.description,
-        metadata: (input.metadata ?? undefined) as Prisma.InputJsonValue | undefined,
-        staleSinceAt: input.staleSinceAt ?? null,
-      },
-      update: {},
-    }).catch(() =>
-      // Upsert trick doesn't apply to non-unique; use create directly.
-      this.prisma.partialFailure.create({
-        data: {
+    const row = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        SELECT pg_advisory_xact_lock(hashtext(${input.operationType}), hashtext(${input.operationId}))::text AS locked
+      `;
+      const existing = await tx.partialFailure.findFirst({
+        where: {
           operationType: input.operationType,
           operationId: input.operationId,
-          externalRef: input.externalRef ?? null,
-          severity: input.severity ?? "medium",
-          state: "unresolved",
-          retryable: input.retryable ?? false,
-          description: input.description,
-          metadata: (input.metadata ?? undefined) as Prisma.InputJsonValue | undefined,
-          staleSinceAt: input.staleSinceAt ?? null,
         },
-      }),
-    );
+        orderBy: [{ detectedAt: "asc" }, { id: "asc" }],
+      });
+      if (existing) return existing;
+      return tx.partialFailure.create({ data: this.createData(input) });
+    });
     return this.toRecord(row);
   }
 
-  /** Direct create — preferred over the upsert trick for new failures. */
+  /** Creates a distinct failure record without operation-level deduplication. */
   async create(input: RecordPartialFailureInput): Promise<PartialFailureRecord> {
     const row = await this.prisma.partialFailure.create({
-      data: {
-        operationType: input.operationType,
-        operationId: input.operationId,
-        externalRef: input.externalRef ?? null,
-        severity: input.severity ?? "medium",
-        state: "unresolved",
-        retryable: input.retryable ?? false,
-        description: input.description,
-        metadata: (input.metadata ?? undefined) as Prisma.InputJsonValue | undefined,
-        staleSinceAt: input.staleSinceAt ?? null,
-      },
+      data: this.createData(input),
     });
     return this.toRecord(row);
+  }
+
+  private createData(input: RecordPartialFailureInput): Prisma.PartialFailureCreateInput {
+    const metadata =
+      input.metadata == null
+        ? undefined
+        : sanitizeAuditState(input.metadata, "partial_failure.metadata").value;
+    return {
+      operationType: input.operationType,
+      operationId: input.operationId,
+      externalRef: input.externalRef ?? null,
+      severity: input.severity ?? "medium",
+      state: "unresolved",
+      retryable: input.retryable ?? false,
+      description: input.description,
+      metadata: metadata as Prisma.InputJsonValue | undefined,
+      staleSinceAt: input.staleSinceAt ?? null,
+    };
   }
 
   /** List partial failures with cursor-based pagination (newest first). */
@@ -305,10 +292,16 @@ export class PartialFailureService {
     stale_count: number;
     retryable_count: number;
   }> {
-    const [all, stale, retryable] = await Promise.all([
-      this.prisma.partialFailure.findMany({
+    const [bySeverity, byOperationType, stale, retryable] = await Promise.all([
+      this.prisma.partialFailure.groupBy({
+        by: ["severity"],
         where: { state: { in: ["unresolved", "retryable"] } },
-        select: { severity: true, operationType: true },
+        _count: { _all: true },
+      }),
+      this.prisma.partialFailure.groupBy({
+        by: ["operationType"],
+        where: { state: { in: ["unresolved", "retryable"] } },
+        _count: { _all: true },
       }),
       this.prisma.partialFailure.count({
         where: {
@@ -321,15 +314,13 @@ export class PartialFailureService {
       }),
     ]);
 
-    const by_severity: Record<string, number> = {};
-    const by_operation_type: Record<string, number> = {};
-    for (const row of all) {
-      by_severity[row.severity] = (by_severity[row.severity] ?? 0) + 1;
-      by_operation_type[row.operationType] = (by_operation_type[row.operationType] ?? 0) + 1;
-    }
+    const by_severity = Object.fromEntries(bySeverity.map((row) => [row.severity, row._count._all]));
+    const by_operation_type = Object.fromEntries(
+      byOperationType.map((row) => [row.operationType, row._count._all]),
+    );
 
     return {
-      total: all.length,
+      total: bySeverity.reduce((count, row) => count + row._count._all, 0),
       by_severity,
       by_operation_type,
       stale_count: stale,

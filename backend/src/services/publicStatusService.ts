@@ -64,11 +64,22 @@ export class PublicStatusService {
    *
    * @param window - Maintenance window with start/end times and reason
    */
-  scheduleMaintenanceWindow(window: Omit<MaintenanceWindow, "id">): void {
+  scheduleMaintenanceWindow(window: Omit<MaintenanceWindow, "id">): string {
+    if (
+      Number.isNaN(window.startsAt.getTime()) ||
+      Number.isNaN(window.endsAt.getTime()) ||
+      window.startsAt >= window.endsAt ||
+      !window.reason.trim()
+    ) {
+      throw new RangeError("maintenance window requires a reason and a valid start before end");
+    }
+
+    const id = `maint-${Date.now()}`;
     this.maintenanceWindow = {
-      id: `maint-${Date.now()}`,
+      id,
       ...window,
     };
+    return id;
   }
 
   /**
@@ -86,8 +97,15 @@ export class PublicStatusService {
    * @param durationSeconds - How long to pause (optional; null = indefinite)
    */
   pauseMutations(reason: string, durationSeconds?: number): void {
+    if (
+      !reason.trim() ||
+      (durationSeconds !== undefined &&
+        (!Number.isFinite(durationSeconds) || durationSeconds < 0))
+    ) {
+      throw new RangeError("mutation pause requires a reason and a non-negative duration");
+    }
     this.pauseReason = reason;
-    if (durationSeconds) {
+    if (durationSeconds !== undefined) {
       this.pauseUntil = new Date(Date.now() + durationSeconds * 1000);
     } else {
       this.pauseUntil = null; // indefinite until explicitly cleared
@@ -224,10 +242,12 @@ export class PublicStatusService {
    * Returns the pause/maintenance duration remaining, or null if none active.
    */
   getRecoveryEta(): Date | null {
-    if (this.pauseUntil) return this.pauseUntil;
+    const now = new Date();
+    if (this.pauseUntil && this.pauseUntil > now) return this.pauseUntil;
     if (
       this.maintenanceWindow &&
-      new Date() < this.maintenanceWindow.endsAt
+      now >= this.maintenanceWindow.startsAt &&
+      now < this.maintenanceWindow.endsAt
     ) {
       return this.maintenanceWindow.endsAt;
     }

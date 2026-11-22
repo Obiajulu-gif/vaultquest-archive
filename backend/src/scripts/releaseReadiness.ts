@@ -102,6 +102,7 @@ async function validateReleaseReadinessImpl(
     options.checklistPath ?? path.resolve(rootDir, "docs/release-readiness-checklist.md");
 
   const checks: ReadinessCheckResult[] = [];
+  const isUrgent = Boolean(options.isUrgentFix && options.incidentId?.trim());
 
   // 1. Checklist Template & Documentation Check
   const checklistExists = fs.existsSync(checklistPath);
@@ -160,18 +161,54 @@ async function validateReleaseReadinessImpl(
   let migrationPreview: MigrationPreview | undefined;
   let postChecks: PostCheckReport | undefined;
 
-  if (fs.existsSync(migrationsDir)) {
+  const migrationsDirExists = fs.existsSync(migrationsDir);
+  checks.push({
+    id: "migration-source",
+    category: "migration",
+    name: "Migration directory and plan are available",
+    ok: migrationsDirExists,
+    detail: migrationsDirExists
+      ? "Migration directory found"
+      : `Migration directory is missing: ${migrationsDir}`,
+    remediation: "Provide the repository migration directory and select a valid migration plan.",
+  });
+
+  if (migrationsDirExists) {
     const migrationIds = listMigrationIds(migrationsDir);
     const targetMigrationId = options.migrationId ?? migrationIds[migrationIds.length - 1];
 
-    if (targetMigrationId) {
+    const migrationFile = targetMigrationId
+      ? path.join(migrationsDir, targetMigrationId, "migration.sql")
+      : null;
+    if (
+      !targetMigrationId ||
+      !migrationIds.includes(targetMigrationId) ||
+      !migrationFile ||
+      !fs.existsSync(migrationFile)
+    ) {
+      checks.push({
+        id: "migration-selection",
+        category: "migration",
+        name: "A valid migration is selected",
+        ok: false,
+        detail: targetMigrationId && migrationIds.includes(targetMigrationId)
+          ? `Migration SQL file is missing for ${targetMigrationId}`
+          : targetMigrationId
+          ? `Migration ${targetMigrationId} was not found`
+          : "No migration folders were found",
+        remediation: "Select a migration with a tracked migration.sql file or add the migration being released.",
+      });
+    } else {
       const plan = readMigrationPlan(migrationsDir, targetMigrationId);
       checks.push({
         id: "migration-plan-parse",
         category: "migration",
         name: `Parse plan for migration ${targetMigrationId}`,
-        ok: !plan.isEmpty || plan.actions.length === 0,
-        detail: `Migration contains ${plan.actions.length} action(s), ${plan.destructive.length} destructive`,
+        ok: plan.actions.length > 0,
+        detail: plan.actions.length > 0
+          ? `Migration contains ${plan.actions.length} action(s), ${plan.destructive.length} destructive`
+          : "Migration plan is empty",
+        remediation: "Add the migration SQL or select the migration that contains the release changes.",
       });
 
       if (options.db) {
@@ -197,20 +234,31 @@ async function validateReleaseReadinessImpl(
             remediation: "Verify all planned schema objects and zero remaining null rows.",
           });
         }
+      } else if (options.migrationVerified) {
+        checks.push({
+          id: "migration-post-checks",
+          category: "migration",
+          name: "Migration convergence checks have database evidence",
+          ok: false,
+          detail: "Migration was marked verified but no database was provided for post-checks",
+          remediation: "Provide a database connection and run the migration post-checks before marking it verified.",
+        });
       }
 
       // 3. Rollback Plan & Evidence Check
       const hasDestructive = plan.destructive.length > 0;
       const evidence = options.rollbackEvidence;
       const hasEvidence = Boolean(
-        evidence?.backupSnapshotUri ||
-        evidence?.testedRollbackScriptPath ||
-        evidence?.verifiedDryRunTimestamp
+        evidence?.backupSnapshotUri?.trim() ||
+        evidence?.testedRollbackScriptPath?.trim() ||
+        (evidence?.verifiedDryRunTimestamp &&
+          Number.isFinite(Date.parse(evidence.verifiedDryRunTimestamp)) &&
+          Date.parse(evidence.verifiedDryRunTimestamp) <= Date.now())
       );
       const evidenceRequired = options.requireRollbackEvidence ?? hasDestructive;
 
       let rollbackOk = !hasDestructive || Boolean(migrationPreview?.rollbackNotes?.length);
-      if (evidenceRequired && !hasEvidence && !options.isUrgentFix) {
+      if (evidenceRequired && !hasEvidence && !isUrgent) {
         rollbackOk = false;
       }
 
@@ -255,10 +303,15 @@ async function validateReleaseReadinessImpl(
         ? new Set(options.attestedItems as ReleaseChecklistItemId[])
         : new Set<ReleaseChecklistItemId>();
 
-  const isUrgent = Boolean(options.isUrgentFix);
   const maintainer = options.maintainerSignOff;
+  const approvedAt = maintainer ? new Date(maintainer.approvedAt).getTime() : Number.NaN;
+  const validMaintainerSignOff = Boolean(
+    maintainer?.maintainerId.trim() &&
+    Number.isFinite(approvedAt) &&
+    approvedAt <= Date.now()
+  );
   const isAuthorizedRole =
-    maintainer && ["admin", "maintainer"].includes(maintainer.role);
+    validMaintainerSignOff && maintainer && ["admin", "maintainer"].includes(maintainer.role);
 
   const authOk = isUrgent || Boolean(isAuthorizedRole);
   checks.push({
@@ -267,10 +320,14 @@ async function validateReleaseReadinessImpl(
     name: "Maintainer authorization and sign-off",
     ok: authOk,
     detail: isUrgent
-      ? `Urgent fix exception authorized (incident: ${options.incidentId ?? "P0-UNTRACKED"})`
+      ? `Urgent fix exception authorized (incident: ${options.incidentId})`
       : isAuthorizedRole
         ? `Signed off by ${maintainer?.maintainerId} (${maintainer?.role})`
-        : "Missing maintainer sign-off. Releases require admin or maintainer approval.",
+        : options.isUrgentFix
+          ? "Urgent fixes require a tracked incident ID."
+          : validMaintainerSignOff
+            ? "Sign-off role is not authorized. Releases require admin or maintainer approval."
+            : "Missing or invalid maintainer sign-off. Provide an authorized role, non-empty ID, and a valid non-future approval time.",
     remediation:
       "Request maintainer attestation via CLI (--attest) or provide emergency incident ID.",
   });

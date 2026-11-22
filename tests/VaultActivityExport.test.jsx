@@ -81,19 +81,26 @@ describe("VaultActivityExport pagination (#576)", () => {
   });
 
   it("shows progress while exporting across multiple pages", async () => {
-    const fetchImpl = vi.fn(() =>
-      Promise.resolve(
-        jsonResponse({
-          data: [makeRow(1)],
-          meta: { pagination: { next_cursor: null, limit: 1, has_more: false } },
-        })
-      )
+    const fetchImpl = vi.fn(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(
+            () =>
+              resolve(
+                jsonResponse({
+                  data: [makeRow(1)],
+                  meta: { pagination: { next_cursor: null, limit: 1, has_more: false } },
+                })
+              ),
+            10
+          )
+        )
     );
 
     render(<VaultActivityExport wallet="GABCDEF1234567890" pageSize={1} fetchImpl={fetchImpl} />);
     fireEvent.click(screen.getByText("Export"));
 
-    expect(await screen.findByText(/Exporting…/)).toBeDefined();
+    expect((await screen.findAllByText(/Exporting…/)).length).toBeGreaterThan(0);
     expect(await screen.findByText(/1 rows/)).toBeDefined();
   });
 
@@ -110,7 +117,7 @@ describe("VaultActivityExport pagination (#576)", () => {
     render(<VaultActivityExport wallet="GABCDEF1234567890" fetchImpl={fetchImpl} />);
     fireEvent.click(screen.getByText("Export"));
 
-    expect(await screen.findByText(/Exporting…/)).toBeDefined();
+    expect((await screen.findAllByText(/Exporting…/)).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByText("Cancel"));
 
     expect(await screen.findByText(/Export cancelled/)).toBeDefined();

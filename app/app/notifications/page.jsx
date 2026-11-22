@@ -23,7 +23,7 @@ import {
 import type { NotificationScope, NotificationType } from "@/lib/notification-dedup";
 
 /**
- * Demo/seed alerts for the notification center (#652).
+ * Demo/seed alerts for the notification center (#652, #776).
  *
  * Two pairs deliberately look like duplicates:
  *  - the repeated vault APY alert (same `vault` scope + subject) collapses into
@@ -120,12 +120,28 @@ const TYPE_LABELS = {
   withdrawal: "Withdrawal",
   round_update: "Round update",
   account: "Account",
+  action_failed: "Action failure",
+  approval_required: "Approval",
+  action_completed: "Completed action",
+  recovery_path_available: "Recovery",
+  recovery_resolved: "Recovery",
+  recovery_failed: "Recovery",
+  maturity: "Maturity",
+  claim_window: "Claim window",
 };
 
 const SCOPE_META = {
   global: { label: "Global", icon: Globe, className: "border-sky-400/30 bg-sky-500/10 text-sky-300" },
   vault: { label: "Vault", icon: Layers, className: "border-amber-400/30 bg-amber-500/10 text-amber-300" },
   wallet: { label: "Wallet", icon: User, className: "border-violet-400/30 bg-violet-500/10 text-violet-300" },
+  admin: { label: "Admin", icon: ShieldAlert, className: "border-rose-400/30 bg-rose-500/10 text-rose-300" },
+};
+
+const SEVERITY_META = {
+  critical: "border-red-400/30 bg-red-500/10 text-red-500",
+  warning: "border-amber-400/30 bg-amber-500/10 text-amber-300",
+  info: "border-sky-400/30 bg-sky-500/10 text-sky-300",
+  success: "border-emerald-400/30 bg-emerald-500/10 text-emerald-300",
 };
 
 function formatDateLabel(dateValue) {
@@ -159,6 +175,7 @@ function NotificationsCenter() {
     notifications,
     unreadCount,
     markRead,
+    markUnread,
     markAllRead,
     dismiss,
     dismissAll,
@@ -293,6 +310,9 @@ function NotificationsCenter() {
                               <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${isRead ? "border-vault-border text-vault-muted" : "border-red-400/30 bg-red-500/10 text-red-500"}`}>
                                 {isRead ? "Read" : "Unread"}
                               </span>
+                              <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${SEVERITY_META[notification.severity] ?? SEVERITY_META.info}`}>
+                                {notification.severity}
+                              </span>
                               {notification.dismissed && (
                                 <span className="rounded-full border border-vault-border px-2 py-0.5 text-xs font-semibold text-vault-muted">
                                   Dismissed
@@ -328,6 +348,21 @@ function NotificationsCenter() {
                               Mark read
                             </button>
                           )}
+                          {isRead && (
+                            <button
+                              type="button"
+                              onClick={() => markUnread(notification.id)}
+                              className="vq-btn-ghost px-3 py-1.5 text-xs"
+                            >
+                              <MailOpen className="h-4 w-4" aria-hidden="true" />
+                              Mark unread
+                            </button>
+                          )}
+                          {notification.deepLink && (
+                            <Link href={notification.deepLink} className="vq-btn-ghost px-3 py-1.5 text-xs">
+                              {notification.actionLabel ?? "View details"}
+                            </Link>
+                          )}
                           <button
                             type="button"
                             onClick={() => dismiss(notification.id)}
@@ -352,7 +387,11 @@ function NotificationsCenter() {
 
 export default function VaultNotificationsPage() {
   return (
-    <NotificationProvider scopeKey="account@default" initialAlerts={SEED_ALERTS}>
+    <NotificationProvider
+      scopeKey="gbbd-fla5@default"
+      viewer={{ walletAddress: "GBBD...FLA5", role: "user" }}
+      initialAlerts={SEED_ALERTS}
+    >
       <NotificationsCenter />
     </NotificationProvider>
   );

@@ -1,0 +1,31 @@
+name: Alert Rules
+
+on:
+  pull_request:
+    paths:
+      - "backend/prometheus/**"
+      - ".github/workflows/alert-rules.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "backend/prometheus/**"
+      - ".github/workflows/alert-rules.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  promtool:
+    name: Validate and unit-test Prometheus alert rules
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      # #752: proves an induced ingestion stall alerts within its time bound.
+      - name: promtool check + test
+        run: |
+          docker run --rm -v "$PWD/backend/prometheus:/rules:ro" -w /rules \
+            --entrypoint /bin/sh prom/prometheus:v3.14.0 \
+            -c "promtool check rules alerts.yml && promtool test rules alerts.test.yml"

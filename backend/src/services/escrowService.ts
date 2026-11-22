@@ -8,6 +8,7 @@
 
 import type { PrismaClient } from "@prisma/client";
 import { RETRYABLE_RESULT_CODES, SETTLEMENT_RETRY, ERROR_CODES } from "../constants.js";
+import { withTelemetry } from "./telemetry.js";
 
 // ─── External dependency interfaces ──────────────────────────────────────────
 
@@ -147,7 +148,13 @@ export class EscrowService {
    *
    * Returns immediately (idempotent) if the vault already has a terminal state.
    */
-  async settleVault(input: SettleVaultInput): Promise<SettleVaultOutcome> {
+  settleVault(input: SettleVaultInput): Promise<SettleVaultOutcome> {
+    return withTelemetry({ operation: "settlement.settle_vault", actorType: "service" }, () =>
+      this.settleVaultImpl(input)
+    );
+  }
+
+  private async settleVaultImpl(input: SettleVaultInput): Promise<SettleVaultOutcome> {
     const { prisma, horizon, signer, assembler, verifier } = this.deps;
 
     // ── Idempotency check ─────────────────────────────────────────────────

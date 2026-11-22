@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { createMockVaultClient, SAMPLE_ADDRESS } from "../contract/mockClient";
+import { BusinessPolicyEngine } from "../../../../lib/business-policy";
 import {
   ContractInterfaceError,
   type PoolActionInput,
@@ -83,6 +84,26 @@ describe("transitionTxState", () => {
 });
 
 describe("useTxFlow", () => {
+  it("rejects a configured deposit limit before requesting wallet submission", async () => {
+    const submitAction: VaultContractClient["submitAction"] = vi.fn(async () => ({
+      txHash: "must-not-submit",
+      status: "submitted"
+    }));
+    const client = clientWithSubmit(submitAction);
+    const { result } = renderHook(() => useTxFlow());
+
+    await act(async () => {
+      await result.current.run(client, "drip", input, {
+        businessPolicy: new BusinessPolicyEngine({ maximumDeposit: 20 }),
+        indexingDelayMs: 0
+      });
+    });
+
+    expect(submitAction).not.toHaveBeenCalled();
+    expect(result.current.state.stage).toBe("failed");
+    expect(result.current.state.stage === "failed" && result.current.state.message).toContain("Lower the amount");
+  });
+
   it("moves through confirmation and success with a mocked client", async () => {
     const client = createMockVaultClient({ txHashFactory: () => "tx-success" });
     const onConfirmed = vi.fn();

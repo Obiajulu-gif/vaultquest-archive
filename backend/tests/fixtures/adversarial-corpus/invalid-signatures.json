@@ -1,0 +1,70 @@
+{
+  "corpusVersion": "1.0.0",
+  "category": "invalid-signatures",
+  "description": "Golden fixtures for invalid, forged, tampered, and cross-account signatures",
+  "fixtures": [
+    {
+      "id": "SIG-001-FORGED-ED25519",
+      "scenario": "Forged Ed25519 signature on challenge auth",
+      "target": "walletAuth",
+      "publicKey": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+      "challenge": "Sign into VaultQuest: Nonce 123456789",
+      "signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+      "expectedErrorCode": "INVALID_SIGNATURE",
+      "expectedMessage": "Invalid wallet signature"
+    },
+    {
+      "id": "SIG-002-TAMPERED-PAYLOAD",
+      "scenario": "Signature valid for original payload, but payload was altered after signing",
+      "target": "walletAuth",
+      "publicKey": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+      "originalPayload": "Sign into VaultQuest: Action deposit 100 USDC",
+      "tamperedPayload": "Sign into VaultQuest: Action deposit 1000000 USDC",
+      "signature": "c2lnbmF0dXJlX292ZXJfb3JpZ2luYWxfcGF5bG9hZF9wbGFjZWhvbGRlcg==",
+      "expectedErrorCode": "SIGNATURE_VERIFICATION_FAILED",
+      "expectedMessage": "Signature does not verify against supplied payload"
+    },
+    {
+      "id": "SIG-003-INVALID-STRKEY-PUBLIC",
+      "scenario": "Public key format is corrupted or has invalid checksum",
+      "target": "walletAuth",
+      "publicKey": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLXX",
+      "challenge": "Sign into VaultQuest: Nonce 123456789",
+      "signature": "c2lnbmF0dXJl",
+      "expectedErrorCode": "INVALID_PUBLIC_KEY",
+      "expectedMessage": "Invalid Stellar public key format"
+    },
+    {
+      "id": "SIG-004-CROSS-ACCOUNT-REPLAY",
+      "scenario": "Valid signature produced by Keypair A presented for Keypair B",
+      "target": "walletAuth",
+      "signerPublicKey": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+      "claimedPublicKey": "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN7",
+      "challenge": "Sign into VaultQuest: Session 8899",
+      "expectedErrorCode": "SIGNER_MISMATCH",
+      "expectedMessage": "Signature does not match claimed wallet address"
+    },
+    {
+      "id": "SIG-005-WEBHOOK-HMAC-FORGED",
+      "scenario": "Webhook delivery with forged HMAC-SHA256 signature header",
+      "target": "webhookAuth",
+      "headerName": "x-vaultquest-signature",
+      "headerValue": "t=1700000000,v1=deadbeefcafebabe0123456789abcdef0123456789abcdef0123456789abcdef",
+      "payload": "{\"event\":\"vault.round_closed\",\"vaultId\":\"v1\"}",
+      "secret": "webhook-secret-production-grade-entropy-12345",
+      "expectedErrorCode": "INVALID_WEBHOOK_SIGNATURE",
+      "expectedMessage": "Webhook signature verification failed"
+    },
+    {
+      "id": "SIG-006-STRIPE-WEBHOOK-INVALID-SIG",
+      "scenario": "Stripe webhook signature header with mismatched signature hash",
+      "target": "webhookAuth",
+      "headerName": "stripe-signature",
+      "headerValue": "t=1700000000,v1=0000000000000000000000000000000000000000000000000000000000000000",
+      "payload": "{\"id\":\"evt_1\",\"type\":\"payment_intent.succeeded\"}",
+      "secret": "whsec_0123456789abcdef0123456789abcdef",
+      "expectedErrorCode": "INVALID_WEBHOOK_SIGNATURE",
+      "expectedMessage": "Stripe signature verification failed"
+    }
+  ]
+}

@@ -8,6 +8,13 @@ export interface WalletConnectionStatusProps {
   expectedNetwork?: string;
   isConnecting?: boolean;
   connectionError?: string | null;
+  /**
+   * Wallet session-liveness status (#733), from `sessionStatus` in
+   * `core/store.ts`. When `"lost"`, shows a reconnect prompt proactively —
+   * before the user attempts a signing action and hits it as a confusing
+   * mid-flow error.
+   */
+  sessionStatus?: "unknown" | "checking" | "alive" | "lost";
   onConnect?: () => void;
   onReconnect?: () => void;
   onDisconnect?: () => void;
@@ -45,12 +52,14 @@ export const WalletConnectionStatus: FC<WalletConnectionStatusProps> = ({
   expectedNetwork = "testnet",
   isConnecting = false,
   connectionError = null,
+  sessionStatus = "unknown",
   onConnect,
   onReconnect,
   onDisconnect,
 }) => {
   const [copied, setCopied] = useState(false);
   const isConnected = Boolean(walletAddress);
+  const sessionLost = isConnected && sessionStatus === "lost";
 
   const handleCopy = async () => {
     if (!walletAddress) return;
@@ -103,6 +112,15 @@ export const WalletConnectionStatus: FC<WalletConnectionStatusProps> = ({
                 : <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />}
               <span className={`text-xs font-medium ${isNetworkMismatch ? "text-amber-300" : "text-emerald-300"}`}>
                 {isNetworkMismatch ? `Wrong network · switch to ${expectedNetwork}` : `${network} · verified`}
+              </span>
+            </div>
+          )}
+          {sessionLost && (
+            <div role="alert" className="flex items-start gap-2 rounded-lg bg-amber-700/20 px-3 py-2 text-sm text-amber-300">
+              <WifiOff className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+              <span>
+                Your wallet session looks inactive — it may be locked or was switched.{" "}
+                {onReconnect ? "Reconnect before signing anything." : "Reconnect and try again."}
               </span>
             </div>
           )}

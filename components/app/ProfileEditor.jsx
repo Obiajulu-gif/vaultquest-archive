@@ -121,26 +121,32 @@ export default function ProfileEditor() {
               {activeTab === "general" && (
                 <div className="space-y-5">
                   <div className="space-y-1">
-                    <label className="text-sm font-medium text-vault-text">Display Name</label>
+                    <label htmlFor="profile-name" className="text-sm font-medium text-vault-text">Display Name</label>
                     <input
+                      id="profile-name"
                       type="text"
                       className={`w-full bg-vault-surface border ${errors.name ? 'border-red-500' : 'border-vault-border'} rounded-lg px-4 py-2.5 text-vault-text focus:outline-none focus:ring-2 focus:ring-red-500/50 transition-all`}
                       placeholder="e.g. DeFi Degen"
                       value={formData.name}
                       onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                      aria-invalid={!!errors.name}
+                      aria-describedby={errors.name ? "profile-name-error" : undefined}
                     />
-                    {errors.name && <p className="text-xs text-red-500 mt-1">{errors.name}</p>}
+                    {errors.name && <p id="profile-name-error" className="text-xs text-red-500 mt-1">{errors.name}</p>}
                   </div>
                   <div className="space-y-1">
-                    <label className="text-sm font-medium text-vault-text">Email Address</label>
+                    <label htmlFor="profile-email" className="text-sm font-medium text-vault-text">Email Address</label>
                     <input
+                      id="profile-email"
                       type="email"
                       className={`w-full bg-vault-surface border ${errors.email ? 'border-red-500' : 'border-vault-border'} rounded-lg px-4 py-2.5 text-vault-text focus:outline-none focus:ring-2 focus:ring-red-500/50 transition-all`}
                       placeholder="john@example.com"
                       value={formData.email}
                       onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                      aria-invalid={!!errors.email}
+                      aria-describedby={errors.email ? "profile-email-error" : undefined}
                     />
-                    {errors.email && <p className="text-xs text-red-500 mt-1">{errors.email}</p>}
+                    {errors.email && <p id="profile-email-error" className="text-xs text-red-500 mt-1">{errors.email}</p>}
                   </div>
                   <div className="space-y-1">
                     <label className="text-sm font-medium text-vault-text">Wallet Address</label>
@@ -157,46 +163,55 @@ export default function ProfileEditor() {
               {activeTab === "security" && (
                 <div className="space-y-5">
                   <div className="space-y-1">
-                    <label className="text-sm font-medium text-vault-text">Current Password</label>
+                    <label htmlFor="profile-current-password" className="text-sm font-medium text-vault-text">Current Password</label>
                     <div className="relative">
                       <Lock className="absolute left-3 top-3 h-4 w-4 text-vault-muted" />
                       <input
+                        id="profile-current-password"
                         type="password"
                         className={`w-full bg-vault-surface border ${errors.currentPassword ? 'border-red-500' : 'border-vault-border'} rounded-lg pl-10 pr-4 py-2.5 text-vault-text focus:outline-none focus:ring-2 focus:ring-red-500/50 transition-all`}
                         placeholder="••••••••"
                         value={formData.currentPassword}
                         onChange={(e) => setFormData({ ...formData, currentPassword: e.target.value })}
+                        aria-invalid={!!errors.currentPassword}
+                        aria-describedby={errors.currentPassword ? "profile-current-pwd-error" : undefined}
                       />
                     </div>
-                    {errors.currentPassword && <p className="text-xs text-red-500 mt-1">{errors.currentPassword}</p>}
+                    {errors.currentPassword && <p id="profile-current-pwd-error" className="text-xs text-red-500 mt-1">{errors.currentPassword}</p>}
                   </div>
                   <div className="space-y-1">
-                    <label className="text-sm font-medium text-vault-text">New Password</label>
+                    <label htmlFor="profile-new-password" className="text-sm font-medium text-vault-text">New Password</label>
                     <div className="relative">
                       <Lock className="absolute left-3 top-3 h-4 w-4 text-vault-muted" />
                       <input
+                        id="profile-new-password"
                         type="password"
                         className={`w-full bg-vault-surface border ${errors.newPassword ? 'border-red-500' : 'border-vault-border'} rounded-lg pl-10 pr-4 py-2.5 text-vault-text focus:outline-none focus:ring-2 focus:ring-red-500/50 transition-all`}
                         placeholder="••••••••"
                         value={formData.newPassword}
                         onChange={(e) => setFormData({ ...formData, newPassword: e.target.value })}
+                        aria-invalid={!!errors.newPassword}
+                        aria-describedby={errors.newPassword ? "profile-new-pwd-error" : undefined}
                       />
                     </div>
-                    {errors.newPassword && <p className="text-xs text-red-500 mt-1">{errors.newPassword}</p>}
+                    {errors.newPassword && <p id="profile-new-pwd-error" className="text-xs text-red-500 mt-1">{errors.newPassword}</p>}
                   </div>
                   <div className="space-y-1">
-                    <label className="text-sm font-medium text-vault-text">Confirm New Password</label>
+                    <label htmlFor="profile-confirm-password" className="text-sm font-medium text-vault-text">Confirm New Password</label>
                     <div className="relative">
                       <Lock className="absolute left-3 top-3 h-4 w-4 text-vault-muted" />
                       <input
+                        id="profile-confirm-password"
                         type="password"
                         className={`w-full bg-vault-surface border ${errors.confirmPassword ? 'border-red-500' : 'border-vault-border'} rounded-lg pl-10 pr-4 py-2.5 text-vault-text focus:outline-none focus:ring-2 focus:ring-red-500/50 transition-all`}
                         placeholder="••••••••"
                         value={formData.confirmPassword}
                         onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
+                        aria-invalid={!!errors.confirmPassword}
+                        aria-describedby={errors.confirmPassword ? "profile-confirm-pwd-error" : undefined}
                       />
                     </div>
-                    {errors.confirmPassword && <p className="text-xs text-red-500 mt-1">{errors.confirmPassword}</p>}
+                    {errors.confirmPassword && <p id="profile-confirm-pwd-error" className="text-xs text-red-500 mt-1">{errors.confirmPassword}</p>}
                   </div>
                 </div>
               )}
@@ -211,6 +226,9 @@ export default function ProfileEditor() {
                     <button 
                       onClick={() => setFormData(f => ({ ...f, emailAlerts: !f.emailAlerts }))}
                       className={`w-12 h-6 rounded-full transition-colors relative ${formData.emailAlerts ? 'bg-red-500' : 'bg-vault-border'}`}
+                      role="switch"
+                      aria-checked={formData.emailAlerts}
+                      aria-label="Toggle Email Alerts"
                     >
                       <span className={`absolute top-1 left-1 bg-white w-4 h-4 rounded-full transition-transform ${formData.emailAlerts ? 'translate-x-6' : 'translate-x-0'}`} />
                     </button>
@@ -224,6 +242,9 @@ export default function ProfileEditor() {
                     <button 
                       onClick={() => setFormData(f => ({ ...f, pushNotifications: !f.pushNotifications }))}
                       className={`w-12 h-6 rounded-full transition-colors relative ${formData.pushNotifications ? 'bg-red-500' : 'bg-vault-border'}`}
+                      role="switch"
+                      aria-checked={formData.pushNotifications}
+                      aria-label="Toggle Push Notifications"
                     >
                       <span className={`absolute top-1 left-1 bg-white w-4 h-4 rounded-full transition-transform ${formData.pushNotifications ? 'translate-x-6' : 'translate-x-0'}`} />
                     </button>

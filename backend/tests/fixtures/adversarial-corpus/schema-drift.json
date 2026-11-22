@@ -1,0 +1,90 @@
+{
+  "corpusVersion": "1.0.0",
+  "category": "schema-drift",
+  "description": "Golden fixtures for version incompatibilities, prototype pollution, type mutations, and unrecognized enum variants",
+  "fixtures": [
+    {
+      "id": "DRIFT-001-UNSUPPORTED-LEGACY-VERSION",
+      "scenario": "Record with ancient schemaVersion 0.8.0 outside supported compatibility window",
+      "target": "recordCompatibility",
+      "payload": {
+        "schemaVersion": "0.8.0",
+        "id": "vault-ancient-001",
+        "owner": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        "balance": "100"
+      },
+      "expectedErrorCode": "UNSUPPORTED_SCHEMA_VERSION",
+      "expectedMessage": "incompatible schema version: 0.8.0"
+    },
+    {
+      "id": "DRIFT-002-UNSUPPORTED-FUTURE-VERSION",
+      "scenario": "Record with future major version 2.0.0 requiring newer migration capabilities",
+      "target": "recordCompatibility",
+      "payload": {
+        "schemaVersion": "2.0.0",
+        "id": "vault-future-002",
+        "ownerAddress": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        "balance": "100"
+      },
+      "expectedErrorCode": "UNSUPPORTED_SCHEMA_VERSION",
+      "expectedMessage": "incompatible schema version: 2.0.0"
+    },
+    {
+      "id": "DRIFT-003-PROTOTYPE-POLLUTION",
+      "scenario": "Payload attempting prototype pollution injection via __proto__ and constructor.prototype",
+      "target": "safeContent",
+      "payload": {
+        "__proto__": { "isAdmin": true },
+        "constructor": { "prototype": { "polluted": true } },
+        "vault_id": "v1",
+        "amount": "100"
+      },
+      "expectedErrorCode": "PROTOTYPE_POLLUTION_DETECTED",
+      "expectedSanitizedKeys": ["vault_id", "amount"]
+    },
+    {
+      "id": "DRIFT-004-DEPRECATED-FIELD-DROPPED",
+      "scenario": "Legacy 0.9.0 record containing deprecated commission field which must be dropped on upgrade",
+      "target": "recordCompatibility",
+      "payload": {
+        "schemaVersion": "0.9.0",
+        "id": "vault-legacy-004",
+        "owner": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        "asset": "USDC",
+        "balance": "1000",
+        "prizePoolId": "pool-004",
+        "commission": "50",
+        "createdAt": "2024-01-01T00:00:00.000Z",
+        "updatedAt": "2024-01-02T00:00:00.000Z"
+      },
+      "expectedResult": {
+        "migrated": true,
+        "droppedFields": ["commission"],
+        "targetVersion": "1.0.0"
+      }
+    },
+    {
+      "id": "DRIFT-005-TYPE-MUTATION-FLOAT-AMOUNT",
+      "scenario": "Amount supplied as float or float-string instead of decimal base-unit integer string",
+      "target": "amountValidation",
+      "payload": {
+        "amount": "100.50",
+        "asset": "USDC"
+      },
+      "expectedErrorCode": "INVALID_AMOUNT_FORMAT",
+      "expectedMessage": "must be a decimal integer string"
+    },
+    {
+      "id": "DRIFT-006-UNKNOWN-ACTION-ENUM",
+      "scenario": "Action intent with unsupported or rogue actionType enum variant",
+      "target": "actionSchema",
+      "payload": {
+        "walletAddress": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        "actionType": "flash_loan_exploit",
+        "actionPayload": { "amount": "9999999" },
+        "idempotencyKey": "idem-drift-006"
+      },
+      "expectedErrorCode": "INVALID_ENUM_VALUE"
+    }
+  ]
+}

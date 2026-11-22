@@ -272,6 +272,25 @@ describe("LedgerService.reconcileEvent", () => {
     expect(parked).not.toBeNull();
   });
 
+  it("confirms an event that arrived before the transaction hash was attached", async () => {
+    const created = await svc.createAction(makeIntentInput());
+    const event = {
+      txHash: "tx_event_before_attach",
+      sorobanEventId: "evt_before_attach",
+      eventPayload: { amount: "100" },
+      statusHint: "confirmed" as const
+    };
+
+    expect(await svc.reconcileEvent(event)).toEqual({ matched: false });
+    const attached = await svc.attachTxHash(created.id, event.txHash, { workerId: "worker-1" });
+
+    expect(attached.status).toBe("confirmed");
+    expect(attached.verifiedPayload).toEqual(event.eventPayload);
+    expect(await db.prisma.pendingEvent.findUnique({ where: { txHash: event.txHash } })).toMatchObject({
+      consumedAt: expect.any(Date)
+    });
+  });
+
   it("is idempotent on duplicate event delivery", async () => {
     const created = await svc.createAction(makeIntentInput());
     await svc.attachTxHash(created.id, "tx_dup", { workerId: "worker-1" });
@@ -380,6 +399,67 @@ describe("LedgerService.recoverSubmittedLeases", () => {
     const row = await svc.getAction(created.id);
     expect(row?.status).toBe("orphaned");
     expect(row?.errorCode).toBe("ORPHAN_TTL_EXPIRED");
+    expect((row?.recoveryCheckpoint as { stage: string }).stage).toBe("recovery_required");
+    expect(row?.txHash).toBe("tx_nolease");
+  });
+
+  it("does not treat an abandoned intent as submitted before external work starts", async () => {
+    const created = await svc.createAction(makeIntentInput());
+    await db.prisma.actionLedger.update({
+      where: { id: created.id },
+      data: { updatedAt: new Date(Date.now() - 60_000) }
+    });
+
+    const result = await svc.recoverSubmittedLeases("recovery-worker", { ttlMs: 1 });
+    const row = await svc.getAction(created.id);
+
+    expect(result.recovered).toBe(0);
+    expect(row?.status).toBe("pending");
+    expect((row?.recoveryCheckpoint as { stage: string }).stage).toBe("intent_recorded");
+  });
+
+  it("requires wallet verification after an interrupted external action", async () => {
+    const created = await svc.createAction(makeIntentInput());
+    await svc.markExternalActionStarted(created.id);
+    await db.prisma.actionLedger.update({
+      where: { id: created.id },
+      data: { updatedAt: new Date(Date.now() - 60_000) }
+    });
+
+    const result = await svc.recoverSubmittedLeases("recovery-worker", { ttlMs: 1 });
+    const row = await svc.getAction(created.id);
+
+    expect(result.recovered).toBe(1);
+    expect(row?.status).toBe("pending");
+    expect((row?.recoveryCheckpoint as { stage: string }).stage).toBe("recovery_required");
+    await expect(svc.attachTxHash(created.id, "tx_blind_retry", { workerId: "retry-worker" }))
+      .rejects.toMatchObject({ code: "ILLEGAL_TRANSITION" });
+  });
+
+  it("preserves chain events and blocks resubmission after the tx hash is known", async () => {
+    const created = await svc.createAction(makeIntentInput());
+    await db.prisma.actionLedger.update({
+      where: { id: created.id },
+      data: {
+        status: "submitted",
+        txHash: "tx_recovery_evidence",
+        submittedAt: new Date(Date.now() - 60_000)
+      }
+    });
+    await db.prisma.pendingEvent.create({
+      data: {
+        txHash: "tx_recovery_evidence",
+        sorobanEventId: "evt_recovery_evidence",
+        eventPayload: {},
+        statusHint: "confirmed"
+      }
+    });
+
+    await svc.recoverSubmittedLeases("recovery-worker", { ttlMs: 1 });
+
+    expect(await db.prisma.pendingEvent.findUnique({ where: { txHash: "tx_recovery_evidence" } })).not.toBeNull();
+    await expect(svc.attachTxHash(created.id, "tx_duplicate", { workerId: "retry-worker" }))
+      .rejects.toMatchObject({ code: "ILLEGAL_TRANSITION" });
   });
 
   it("dry-run mode does not modify records", async () => {
@@ -433,6 +513,8 @@ describe("Crash-injection: exactly-once submission", () => {
     const row = await svc.getAction(created.id);
     expect(row?.status).toBe("orphaned");
     expect(row?.errorCode).toBe("ORPHAN_TTL_EXPIRED");
+    await expect(svc.attachTxHash(created.id, "tx_crash_duplicate", { workerId: "retry-worker" }))
+      .rejects.toMatchObject({ code: "ILLEGAL_TRANSITION" });
   });
 
   it("every action reaches terminal or operator-owned state", async () => {

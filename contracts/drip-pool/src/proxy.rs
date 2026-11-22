@@ -48,12 +48,12 @@ use crate::DripPoolClient;
 #[derive(Clone)]
 #[contracttype]
 pub enum DataKey {
-    PoolContract,             // Address of the DripPool contract that governs this proxy (#531)
-    LogicContract,            // Address of the current logic contract
-    LogicGeneration,          // u32 — bumped on every executed upgrade (#531)
-    Migration(MigrationKey),  // marker: this specific (from -> to) transition was reviewed
-    UpgradeProposal(u32),     // pending/executed/cancelled upgrade proposal, by id (#531)
-    UpgradeNonce,             // u32 — next upgrade proposal id (#531)
+    PoolContract,    // Address of the DripPool contract that governs this proxy (#531)
+    LogicContract,   // Address of the current logic contract
+    LogicGeneration, // u32 — bumped on every executed upgrade (#531)
+    Migration(MigrationKey), // marker: this specific (from -> to) transition was reviewed
+    UpgradeProposal(u32), // pending/executed/cancelled upgrade proposal, by id (#531)
+    UpgradeNonce,    // u32 — next upgrade proposal id (#531)
 }
 
 /// Identifies one specific logic-contract transition. Soroban's enum
@@ -93,9 +93,9 @@ pub struct UpgradeProposal {
     // staleness guard: bumped on every executed upgrade (including a
     // rollback to a previously-used address), so a stale proposal can never
     // match again even if the logic address later cycles back (#531)
-    pub proposed_at: u32,                // ledger sequence
-    pub ready_at: u32,                   // proposed_at + delay; cannot execute before this
-    pub expires_at: u32,                 // cannot execute after this
+    pub proposed_at: u32, // ledger sequence
+    pub ready_at: u32,    // proposed_at + delay; cannot execute before this
+    pub expires_at: u32,  // cannot execute after this
     pub status: UpgradeStatus,
     pub executed_at: Option<u32>,
 }
@@ -297,7 +297,11 @@ impl VaultProxy {
         let approver_snapshot = Self::pool_admins(&env, &pool);
         let now = env.ledger().sequence();
 
-        let nonce: u32 = env.storage().instance().get(&DataKey::UpgradeNonce).unwrap_or(0);
+        let nonce: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UpgradeNonce)
+            .unwrap_or(0);
         let logic_generation_snapshot = Self::get_generation(&env);
         let proposal = UpgradeProposal {
             new_logic: new_logic.clone(),
@@ -317,7 +321,9 @@ impl VaultProxy {
         env.storage()
             .instance()
             .set(&DataKey::UpgradeProposal(nonce), &proposal);
-        env.storage().instance().set(&DataKey::UpgradeNonce, &(nonce + 1));
+        env.storage()
+            .instance()
+            .set(&DataKey::UpgradeNonce, &(nonce + 1));
 
         env.events().publish(
             (symbol_short!("proxy"), symbol_short!("propose")),
@@ -452,8 +458,10 @@ impl VaultProxy {
         env.storage()
             .instance()
             .set(&DataKey::UpgradeProposal(upgrade_id), &proposal);
-        env.events()
-            .publish((symbol_short!("proxy"), symbol_short!("upcancel")), upgrade_id);
+        env.events().publish(
+            (symbol_short!("proxy"), symbol_short!("upcancel")),
+            upgrade_id,
+        );
         Ok(())
     }
 
@@ -481,7 +489,10 @@ impl VaultProxy {
     }
 
     pub fn upgrade_nonce(env: Env) -> u32 {
-        env.storage().instance().get(&DataKey::UpgradeNonce).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&DataKey::UpgradeNonce)
+            .unwrap_or(0)
     }
 }
 
@@ -491,7 +502,13 @@ mod tests {
     use crate::DripPool;
     use soroban_sdk::testutils::{Address as _, Ledger as _};
 
-    fn setup() -> (Env, VaultProxyClient<'static>, DripPoolClient<'static>, Address, Address) {
+    fn setup() -> (
+        Env,
+        VaultProxyClient<'static>,
+        DripPoolClient<'static>,
+        Address,
+        Address,
+    ) {
         let env = Env::default();
         env.mock_all_auths();
 
@@ -511,7 +528,8 @@ mod tests {
 
     fn skip_delay(env: &Env) {
         let current = env.ledger().sequence();
-        env.ledger().set_sequence_number(current + crate::HIGH_RISK_DELAY_LEDGERS + 1);
+        env.ledger()
+            .set_sequence_number(current + crate::HIGH_RISK_DELAY_LEDGERS + 1);
     }
 
     #[test]
@@ -568,7 +586,10 @@ mod tests {
         let logic_v2 = Address::generate(&env);
         let uid = client.propose_upgrade(&admin, &logic_v2, &false);
         let executed = client.approve_upgrade(&signer2, &uid);
-        assert!(!executed, "threshold met but delay must still block execution");
+        assert!(
+            !executed,
+            "threshold met but delay must still block execution"
+        );
 
         assert_eq!(
             client.try_execute_upgrade(&signer2, &uid),
@@ -602,7 +623,8 @@ mod tests {
         client.approve_upgrade(&signer2, &uid);
 
         let current = env.ledger().sequence();
-        env.ledger().set_sequence_number(current + crate::PROPOSAL_EXPIRY_LEDGERS + 1);
+        env.ledger()
+            .set_sequence_number(current + crate::PROPOSAL_EXPIRY_LEDGERS + 1);
 
         assert_eq!(
             client.try_execute_upgrade(&signer2, &uid),
@@ -654,7 +676,8 @@ mod tests {
         // which bumps the pool's governance epoch (#533) after its own delay.
         let pid = pool.propose(&admin, &crate::ProposalAction::SetThreshold(1));
         let current = env.ledger().sequence();
-        env.ledger().set_sequence_number(current + crate::HIGH_RISK_DELAY_LEDGERS + 1);
+        env.ledger()
+            .set_sequence_number(current + crate::HIGH_RISK_DELAY_LEDGERS + 1);
         pool.approve(&signer2, &pid);
         assert_eq!(pool.threshold(), 1);
 

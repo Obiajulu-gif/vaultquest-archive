@@ -1,0 +1,65 @@
+{
+  "corpusVersion": "1.0.0",
+  "category": "replays",
+  "description": "Golden fixtures for stale timestamps, conflicting idempotency replays, and consumed event repetitions",
+  "fixtures": [
+    {
+      "id": "RPL-001-EXPIRED-WALLET-CHALLENGE",
+      "scenario": "Wallet authentication challenge submitted after TTL expiration",
+      "target": "walletAuth",
+      "challengeIssuedAt": "2026-10-16T12:00:00.000Z",
+      "challengeSubmittedAt": "2026-10-16T12:35:00.000Z",
+      "ttlMinutes": 15,
+      "expectedErrorCode": "CHALLENGE_EXPIRED",
+      "expectedMessage": "Wallet authentication challenge has expired"
+    },
+    {
+      "id": "RPL-002-WEBHOOK-STALE-TIMESTAMP",
+      "scenario": "Webhook delivery timestamp is older than the configured tolerance window (300s)",
+      "target": "webhookAuth",
+      "toleranceSeconds": 300,
+      "timestampHeader": 1699990000,
+      "currentTimestamp": 1700000000,
+      "skewSeconds": 10000,
+      "expectedErrorCode": "WEBHOOK_TIMESTAMP_OUT_OF_RANGE",
+      "expectedMessage": "Webhook timestamp outside tolerance window"
+    },
+    {
+      "id": "RPL-003-CONFLICTING-IDEMPOTENCY-REPLAY",
+      "scenario": "Identical idempotency key resubmitted with modified action payload",
+      "target": "idempotencyService",
+      "idempotencyKey": "idem-key-stable-001",
+      "firstIntent": {
+        "walletAddress": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        "actionType": "deposit",
+        "actionPayload": { "vault_id": "v1", "amount": "100" }
+      },
+      "conflictingIntent": {
+        "walletAddress": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        "actionType": "deposit",
+        "actionPayload": { "vault_id": "v1", "amount": "50000" }
+      },
+      "expectedErrorCode": "IDEMPOTENCY_PAYLOAD_MISMATCH",
+      "expectedMessage": "Idempotency key reused with conflicting payload"
+    },
+    {
+      "id": "RPL-004-TERMINAL-EVENT-REPLAY",
+      "scenario": "Duplicate delivery of an already-confirmed Soroban on-chain event",
+      "target": "reconciler",
+      "sorobanEventId": "0000000000000000100-0000000001",
+      "txHash": "tx_terminal_confirmed_1",
+      "currentStatus": "confirmed",
+      "expectedBehavior": "noop_idempotent_match",
+      "shouldTriggerSideEffects": false
+    },
+    {
+      "id": "RPL-005-CROSS-ROUND-PRIZE-CLAIM-REPLAY",
+      "scenario": "Claiming prize for already-settled round 1 using round 2 transaction envelope",
+      "target": "savingsService",
+      "roundId": "round-1",
+      "claimStatus": "already_claimed",
+      "expectedErrorCode": "PRIZE_ALREADY_CLAIMED",
+      "expectedMessage": "Prize for this round has already been claimed"
+    }
+  ]
+}

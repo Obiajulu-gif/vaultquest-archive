@@ -13,6 +13,7 @@
     "./src/vault": "./src/vault/index.ts",
     "./src/vault/components/ActivityExport": "./src/vault/components/ActivityExport.tsx",
     "./src/vault/components/OnboardingChecklist": "./src/vault/components/OnboardingChecklist.tsx",
+    "./src/vault/data/consistency": "./src/vault/data/consistency.ts",
     "./src/lib/wallets": "./src/lib/wallets.ts"
   },
   "scripts": {

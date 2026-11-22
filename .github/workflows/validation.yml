@@ -66,5 +66,8 @@ jobs:
       - name: Run build checks
         run: pnpm run build
 
+      - name: Validate release readiness checklist
+        run: node ./scripts/check-release-readiness.js
+
       - name: Validate documentation
         run: pnpm run docs:validate

@@ -69,7 +69,7 @@ describe("walletService - getWalletHealth criticality (#626)", () => {
     vi.stubEnv("NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE", "Test SDF Network ; September 2015");
     vi.stubEnv("NEXT_PUBLIC_HORIZON_URL", "https://horizon-testnet.stellar.org");
     vi.stubEnv("NEXT_PUBLIC_SOROBAN_RPC_URL", "https://soroban-testnet.stellar.org");
-    vi.stubEnv("NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID", "CDRIPPOOLCONTRACTID");
+    vi.stubEnv("NEXT_PUBLIC_DRIP_POOL_CONTRACT_ID", "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
     vi.stubEnv("NEXT_PUBLIC_VAULT_ASSET_CODE", "USDC");
     vi.stubEnv(
       "NEXT_PUBLIC_VAULT_ASSET_ISSUER",

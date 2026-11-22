@@ -1,0 +1,105 @@
+# promtool unit tests for alerts.yml (#752 acceptance: a deliberately induced
+# ingestion stall must alert within a defined time bound).
+#
+#   promtool test rules backend/prometheus/alerts.test.yml
+#
+# promtool evaluates at test-relative time, so time() == seconds since 0.
+
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 15s
+
+tests:
+  # Induced stall: the lease-holding replica succeeds every 60s until t=240s,
+  # then stops. A second replica never holds the lease and reports 0.
+  # Bound: IngestionStalled must fire no later than 300s after the last
+  # success. Expected: condition true from 435s, firing from 495s (255s).
+  - interval: 15s
+    input_series:
+      - series: 'indexer_last_sync_timestamp{instance="backend-1"}'
+        values: '0x3 60x3 120x3 180x3 240x40'
+      - series: 'indexer_last_sync_timestamp{instance="backend-2"}'
+        values: '0x55'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: IngestionStalled
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: IngestionStalled
+        exp_alerts: []
+      - eval_time: 8m15s
+        alertname: IngestionStalled
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "Stellar indexer has not completed a successful tick in over 3 minutes"
+              runbook_url: "docs/INDEXER_RUNBOOK.md#2b-ingestion-leading-indicator-alerts-752"
+
+  # Silent stall: ticks keep succeeding but the scan position freezes at
+  # ledger 1024 while the chain advances one ledger per 5s.
+  - interval: 15s
+    input_series:
+      - series: 'indexer_chain_latest_ledger{instance="backend-1"}'
+        values: '1000+3x40'
+      - series: 'indexer_latest_ledger{instance="backend-1"}'
+        values: '1000+3x8 1024x32'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: IngestionLagging
+        exp_alerts: []
+      - eval_time: 9m15s
+        alertname: IngestionLagging
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "Stellar indexer is more than 60 ledgers behind the chain tip"
+              runbook_url: "docs/INDEXER_RUNBOOK.md#2b-ingestion-leading-indicator-alerts-752"
+
+  # Before the first scan (indexer_latest_ledger still 0) lag is not judged.
+  - interval: 15s
+    input_series:
+      - series: 'indexer_chain_latest_ledger{instance="backend-1"}'
+        values: '5000x20'
+      - series: 'indexer_latest_ledger{instance="backend-1"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: IngestionLagging
+        exp_alerts: []
+
+  - interval: 15s
+    input_series:
+      - series: 'indexer_quarantined_events{instance="backend-1"}'
+        values: '0x4 1x20'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: IngestionQuarantineHalt
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: IngestionQuarantineHalt
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "A quarantined event is holding the Stellar indexer cursor"
+              runbook_url: "docs/INDEXER_RUNBOOK.md#2b-ingestion-leading-indicator-alerts-752"
+
+  - interval: 1m
+    input_series:
+      - series: 'replay_equivalence_divergences{instance="backend-1"}'
+        values: '0 0 2'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ReplayDivergence
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ReplayDivergence
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "Replaying the chain event log does not reproduce live state"
+              runbook_url: "docs/REPLAY_DETERMINISM.md#when-replaydivergence-fires"

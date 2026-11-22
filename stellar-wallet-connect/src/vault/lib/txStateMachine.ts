@@ -8,7 +8,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { TimelineStage } from "../../components/TransactionTimeline";
-import type { PoolActionInput, PoolActionType, VaultContractClient } from "../contract/types";
+import { ContractInterfaceError, type PoolActionInput, type PoolActionType, type VaultContractClient } from "../contract/types";
+import { assertNetworkMatchesBeforeSigning, assertNotMultisigBeforeSigning } from "../../core/walletService.js";
+import { assertSessionAliveBeforeSigning } from "../../core/sessionLiveness.js";
+import { mapWalletErrorToRejection, getRejectionExplanation } from "../../../../lib/rejectionReasons.js";
 
 export type ActiveTxStage = Exclude<TimelineStage, "success" | "failed">;
 
@@ -20,7 +23,7 @@ export type TxFlowState =
   | { stage: "confirming"; txHash: string }
   | { stage: "indexing"; txHash: string }
   | { stage: "success"; txHash: string }
-  | { stage: "failed"; failedAt: ActiveTxStage; message: string };
+  | { stage: "failed"; failedAt: ActiveTxStage; message: string; rejectionExplanation?: { reasonCode: string; userMessage: string; recoveryHint: string } };
 
 export type TxFlowEvent =
   | { type: "START" }
@@ -29,7 +32,7 @@ export type TxFlowEvent =
   | { type: "CONFIRMING"; txHash: string }
   | { type: "INDEXING"; txHash: string }
   | { type: "SUCCEEDED"; txHash: string }
-  | { type: "FAILED"; failedAt: ActiveTxStage; message: string }
+  | { type: "FAILED"; failedAt: ActiveTxStage; message: string; rejectionExplanation?: { reasonCode: string; userMessage: string; recoveryHint: string } }
   | { type: "RESET" };
 
 export interface TxFlowResult {
@@ -49,6 +52,16 @@ export interface TxFlowResult {
 }
 
 export interface TxFlowOptions {
+  /** Business rules applied before the wallet can display a signing prompt. */
+  businessPolicy?: BusinessPolicyEngine;
+  /** Live rule context supplied by the vault view when lockup/claim data is available. */
+  policyContext?: {
+    lockedUntilLedger?: number;
+    currentLedger?: number;
+    claimableAmount?: number;
+    claimDeadline?: number | null;
+    now?: number;
+  };
   /** Called after ledger confirmation and before the indexing stage. */
   onConfirmed?: (txHash: string) => void;
   /**
@@ -102,7 +115,7 @@ export function transitionTxState(state: TxFlowState, event: TxFlowEvent): TxFlo
         : state;
     case "FAILED":
       return isActiveState(state)
-        ? { stage: "failed", failedAt: event.failedAt, message: event.message }
+        ? { stage: "failed", failedAt: event.failedAt, message: event.message, rejectionExplanation: event.rejectionExplanation }
         : state;
     case "RESET":
       return state.stage === "idle" || isTerminalState(state) ? INITIAL_STATE : state;
@@ -121,21 +134,31 @@ export class TxConfirmationTimeoutError extends Error {
 export function mapTxError(
   err: unknown,
   fallbackStage: ActiveTxStage,
-): { failedAt: ActiveTxStage; message: string } {
+): { failedAt: ActiveTxStage; message: string; rejectionExplanation?: { reasonCode: string; userMessage: string; recoveryHint: string } } {
   const message = err instanceof Error ? err.message : String(err);
   const kind = (err as { kind?: string }).kind ?? "";
 
+  // Map to rejection explanation if available
+  const rejectionReason = mapWalletErrorToRejection(kind);
+  const rejectionExplanation = rejectionReason ? getRejectionExplanation(rejectionReason) : undefined;
+
+  if (kind === "network_mismatch" || kind === "multisig_unsupported") {
+    // Fails at "preparing" — both are caught before the wallet's signing
+    // prompt is ever shown (#735, #736), not a rejection of an in-flight
+    // signature.
+    return { failedAt: "preparing", message, rejectionExplanation };
+  }
   if (kind === "wallet_disconnected" || kind === "signature_rejected") {
-    return { failedAt: "awaiting-signature", message };
+    return { failedAt: "awaiting-signature", message, rejectionExplanation };
   }
   if (kind === "rpc_failure") {
-    return { failedAt: "submitting", message };
+    return { failedAt: "submitting", message, rejectionExplanation };
   }
   if (kind === "contract_error" || kind === "confirmation_timeout") {
-    return { failedAt: "confirming", message };
+    return { failedAt: "confirming", message, rejectionExplanation };
   }
   if (kind === "stale_data") {
-    return { failedAt: "indexing", message };
+    return { failedAt: "indexing", message, rejectionExplanation };
   }
   // Lockup-active and insufficient-liquidity are contract-level rejections,
   // not RPC or wallet failures, so they fail at the same stage as a generic
@@ -143,9 +166,9 @@ export function mapTxError(
   // callers (e.g. WithdrawalModal) can render a distinct, non-generic
   // message instead of "Transaction reverted by the contract." (#620).
   if (kind === "lockup_active" || kind === "insufficient_liquidity") {
-    return { failedAt: "confirming", message };
+    return { failedAt: "confirming", message, rejectionExplanation };
   }
-  return { failedAt: fallbackStage, message };
+  return { failedAt: fallbackStage, message, rejectionExplanation };
 }
 
 function delay(ms: number): Promise<void> {
@@ -362,6 +385,44 @@ export function useTxFlow(): TxFlowResult {
       } = options;
 
       try {
+        const policy = options.businessPolicy ?? DEFAULT_BUSINESS_POLICY_ENGINE;
+        let decision;
+        if (["create", "join", "drip"].includes(type) && input.amount !== undefined) {
+          decision = policy.evaluate({ rule: "deposit", amount: Number(input.amount) });
+        } else if (type === "withdraw") {
+          decision = policy.evaluate({
+            rule: "withdrawal",
+            ...(input.amount !== undefined && { amount: Number(input.amount) }),
+            ...(options.policyContext?.lockedUntilLedger !== undefined && { lockedUntilLedger: options.policyContext.lockedUntilLedger }),
+            ...(options.policyContext?.currentLedger !== undefined && { currentLedger: options.policyContext.currentLedger })
+          });
+        } else if (type === "claim" && options.policyContext?.claimableAmount !== undefined) {
+          decision = policy.evaluate({
+            rule: "claim",
+            availableAmount: options.policyContext.claimableAmount,
+            deadline: options.policyContext.claimDeadline,
+            now: options.policyContext.now ?? Date.now()
+          });
+        }
+        if (decision?.status === "deny") {
+          const kind = decision.code === "LockupActive" ? "lockup_active" : "contract_error";
+          throw new ContractInterfaceError(kind, `${decision.code}: ${decision.message}`);
+        }
+
+        // #735: fresh network check immediately before every signing
+        // request — never cached from connect time. Throws before the
+        // wallet's signing prompt is shown on a mismatch.
+        await assertNetworkMatchesBeforeSigning();
+        // #736: block signing for a detected multisig/thresholded account
+        // with a clear message, rather than letting it hit an ambiguous
+        // low-level signing/threshold error later.
+        assertNotMultisigBeforeSigning();
+        // #733: fresh wallet session-liveness check — catches a dead,
+        // locked, or silently-switched session before the signing prompt,
+        // instead of surfacing a confusing failure after the user has
+        // already committed to this action.
+        await assertSessionAliveBeforeSigning();
+
         transition({ type: "AWAIT_SIGNATURE" });
         const result = await client.submitAction(type, input);
 

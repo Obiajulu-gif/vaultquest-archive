@@ -1,0 +1,91 @@
+# VaultQuest backend alerting rules.
+#
+# Ingestion leading indicators (#752) are fast-path signals evaluated every
+# 15s, distinct from the batch reconciliation job (docs/RECONCILIATION.md).
+# Metrics are process-local and only the replica holding the
+# "stellar-indexer" job lease updates them, so every expression aggregates
+# with max() across replicas. Thresholds assume the indexer's default 1-minute
+# schedule and a ~5-6s Stellar ledger close time; tune them against your own
+# history (see docs/INDEXER_RUNBOOK.md §2b). Only load these rules where the
+# indexer / replay job is enabled.
+#
+# Verified by `promtool test rules backend/prometheus/alerts.test.yml`.
+
+groups:
+  - name: vaultquest-ingestion
+    rules:
+      # A healthy indexer records a success every minute. Three missed ticks
+      # plus a 1m hold fires at most 180s + 60s + one evaluation interval
+      # after the last success: an induced stall pages within 5 minutes.
+      - alert: IngestionStalled
+        expr: time() - max(indexer_last_sync_timestamp) > 180
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "Stellar indexer has not completed a successful tick in over 3 minutes"
+          runbook_url: "docs/INDEXER_RUNBOOK.md#2b-ingestion-leading-indicator-alerts-752"
+
+      # Ticks succeed but the scan position falls behind the chain tip
+      # (~60 ledgers is ~5-6 minutes): dropped/filtered events or a cursor
+      # stuck behind the RPC's 10,000-ledger scan window.
+      - alert: IngestionLagging
+        expr: (max(indexer_chain_latest_ledger) - max(indexer_latest_ledger) > 60) and max(indexer_latest_ledger) > 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "Stellar indexer is more than 60 ledgers behind the chain tip"
+          runbook_url: "docs/INDEXER_RUNBOOK.md#2b-ingestion-leading-indicator-alerts-752"
+
+      # A quarantined event halts the cursor by design; every later event
+      # for every pool waits behind it until an operator resolves it.
+      - alert: IngestionQuarantineHalt
+        expr: max(indexer_quarantined_events) > 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "A quarantined event is holding the Stellar indexer cursor"
+          runbook_url: "docs/INDEXER_RUNBOOK.md#2b-ingestion-leading-indicator-alerts-752"
+
+      - alert: IngestionErrorsRising
+        expr: sum(increase(indexer_sync_errors_total[10m])) > 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "Stellar indexer ticks are failing repeatedly"
+          runbook_url: "docs/INDEXER_RUNBOOK.md#2b-ingestion-leading-indicator-alerts-752"
+
+      # Events parked with no matching intent. Some are expected (contract
+      # calls made outside the app); sustained growth means intents are not
+      # being attached.
+      - alert: PendingEventsBacklog
+        expr: max(pending_events_total) > 100
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 100 ingested events are waiting for a matching action intent"
+          runbook_url: "docs/INDEXER_RUNBOOK.md#2b-ingestion-leading-indicator-alerts-752"
+
+  - name: vaultquest-replay-equivalence
+    rules:
+      - alert: ReplayDivergence
+        expr: max(replay_equivalence_divergences) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: "Replaying the chain event log does not reproduce live state"
+          runbook_url: "docs/REPLAY_DETERMINISM.md#when-replaydivergence-fires"
+
+      # The job runs daily; no completed run in 26h means it is failing or
+      # not scheduled. Guarded on > 0 so an environment that never enabled
+      # the job stays quiet.
+      - alert: ReplayEquivalenceStale
+        expr: max(replay_equivalence_last_run_timestamp_seconds) > 0 and time() - max(replay_equivalence_last_run_timestamp_seconds) > 93600
+        labels:
+          severity: warning
+        annotations:
+          summary: "Replay-equivalence job has not completed in over 26 hours"
+          runbook_url: "docs/REPLAY_DETERMINISM.md#when-replaydivergence-fires"

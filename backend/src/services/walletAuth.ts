@@ -27,7 +27,9 @@
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { AppError } from "../errors.js";
+import { withTelemetry } from "./telemetry.js";
 import { ERROR_CODES } from "../constants.js";
+import type { AuditRecorder } from "./auditTrail.js";
 
 import { Keypair } from "@stellar/stellar-sdk";
 
@@ -69,7 +71,33 @@ export class WalletAuthService {
   private readonly sessionTtlMs = 24 * 60 * 60 * 1000; // 24 hours
   private readonly refreshTtlMs = 7 * 24 * 60 * 60 * 1000; // 7 days
 
-  constructor(private readonly prisma: PrismaClient) {}
+  /**
+   * @param audit #814 — session issue/refresh/revoke are access changes and
+   *   are written to the audit trail. Records reference the session row id;
+   *   tokens never leave this service.
+   */
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly audit?: AuditRecorder
+  ) {}
+
+  private async auditSession(
+    action: "session.issue" | "session.refresh" | "session.revoke" | "session.revoke_all",
+    walletAddress: string,
+    targetId: string,
+    before: Record<string, unknown> | null,
+    after: Record<string, unknown> | null
+  ): Promise<void> {
+    if (!this.audit) return;
+    await this.audit.record({
+      category: "access",
+      action,
+      actor: { subject: walletAddress, role: "user" },
+      target: { type: action === "session.revoke_all" ? "wallet" : "wallet_session", id: targetId },
+      before,
+      after
+    });
+  }
 
   /**
    * Creates a domain-separated challenge for wallet signature.
@@ -104,7 +132,13 @@ export class WalletAuthService {
   /**
    * Verifies a signed challenge and issues a session token.
    */
-  async verifyChallenge(input: VerifyInput): Promise<SessionOutput> {
+  verifyChallenge(input: VerifyInput): Promise<SessionOutput> {
+    return withTelemetry({ operation: "wallet.verify_challenge", actorType: "user" }, () =>
+      this.verifyChallengeImpl(input)
+    );
+  }
+
+  private async verifyChallengeImpl(input: VerifyInput): Promise<SessionOutput> {
     const challenge = await this.prisma.walletChallenge.findUnique({
       where: { challengeId: input.challengeId }
     });
@@ -202,6 +236,12 @@ export class WalletAuthService {
       }
     });
 
+    await this.auditSession("session.issue", session.walletAddress, String(session.id), null, {
+      network: session.network,
+      publicKey: session.publicKey,
+      expiresAt: session.expiresAt
+    });
+
     return {
       token: session.token,
       refreshToken: session.refreshToken,
@@ -240,6 +280,12 @@ export class WalletAuthService {
       }
     });
 
+    await this.auditSession("session.refresh", updated.walletAddress, String(updated.id), {
+      expiresAt: session.expiresAt
+    }, {
+      expiresAt: updated.expiresAt
+    });
+
     return {
       token: updated.token,
       refreshToken: updated.refreshToken,
@@ -262,10 +308,12 @@ export class WalletAuthService {
       return; // Already revoked or doesn't exist
     }
 
+    const revokedAt = new Date();
     await this.prisma.walletSession.update({
       where: { id: session.id },
-      data: { revokedAt: new Date() }
+      data: { revokedAt }
     });
+    await this.auditSession("session.revoke", session.walletAddress, String(session.id), { revokedAt: null }, { revokedAt });
   }
 
   /**
@@ -301,6 +349,9 @@ export class WalletAuthService {
       data: { revokedAt: new Date() }
     });
 
+    if (result.count > 0) {
+      await this.auditSession("session.revoke_all", walletAddress, walletAddress, { activeSessions: result.count }, { activeSessions: 0 });
+    }
     return result.count;
   }
 }

@@ -50,8 +50,8 @@ pub enum Error {
     WasmHashNotApproved = 6, // deploying with anything but the currently-approved drip-pool build
     PoolNotFound = 7,
     MetadataStale = 8,
-    FeeBelowStringency = 9, // fee_bps below the hard floor (#649)
-    FeeExceedsCap = 10,     // fee_bps above 100.00% (#649)
+    FeeBelowStringency = 9,    // fee_bps below the hard floor (#649)
+    FeeExceedsCap = 10,        // fee_bps above 100.00% (#649)
     LockupDaysExceedsCap = 11, // lockup_days above the 10-year cap (#649)
 }
 
@@ -59,10 +59,10 @@ pub enum Error {
 #[contracttype]
 enum DataKey {
     Admin,
-    ApprovedWasmHash,          // BytesN<32> — the currently-approved drip-pool wasm hash
-    ApprovedAssets,            // Vec<Address>
-    PoolIds,                   // Vec<BytesN<32>> — every salt ever deployed, for pagination
-    PoolMeta(BytesN<32>),      // salt -> PoolMetadata
+    ApprovedWasmHash,     // BytesN<32> — the currently-approved drip-pool wasm hash
+    ApprovedAssets,       // Vec<Address>
+    PoolIds,              // Vec<BytesN<32>> — every salt ever deployed, for pagination
+    PoolMeta(BytesN<32>), // salt -> PoolMetadata
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -171,7 +171,11 @@ impl VaultFactory {
 
     /// Update the approved drip-pool wasm hash used for new deployments.
     /// Never touches already-deployed pools' code or metadata.
-    pub fn set_approved_wasm_hash(env: Env, caller: Address, wasm_hash: BytesN<32>) -> Result<(), Error> {
+    pub fn set_approved_wasm_hash(
+        env: Env,
+        caller: Address,
+        wasm_hash: BytesN<32>,
+    ) -> Result<(), Error> {
         Self::require_admin(&env, &caller)?;
         env.storage()
             .instance()
@@ -185,7 +189,9 @@ impl VaultFactory {
         let mut assets = Self::get_approved_assets(&env);
         if !assets.contains(&asset) {
             assets.push_back(asset);
-            env.storage().instance().set(&DataKey::ApprovedAssets, &assets);
+            env.storage()
+                .instance()
+                .set(&DataKey::ApprovedAssets, &assets);
         }
         Ok(())
     }
@@ -203,7 +209,11 @@ impl VaultFactory {
     ) -> Result<Address, Error> {
         Self::require_admin(&env, &caller)?;
 
-        if env.storage().instance().has(&DataKey::PoolMeta(salt.clone())) {
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::PoolMeta(salt.clone()))
+        {
             return Err(Error::SaltAlreadyUsed);
         }
 
@@ -239,7 +249,11 @@ impl VaultFactory {
         env.invoke_contract::<()>(
             &deployed_address,
             &symbol_short!("set_token"),
-            soroban_sdk::vec![&env, pool_admin.clone().into_val(&env), asset.clone().into_val(&env)],
+            soroban_sdk::vec![
+                &env,
+                pool_admin.clone().into_val(&env),
+                asset.clone().into_val(&env)
+            ],
         );
 
         let metadata = PoolMetadata {
@@ -332,7 +346,9 @@ impl VaultFactory {
         pool.metadata_version += 1;
         pool.metadata_updated_at_ledger = env.ledger().sequence();
 
-        env.storage().instance().set(&DataKey::PoolMeta(salt.clone()), &pool);
+        env.storage()
+            .instance()
+            .set(&DataKey::PoolMeta(salt.clone()), &pool);
         env.events().publish(
             (FACTORY_POOL_METADATA_UPDATED_TOPIC,),
             PoolMetadataUpdatedEvent {
@@ -357,7 +373,9 @@ impl VaultFactory {
         Self::require_admin(&env, &caller)?;
         let mut meta = Self::get_pool(env.clone(), salt.clone())?;
         meta.active = false;
-        env.storage().instance().set(&DataKey::PoolMeta(salt), &meta);
+        env.storage()
+            .instance()
+            .set(&DataKey::PoolMeta(salt), &meta);
         Ok(())
     }
 

@@ -37,7 +37,13 @@ const plugin: FastifyPluginAsync = async (app) => {
     // Skip CSRF check for:
     // - Safe HTTP methods (GET, HEAD, OPTIONS)
     // - Internal API routes (starts with /internal/)
-    if (["GET", "HEAD", "OPTIONS"].includes(method) || req.url.startsWith("/internal/")) {
+    // - Inbound webhooks & callbacks (starts with /webhooks)
+    if (
+      ["GET", "HEAD", "OPTIONS"].includes(method) ||
+      req.url.startsWith("/internal/") ||
+      req.url.startsWith("/webhooks/") ||
+      req.url === "/webhooks"
+    ) {
       // For GET requests, ensure a CSRF token exists
       if (method === "GET") {
         const cookies = parseCookies(req.headers.cookie);

@@ -417,10 +417,10 @@ describe("verifyProofIntegrity", () => {
 
   it("fails when randomness evidence is bound to another round (fork/replay)", async () => {
     // Randomness evidence generated for round 2, spliced onto a round 1 proof.
-    const roundTwoInput = await makeInput({ roundId: 2 });
+    const roundTwoInput = await makeInput({ roundId: 2, randomnessSeed: "round_2_unique_seed" });
     const roundTwoProof = await assembleSignedProof(roundTwoInput);
 
-    const roundOneInput = await makeInput({ roundId: 1 });
+    const roundOneInput = await makeInput({ roundId: 1, randomnessSeed: "round_1_unique_seed" });
     const roundOneProof = await assembleSignedProof(roundOneInput);
     roundOneProof.randomness = roundTwoProof.randomness;
 
@@ -430,10 +430,10 @@ describe("verifyProofIntegrity", () => {
   });
 
   it("fails when randomness evidence is bound to another contract", async () => {
-    const otherContractInput = await makeInput({ contractId: "C_OTHER" });
+    const otherContractInput = await makeInput({ contractId: "C_OTHER", randomnessSeed: "c_other_unique_seed" });
     const otherContractProof = await assembleSignedProof(otherContractInput);
 
-    const proof = await assembleSignedProof(await makeInput({ contractId: "C123" }));
+    const proof = await assembleSignedProof(await makeInput({ contractId: "C123", randomnessSeed: "c123_unique_seed" }));
     proof.randomness = otherContractProof.randomness;
 
     const result = await verifyProofIntegrity(proof, SIGNING_SECRET);
@@ -637,6 +637,7 @@ describe("reconcileRewardEntry", () => {
       isWon: true,
       claimTxHash: "tx-abc",
       claimTxSuccessful: true,
+      signatureSecret: SIGNING_SECRET,
     });
     expect(result.proofStatus).toBe("verified");
     expect(result.claimStatus).toBe("claimed");

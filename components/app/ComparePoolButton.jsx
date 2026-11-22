@@ -19,7 +19,9 @@ export default function ComparePoolButton({ pool, isSelected, onToggle, disabled
           ? "bg-vault-accent text-white"
           : "bg-vault-surface border border-vault-border text-vault-text hover:border-vault-accent"
       } ${disabled ? "opacity-50 cursor-not-allowed" : ""} ${className}`}
-      aria-label={isSelected ? "Remove from comparison" : "Add to comparison"}
+      // Starts with the visible text and names the pool, so rows are distinguishable.
+      aria-label={`${isSelected ? "Selected" : "Compare"} ${pool?.name ?? "pool"}`}
+      aria-pressed={Boolean(isSelected)}
       title={isSelected ? "Remove from comparison" : "Add to comparison"}
     >
       {isSelected ? (

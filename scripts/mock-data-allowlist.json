@@ -34,5 +34,13 @@
   {
     "path": "components/app/RecentWinners.jsx",
     "reason": "#510: introduced by upstream commits merged into this branch after the gate was first written. Seeds from MOCK_WINNERS pending a real recent-winners endpoint; tracked as a known exception rather than fixed here."
+  },
+  {
+    "path": "backend/src/sandbox/escrowAdapters.ts",
+    "reason": "Sandbox adapter testing fixtures for local development simulation."
+  },
+  {
+    "path": "components/app/FirstDepositOnboarding.jsx",
+    "reason": "First deposit onboarding demo flow using vault-mock-data for walkthrough."
   }
 ]

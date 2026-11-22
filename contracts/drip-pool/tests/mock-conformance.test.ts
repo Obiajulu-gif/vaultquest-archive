@@ -17,18 +17,18 @@ import {
   runCanonicalCase,
   type ConformanceCase,
   type ConformanceEvaluation,
-} from "../../lib/conformance-spec";
+} from "../../../lib/conformance-spec";
 import {
   createMockVaultClient,
   SAMPLE_ADDRESS,
 } from "@vaultquest/stellar-wallet-connect/src/vault/contract/mockClient";
-import { SavingsService } from "../../services/savingsService";
+import { SavingsService } from "../../../services/savingsService";
 import {
   createChallenge,
   joinChallenge,
   updateProgress,
   __resetQuestDb,
-} from "../../services/questService";
+} from "../../../services/questService";
 
 function savingsParticipation() {
   return {

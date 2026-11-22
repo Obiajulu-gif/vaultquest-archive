@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import { Shield, ShieldCheck, ShieldAlert, ExternalLink, Loader2 } from "lucide-react";
 import { verifyProofIntegrity } from "@/lib/draw-proof";
+import SafeExternalLink from "@/components/ui/SafeExternalLink";
 
 function truncateAddress(addr) {
   if (!addr || addr.length < 12) return addr || "N/A";
@@ -146,14 +147,13 @@ export default function DrawProofCard({ proof, onViewProof, explorerUrl = "https
       <div className="flex items-center justify-between pt-1 border-t border-gray-800">
         <div className="flex items-center gap-2">
           {txHash && (
-            <a
-              href={`${explorerUrl}${txHash}`}
-              target="_blank"
-              rel="noopener noreferrer"
+            <SafeExternalLink
+              href={`${explorerUrl}${encodeURIComponent(String(txHash))}`}
               className="inline-flex items-center gap-1 text-[10px] text-blue-400 hover:text-blue-300 transition-colors"
+              fallback={null}
             >
               Tx <ExternalLink className="h-2.5 w-2.5" />
-            </a>
+            </SafeExternalLink>
           )}
           {proofHash && (
             <span className="text-[10px] text-gray-600 font-mono" title={proofHash}>

@@ -132,7 +132,7 @@ describe("StellarIndexer", () => {
       source: {
         async fetchEvents({ cursor, limit }) {
           seenCursor = cursor;
-          expect(limit).toBe(200);
+          expect(limit).toBe(50);
           return cursor === "2"
             ? [makeEvent({ id: "3", ledger: 103, txHash: "tx_resume" })]
             : [];
@@ -141,6 +141,8 @@ describe("StellarIndexer", () => {
       decoder: defaultXdrDecoder
     });
 
+    // The server restores the persisted checkpoint explicitly before ticking.
+    indexer.setCursor((await ledger.getIndexerCheckpoint())?.lastProcessedEventId ?? null);
     const result = await indexer.tick();
 
     expect(seenCursor).toBe("2");
@@ -148,6 +150,8 @@ describe("StellarIndexer", () => {
     expect(result.processed).toBe(1);
     expect(result.imported).toBe(1);
 
+    // Checkpoint persistence is owned by the cron runner, after a successful tick.
+    await ledger.updateIndexerCheckpoint({ latestLedger: result.latestLedger!, lastProcessedEventId: result.cursor, success: true });
     const checkpoint = await db.prisma.indexerCheckpoint.findUnique({ where: { id: "singleton" } });
     expect(checkpoint?.lastProcessedEventId).toBe("3");
     expect(checkpoint?.latestLedger).toBe(103);
@@ -158,6 +162,7 @@ describe("StellarIndexer", () => {
 
   it("batch-reconciles a mixed batch with per-event-equivalent outcomes", async () => {
     await seedAction(db.prisma, { status: "submitted", txHash: "tx_match" });
+    await seedAction(db.prisma, { status: "submitted", txHash: "tx_rev" });
     const events = [
       makeEvent({ id: "1", txHash: "tx_match" }),
       makeEvent({ id: "2", txHash: "tx_new" }),

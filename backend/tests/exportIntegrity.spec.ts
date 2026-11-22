@@ -5,6 +5,7 @@ import { buildApp } from "../src/app.js";
 import type { FastifyInstance } from "fastify";
 
 const WALLET = "GEXPORTINTEGRITYWALLET00000000000000000000000000000";
+const OTHER_WALLET = "GEXPORTINTEGRITYOTHERWALLET0000000000000000000000000";
 
 describe("Activity Export Integrity & Tamper Detection", () => {
   let db: TestDb;
@@ -96,6 +97,89 @@ describe("Activity Export Integrity & Tamper Detection", () => {
 
     const computedChecksum = createHash("sha256").update(dataContent).digest("hex");
     expect(checksum).toBe(computedChecksum);
+  });
+
+  it("exports only the requesting wallet's records and never leaks other wallets", async () => {
+    await app.inject({
+      method: "POST", url: "/actions",
+      headers: { "idempotency-key": randomUUID(), "content-type": "application/json" },
+      payload: { wallet_address: WALLET, action_type: "deposit", action_payload: { vault_id: "v1", amount: "100", token: "USDC" } }
+    });
+    await app.inject({
+      method: "POST", url: "/actions",
+      headers: { "idempotency-key": randomUUID(), "content-type": "application/json" },
+      payload: { wallet_address: OTHER_WALLET, action_type: "deposit", action_payload: { vault_id: "v2", amount: "500", token: "USDC" } }
+    });
+
+    const res = await app.inject({ method: "GET", url: `/actions/export?wallet=${WALLET}&format=json` });
+    expect(res.statusCode).toBe(200);
+    const payload = JSON.parse(res.body);
+    expect(payload.metadata.wallet).toBe(WALLET);
+    expect(payload.data).toHaveLength(1);
+    expect(payload.data[0].pool_id).toBe("v1");
+    expect(res.body).not.toContain(OTHER_WALLET);
+    expect(res.body).not.toContain("v2");
+  });
+
+  it("returns an empty export with valid metadata and checksum when no records exist", async () => {
+    const res = await app.inject({ method: "GET", url: `/actions/export?wallet=${WALLET}&format=json` });
+    expect(res.statusCode).toBe(200);
+    const payload = JSON.parse(res.body);
+    expect(payload.metadata.wallet).toBe(WALLET);
+    expect(payload.metadata.schemaVersion).toBeDefined();
+    expect(payload.metadata.generatedAt).toBeDefined();
+    expect(payload.data).toEqual([]);
+    const computedChecksum = createHash("sha256").update(JSON.stringify(payload.data)).digest("hex");
+    expect(payload.metadata.checksum).toBe(computedChecksum);
+  });
+
+  it("denies export when the wallet is missing or unauthorized", async () => {
+    const missing = await app.inject({ method: "GET", url: `/actions/export?format=json` });
+    expect([400, 401, 403]).toContain(missing.statusCode);
+
+    const unauthorized = await app.inject({
+      method: "GET",
+      url: `/actions/export?wallet=${WALLET}&format=json`,
+      headers: { "x-wallet-address": OTHER_WALLET }
+    });
+    expect([401, 403]).toContain(unauthorized.statusCode);
+  });
+
+  it("handles large exports with a stable checksum over the full data block", async () => {
+    const total = 250;
+    for (let i = 0; i < total; i++) {
+      await app.inject({
+        method: "POST", url: "/actions",
+        headers: { "idempotency-key": randomUUID(), "content-type": "application/json" },
+        payload: { wallet_address: WALLET, action_type: "deposit", action_payload: { vault_id: "v1", amount: String(i + 1), token: "USDC" } }
+      });
+    }
+
+    const res = await app.inject({ method: "GET", url: `/actions/export?wallet=${WALLET}&format=json` });
+    expect(res.statusCode).toBe(200);
+    const payload = JSON.parse(res.body);
+    expect(payload.data).toHaveLength(total);
+    const computedChecksum = createHash("sha256").update(JSON.stringify(payload.data)).digest("hex");
+    expect(payload.metadata.checksum).toBe(computedChecksum);
+  });
+
+  it("includes schema version, generation timestamp, and expiration metadata", async () => {
+    await app.inject({
+      method: "POST", url: "/actions",
+      headers: { "idempotency-key": randomUUID(), "content-type": "application/json" },
+      payload: { wallet_address: WALLET, action_type: "deposit", action_payload: { vault_id: "v1", amount: "100", token: "USDC" } }
+    });
+
+    const res = await app.inject({ method: "GET", url: `/actions/export?wallet=${WALLET}&format=json` });
+    expect(res.statusCode).toBe(200);
+    const payload = JSON.parse(res.body);
+    expect(payload.metadata.schemaVersion).toBeDefined();
+    expect(typeof payload.metadata.schemaVersion).toBe("string");
+    expect(payload.metadata.generatedAt).toBeDefined();
+    expect(Number.isNaN(Date.parse(payload.metadata.generatedAt))).toBe(false);
+    expect(payload.metadata.expiresAt).toBeDefined();
+    expect(Number.isNaN(Date.parse(payload.metadata.expiresAt))).toBe(false);
+    expect(Date.parse(payload.metadata.expiresAt)).toBeGreaterThan(Date.parse(payload.metadata.generatedAt));
   });
 
   it("detects tampering when data records are altered", async () => {

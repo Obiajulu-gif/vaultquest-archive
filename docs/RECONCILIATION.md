@@ -211,3 +211,30 @@ If an operational alert fires for high drift counts (`driftsFound > 20`):
 
 - [`docs/INDEXER_RUNBOOK.md`](INDEXER_RUNBOOK.md) — Indexer operation, sync lag metrics, and Horizon RPC troubleshooting.
 - [`backend/README.md`](../backend/README.md) — Backend service architecture, database setup, and API endpoint reference.
+
+## 8. Structured Dry-Run Report (Issue #765)
+
+The safest way to inspect the current state is the backend dry-run command:
+
+```bash
+cd backend
+pnpm reconcile:dry-run
+```
+
+The command requires the normal `DATABASE_URL`, performs database reads only, and prints a JSON document with schema `vaultquest.reconciliation-report.v1`. It always calls `reconcileAll` with `dryRun: true`; it does not update ledger rows, balances, settlements, pending events, repair audits, or quarantine records. Repair execution remains behind the controlled proposal/approval workflow.
+
+The report groups findings into the four operator-facing categories required by issue #765:
+
+- **missing** — missing event, action, or settlement records;
+- **duplicate** — multiple ledger records claiming one transaction hash;
+- **stale** — stale orphan actions, unresolved settlements, or unconsumed events;
+- **inconsistent** — status contradictions and negative tracked principal / insolvency drift.
+
+Each finding includes its drift type, record identity, raw diagnostic details, and repair guidance. Proposed repair steps are suggestions only; operators must verify current Stellar evidence before submitting any repair proposal.
+
+For CI-like validation with an isolated database, run the report tests without connecting to production services:
+
+```bash
+cd backend
+pnpm vitest run tests/reconciliation-report.spec.ts tests/reconciler.spec.ts
+```

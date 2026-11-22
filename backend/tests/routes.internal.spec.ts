@@ -2,13 +2,14 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { randomUUID } from "node:crypto";
 import { startTestDb, resetDb, type TestDb } from "./helpers/db.js";
 import { buildApp } from "../src/app.js";
+import { createRequester, type Requester } from "./helpers/request.js";
 import type { FastifyInstance } from "fastify";
 
 const VALID_SECRET = "very-secret-123";
 
 /**
  * Internal API Authorization & Security Audit Tests (Issue #567)
- * 
+ *
  * Comprehensive test coverage for all internal-only endpoints, verifying:
  * 1. Every route requires service authentication (x-internal-secret header)
  * 2. Missing, empty, and invalid secrets are properly rejected (401)
@@ -20,23 +21,27 @@ const VALID_SECRET = "very-secret-123";
 describe("Internal Routes Authorization & Security", () => {
   let db: TestDb;
   let app: FastifyInstance;
+  let inject: Requester;
 
   beforeAll(async () => {
     db = await startTestDb();
     app = buildApp({ prisma: db.prisma, internalSecret: VALID_SECRET });
+    inject = createRequester(app);
   });
   afterAll(async () => {
     await app.close();
     await db.stop();
   });
-  beforeEach(async () => { await resetDb(db.prisma); });
+  beforeEach(async () => {
+    await resetDb(db.prisma);
+  });
 
   describe("/internal/reconcile - POST", () => {
     const validPayload = {
       tx_hash: "tx_test_hash",
       soroban_event_id: "evt_test_123",
       event_payload: {},
-      status_hint: "confirmed" as const
+      status_hint: "confirmed" as const,
     };
 
     describe("Authentication Edge Cases", () => {
@@ -45,7 +50,7 @@ describe("Internal Routes Authorization & Security", () => {
           method: "POST",
           url: "/internal/reconcile",
           headers: { "content-type": "application/json" },
-          payload: validPayload
+          payload: validPayload,
         });
         expect(res.statusCode).toBe(401);
         expect(res.json().error.code).toBe("UNAUTHORIZED");
@@ -57,9 +62,9 @@ describe("Internal Routes Authorization & Security", () => {
           url: "/internal/reconcile",
           headers: {
             "content-type": "application/json",
-            "x-internal-secret": ""
+            "x-internal-secret": "",
           },
-          payload: validPayload
+          payload: validPayload,
         });
         expect(res.statusCode).toBe(401);
         expect(res.json().error.code).toBe("UNAUTHORIZED");
@@ -71,9 +76,9 @@ describe("Internal Routes Authorization & Security", () => {
           url: "/internal/reconcile",
           headers: {
             "content-type": "application/json",
-            "x-internal-secret": "   "
+            "x-internal-secret": "   ",
           },
-          payload: validPayload
+          payload: validPayload,
         });
         expect(res.statusCode).toBe(401);
         expect(res.json().error.code).toBe("UNAUTHORIZED");
@@ -85,24 +90,26 @@ describe("Internal Routes Authorization & Security", () => {
           url: "/internal/reconcile",
           headers: {
             "content-type": "application/json",
-            "x-internal-secret": "wrong-secret"
+            "x-internal-secret": "wrong-secret",
           },
-          payload: validPayload
+          payload: validPayload,
         });
         expect(res.statusCode).toBe(401);
         expect(res.json().error.code).toBe("UNAUTHORIZED");
       });
 
       it("rejects near-miss x-internal-secret (single char diff) (401)", async () => {
-        const almostValid = VALID_SECRET.slice(0, -1) + (VALID_SECRET[VALID_SECRET.length - 1] === 'a' ? 'b' : 'a');
+        const almostValid =
+          VALID_SECRET.slice(0, -1) +
+          (VALID_SECRET[VALID_SECRET.length - 1] === "a" ? "b" : "a");
         const res = await app.inject({
           method: "POST",
           url: "/internal/reconcile",
           headers: {
             "content-type": "application/json",
-            "x-internal-secret": almostValid
+            "x-internal-secret": almostValid,
           },
-          payload: validPayload
+          payload: validPayload,
         });
         expect(res.statusCode).toBe(401);
         expect(res.json().error.code).toBe("UNAUTHORIZED");
@@ -114,9 +121,9 @@ describe("Internal Routes Authorization & Security", () => {
           url: "/internal/reconcile",
           headers: {
             "content-type": "application/json",
-            "x-internal-secret": VALID_SECRET
+            "x-internal-secret": VALID_SECRET,
           },
-          payload: validPayload
+          payload: validPayload,
         });
         // Will return 202 (parked) since tx_hash doesn't match anything
         expect([200, 202]).toContain(res.statusCode);
@@ -129,16 +136,23 @@ describe("Internal Routes Authorization & Security", () => {
         const create = await app.inject({
           method: "POST",
           url: "/actions",
-          headers: { "idempotency-key": key, "content-type": "application/json" },
-          payload: { wallet_address: "GA", action_type: "deposit", action_payload: { v: 1 } }
+          headers: {
+            "idempotency-key": key,
+            "content-type": "application/json",
+          },
+          payload: {
+            wallet_address: "GA",
+            action_type: "deposit",
+            action_payload: { v: 1 },
+          },
         });
         const id = create.json().data.id;
-        
+
         await app.inject({
           method: "PATCH",
           url: `/actions/${id}/submitted`,
           headers: { "content-type": "application/json" },
-          payload: { tx_hash: "tx_match" }
+          payload: { tx_hash: "tx_match" },
         });
 
         const res = await app.inject({
@@ -146,9 +160,14 @@ describe("Internal Routes Authorization & Security", () => {
           url: "/internal/reconcile",
           headers: {
             "x-internal-secret": VALID_SECRET,
-            "content-type": "application/json"
+            "content-type": "application/json",
           },
-          payload: { tx_hash: "tx_match", soroban_event_id: "evt_1", event_payload: {}, status_hint: "confirmed" }
+          payload: {
+            tx_hash: "tx_match",
+            soroban_event_id: "evt_1",
+            event_payload: {},
+            status_hint: "confirmed",
+          },
         });
         expect(res.statusCode).toBe(200);
         expect(res.json().data.matched).toBe(true);
@@ -163,9 +182,14 @@ describe("Internal Routes Authorization & Security", () => {
           url: "/internal/reconcile",
           headers: {
             "x-internal-secret": VALID_SECRET,
-            "content-type": "application/json"
+            "content-type": "application/json",
           },
-          payload: { tx_hash: "tx_unknown", soroban_event_id: "evt", event_payload: {}, status_hint: "confirmed" }
+          payload: {
+            tx_hash: "tx_unknown",
+            soroban_event_id: "evt",
+            event_payload: {},
+            status_hint: "confirmed",
+          },
         });
         expect(res.statusCode).toBe(202);
         expect(res.json().data.parked).toBe(true);
@@ -177,14 +201,14 @@ describe("Internal Routes Authorization & Security", () => {
           url: "/internal/reconcile",
           headers: {
             "x-internal-secret": VALID_SECRET,
-            "content-type": "application/json"
+            "content-type": "application/json",
           },
           payload: {
             tx_hash: "tx_reverted",
             soroban_event_id: "evt_rev_1",
             event_payload: {},
-            status_hint: "reverted"
-          }
+            status_hint: "reverted",
+          },
         });
         // Should park since we don't have a matching action
         expect(res.statusCode).toBe(202);
@@ -197,7 +221,7 @@ describe("Internal Routes Authorization & Security", () => {
       latest_ledger: 12345,
       last_processed_event_id: "evt_checkpoint_1",
       last_error: null,
-      success: true
+      success: true,
     };
 
     describe("Authentication Edge Cases", () => {
@@ -206,7 +230,7 @@ describe("Internal Routes Authorization & Security", () => {
           method: "POST",
           url: "/internal/checkpoint",
           headers: { "content-type": "application/json" },
-          payload: validPayload
+          payload: validPayload,
         });
         expect(res.statusCode).toBe(401);
         expect(res.json().error.code).toBe("UNAUTHORIZED");
@@ -218,9 +242,9 @@ describe("Internal Routes Authorization & Security", () => {
           url: "/internal/checkpoint",
           headers: {
             "content-type": "application/json",
-            "x-internal-secret": ""
+            "x-internal-secret": "",
           },
-          payload: validPayload
+          payload: validPayload,
         });
         expect(res.statusCode).toBe(401);
         expect(res.json().error.code).toBe("UNAUTHORIZED");
@@ -232,9 +256,9 @@ describe("Internal Routes Authorization & Security", () => {
           url: "/internal/checkpoint",
           headers: {
             "content-type": "application/json",
-            "x-internal-secret": "wrong-secret"
+            "x-internal-secret": "wrong-secret",
           },
-          payload: validPayload
+          payload: validPayload,
         });
         expect(res.statusCode).toBe(401);
         expect(res.json().error.code).toBe("UNAUTHORIZED");
@@ -246,9 +270,9 @@ describe("Internal Routes Authorization & Security", () => {
           url: "/internal/checkpoint",
           headers: {
             "content-type": "application/json",
-            "x-internal-secret": VALID_SECRET
+            "x-internal-secret": VALID_SECRET,
           },
-          payload: validPayload
+          payload: validPayload,
         });
         expect(res.statusCode).toBe(200);
         expect(res.json().data.updated).toBe(true);
@@ -262,14 +286,14 @@ describe("Internal Routes Authorization & Security", () => {
           url: "/internal/checkpoint",
           headers: {
             "x-internal-secret": VALID_SECRET,
-            "content-type": "application/json"
+            "content-type": "application/json",
           },
           payload: {
             latest_ledger: 99999,
             last_processed_event_id: "evt_99",
             last_error: null,
-            success: true
-          }
+            success: true,
+          },
         });
         expect(res.statusCode).toBe(200);
         expect(res.json().data.updated).toBe(true);
@@ -281,14 +305,14 @@ describe("Internal Routes Authorization & Security", () => {
           url: "/internal/checkpoint",
           headers: {
             "x-internal-secret": VALID_SECRET,
-            "content-type": "application/json"
+            "content-type": "application/json",
           },
           payload: {
             latest_ledger: 50000,
             last_processed_event_id: "evt_50",
             last_error: "Some processing error occurred",
-            success: false
-          }
+            success: false,
+          },
         });
         expect(res.statusCode).toBe(200);
         expect(res.json().data.updated).toBe(true);
@@ -300,11 +324,11 @@ describe("Internal Routes Authorization & Security", () => {
           url: "/internal/checkpoint",
           headers: {
             "x-internal-secret": VALID_SECRET,
-            "content-type": "application/json"
+            "content-type": "application/json",
           },
           payload: {
-            latest_ledger: 10000
-          }
+            latest_ledger: 10000,
+          },
         });
         expect(res.statusCode).toBe(200);
         expect(res.json().data.updated).toBe(true);
@@ -315,7 +339,7 @@ describe("Internal Routes Authorization & Security", () => {
   describe("/internal/reconciliation/proposals - POST", () => {
     const validPayload = {
       proposer_id: "indexer-service-1",
-      dry_run: false
+      dry_run: false,
     };
 
     describe("Authentication Edge Cases", () => {
@@ -324,7 +348,7 @@ describe("Internal Routes Authorization & Security", () => {
           method: "POST",
           url: "/internal/reconciliation/proposals",
           headers: { "content-type": "application/json" },
-          payload: validPayload
+          payload: validPayload,
         });
         expect(res.statusCode).toBe(401);
         expect(res.json().error.code).toBe("UNAUTHORIZED");
@@ -336,9 +360,9 @@ describe("Internal Routes Authorization & Security", () => {
           url: "/internal/reconciliation/proposals",
           headers: {
             "content-type": "application/json",
-            "x-internal-secret": ""
+            "x-internal-secret": "",
           },
-          payload: validPayload
+          payload: validPayload,
         });
         expect(res.statusCode).toBe(401);
         expect(res.json().error.code).toBe("UNAUTHORIZED");
@@ -350,9 +374,9 @@ describe("Internal Routes Authorization & Security", () => {
           url: "/internal/reconciliation/proposals",
           headers: {
             "content-type": "application/json",
-            "x-internal-secret": "invalid-secret"
+            "x-internal-secret": "invalid-secret",
           },
-          payload: validPayload
+          payload: validPayload,
         });
         expect(res.statusCode).toBe(401);
         expect(res.json().error.code).toBe("UNAUTHORIZED");
@@ -364,9 +388,9 @@ describe("Internal Routes Authorization & Security", () => {
           url: "/internal/reconciliation/proposals",
           headers: {
             "x-internal-secret": VALID_SECRET,
-            "content-type": "application/json"
+            "content-type": "application/json",
           },
-          payload: validPayload
+          payload: validPayload,
         });
         expect(res.statusCode).toBe(200);
         expect(res.json().data).toHaveProperty("proposal");
@@ -380,12 +404,12 @@ describe("Internal Routes Authorization & Security", () => {
           url: "/internal/reconciliation/proposals",
           headers: {
             "x-internal-secret": VALID_SECRET,
-            "content-type": "application/json"
+            "content-type": "application/json",
           },
           payload: {
             proposer_id: "admin-user-1",
-            dry_run: true
-          }
+            dry_run: true,
+          },
         });
         expect(res.statusCode).toBe(200);
         expect(res.json().data.proposal).toBeDefined();
@@ -397,12 +421,12 @@ describe("Internal Routes Authorization & Security", () => {
           url: "/internal/reconciliation/proposals",
           headers: {
             "x-internal-secret": VALID_SECRET,
-            "content-type": "application/json"
+            "content-type": "application/json",
           },
           payload: {
             proposer_id: "admin-user-2",
-            dry_run: false
-          }
+            dry_run: false,
+          },
         });
         expect(res.statusCode).toBe(200);
         expect(res.json().data.proposal).toBeDefined();
@@ -420,16 +444,16 @@ describe("Internal Routes Authorization & Security", () => {
         url: "/internal/reconciliation/proposals",
         headers: {
           "x-internal-secret": VALID_SECRET,
-          "content-type": "application/json"
+          "content-type": "application/json",
         },
-        payload: { proposer_id: "test-proposer", dry_run: false }
+        payload: { proposer_id: "test-proposer", dry_run: false },
       });
       proposalId = createRes.json().data.proposal.id;
     });
 
     const validPayload = {
       approver_id: "admin-approver",
-      diff_hash: "a".repeat(64) // 64 hex characters
+      diff_hash: "a".repeat(64), // 64 hex characters
     };
 
     describe("Authentication Edge Cases", () => {
@@ -438,7 +462,7 @@ describe("Internal Routes Authorization & Security", () => {
           method: "POST",
           url: `/internal/reconciliation/proposals/${proposalId}/approve`,
           headers: { "content-type": "application/json" },
-          payload: validPayload
+          payload: validPayload,
         });
         expect(res.statusCode).toBe(401);
         expect(res.json().error.code).toBe("UNAUTHORIZED");
@@ -450,9 +474,9 @@ describe("Internal Routes Authorization & Security", () => {
           url: `/internal/reconciliation/proposals/${proposalId}/approve`,
           headers: {
             "content-type": "application/json",
-            "x-internal-secret": ""
+            "x-internal-secret": "",
           },
-          payload: validPayload
+          payload: validPayload,
         });
         expect(res.statusCode).toBe(401);
         expect(res.json().error.code).toBe("UNAUTHORIZED");
@@ -464,9 +488,9 @@ describe("Internal Routes Authorization & Security", () => {
           url: `/internal/reconciliation/proposals/${proposalId}/approve`,
           headers: {
             "content-type": "application/json",
-            "x-internal-secret": "invalid-secret"
+            "x-internal-secret": "invalid-secret",
           },
-          payload: validPayload
+          payload: validPayload,
         });
         expect(res.statusCode).toBe(401);
         expect(res.json().error.code).toBe("UNAUTHORIZED");
@@ -478,9 +502,9 @@ describe("Internal Routes Authorization & Security", () => {
           url: `/internal/reconciliation/proposals/${proposalId}/approve`,
           headers: {
             "x-internal-secret": VALID_SECRET,
-            "content-type": "application/json"
+            "content-type": "application/json",
           },
-          payload: validPayload
+          payload: validPayload,
         });
         // 200 on success, 409 on conflict (e.g., already approved)
         expect([200, 409]).toContain(res.statusCode);
@@ -494,12 +518,12 @@ describe("Internal Routes Authorization & Security", () => {
           url: `/internal/reconciliation/proposals/${proposalId}/approve`,
           headers: {
             "x-internal-secret": VALID_SECRET,
-            "content-type": "application/json"
+            "content-type": "application/json",
           },
           payload: {
             approver_id: "test-approver",
-            diff_hash: "b".repeat(64)
-          }
+            diff_hash: "b".repeat(64),
+          },
         });
         expect([200, 409]).toContain(res.statusCode);
         if (res.statusCode === 200) {
@@ -519,15 +543,15 @@ describe("Internal Routes Authorization & Security", () => {
         url: "/internal/reconciliation/proposals",
         headers: {
           "x-internal-secret": VALID_SECRET,
-          "content-type": "application/json"
+          "content-type": "application/json",
         },
-        payload: { proposer_id: "test-proposer-exec", dry_run: false }
+        payload: { proposer_id: "test-proposer-exec", dry_run: false },
       });
       proposalId = createRes.json().data.proposal.id;
     });
 
     const validPayload = {
-      executor_id: "admin-executor"
+      executor_id: "admin-executor",
     };
 
     describe("Authentication Edge Cases", () => {
@@ -536,7 +560,7 @@ describe("Internal Routes Authorization & Security", () => {
           method: "POST",
           url: `/internal/reconciliation/proposals/${proposalId}/execute`,
           headers: { "content-type": "application/json" },
-          payload: validPayload
+          payload: validPayload,
         });
         expect(res.statusCode).toBe(401);
         expect(res.json().error.code).toBe("UNAUTHORIZED");
@@ -548,9 +572,9 @@ describe("Internal Routes Authorization & Security", () => {
           url: `/internal/reconciliation/proposals/${proposalId}/execute`,
           headers: {
             "content-type": "application/json",
-            "x-internal-secret": ""
+            "x-internal-secret": "",
           },
-          payload: validPayload
+          payload: validPayload,
         });
         expect(res.statusCode).toBe(401);
         expect(res.json().error.code).toBe("UNAUTHORIZED");
@@ -562,9 +586,9 @@ describe("Internal Routes Authorization & Security", () => {
           url: `/internal/reconciliation/proposals/${proposalId}/execute`,
           headers: {
             "content-type": "application/json",
-            "x-internal-secret": "invalid-secret"
+            "x-internal-secret": "invalid-secret",
           },
-          payload: validPayload
+          payload: validPayload,
         });
         expect(res.statusCode).toBe(401);
         expect(res.json().error.code).toBe("UNAUTHORIZED");
@@ -576,9 +600,9 @@ describe("Internal Routes Authorization & Security", () => {
           url: `/internal/reconciliation/proposals/${proposalId}/execute`,
           headers: {
             "x-internal-secret": VALID_SECRET,
-            "content-type": "application/json"
+            "content-type": "application/json",
           },
-          payload: validPayload
+          payload: validPayload,
         });
         // 200 on success, 409 on conflict, 400 on bad request
         expect([200, 400, 409]).toContain(res.statusCode);
@@ -592,11 +616,11 @@ describe("Internal Routes Authorization & Security", () => {
           url: `/internal/reconciliation/proposals/${proposalId}/execute`,
           headers: {
             "x-internal-secret": VALID_SECRET,
-            "content-type": "application/json"
+            "content-type": "application/json",
           },
           payload: {
-            executor_id: "test-executor"
-          }
+            executor_id: "test-executor",
+          },
         });
         // Response depends on proposal state
         expect([200, 400, 409]).toContain(res.statusCode);
@@ -611,14 +635,14 @@ describe("Internal Routes Authorization & Security", () => {
         url: "/internal/reconcile",
         headers: {
           "content-type": "application/json",
-          "x-internal-secret": VALID_SECRET
+          "x-internal-secret": VALID_SECRET,
         },
         payload: {
           tx_hash: "csrf_test",
           soroban_event_id: "evt_csrf",
           event_payload: {},
-          status_hint: "confirmed"
-        }
+          status_hint: "confirmed",
+        },
       });
       // Should not return 403 CSRF error; instead should return 200/202 from reconcile
       expect(res.statusCode).not.toBe(403);
@@ -631,14 +655,14 @@ describe("Internal Routes Authorization & Security", () => {
         url: "/internal/checkpoint",
         headers: {
           "content-type": "application/json",
-          "x-internal-secret": VALID_SECRET
+          "x-internal-secret": VALID_SECRET,
         },
         payload: {
           latest_ledger: 777,
           last_processed_event_id: null,
           last_error: null,
-          success: true
-        }
+          success: true,
+        },
       });
       // Should not return 403 CSRF error; instead should return 200
       expect(res.statusCode).not.toBe(403);

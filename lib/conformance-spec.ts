@@ -1,3 +1,5 @@
+import { DEFAULT_BUSINESS_POLICY_ENGINE } from "./business-policy";
+
 /**
  * Shared behavioral conformance spec (#651).
  *
@@ -62,19 +64,18 @@ export interface ConformanceCase {
 // ── Semantic predicates (mirror the contract) ───────────────────────────────
 
 export function validateDepositAmount(amount: number): ContractBehaviorError | null {
-  if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
-    return "InvalidAmount";
-  }
-  return null;
+  const result = DEFAULT_BUSINESS_POLICY_ENGINE.evaluate({ rule: "deposit", amount });
+  return result.status === "deny" ? result.code as ContractBehaviorError : null;
 }
 
 export function validateWithdrawLockup(lockedUntil: number, currentLedger: number): ContractBehaviorError | null {
-  return currentLedger < lockedUntil ? "LockupActive" : null;
+  const result = DEFAULT_BUSINESS_POLICY_ENGINE.evaluate({ rule: "withdrawal", lockedUntilLedger: lockedUntil, currentLedger });
+  return result.status === "deny" ? result.code as ContractBehaviorError : null;
 }
 
 export function validateClaimDeadline(deadline: number | null | undefined, now: number): ContractBehaviorError | null {
-  if (deadline == null) return null;
-  return now > deadline ? "ClaimDeadlinePassed" : null;
+  const result = DEFAULT_BUSINESS_POLICY_ENGINE.evaluate({ rule: "claim", deadline, now, availableAmount: 1 });
+  return result.status === "deny" ? result.code as ContractBehaviorError : null;
 }
 
 export function claimableTotal(yieldAccrued: number, prize: number, claimedReward: number): number {
@@ -82,17 +83,18 @@ export function claimableTotal(yieldAccrued: number, prize: number, claimedRewar
 }
 
 export function validateCreditYield(amount: number, distributableYield: number): ContractBehaviorError | null {
-  if (amount <= 0) return "InvalidAmount";
-  if (amount > distributableYield) return "InvalidAction";
-  return null;
+  const result = DEFAULT_BUSINESS_POLICY_ENGINE.evaluate({ rule: "credit_yield", amount, distributableYield });
+  return result.status === "deny" ? result.code as ContractBehaviorError : null;
 }
 
 export function validateDrawWinnerPrize(prize: number): ContractBehaviorError | null {
-  return prize > 0 ? null : "InvalidAmount";
+  const result = DEFAULT_BUSINESS_POLICY_ENGINE.evaluate({ rule: "draw", prize });
+  return result.status === "deny" ? result.code as ContractBehaviorError : null;
 }
 
 export function validateQuestReward(rewardAmount: number): ContractBehaviorError | null {
-  return rewardAmount > 0 ? null : "InvalidAmount";
+  const result = DEFAULT_BUSINESS_POLICY_ENGINE.evaluate({ rule: "quest_reward", amount: rewardAmount });
+  return result.status === "deny" ? result.code as ContractBehaviorError : null;
 }
 
 /**
@@ -100,10 +102,8 @@ export function validateQuestReward(rewardAmount: number): ContractBehaviorError
  * Multipliers are reward weights and are NEVER applied to principal.
  */
 export function lockupMultiplierBps(lockupDays: number): number {
-  if (lockupDays <= 0) return 100;
-  if (lockupDays <= 7) return 110;
-  if (lockupDays <= 14) return 125;
-  return 150;
+  const result = DEFAULT_BUSINESS_POLICY_ENGINE.evaluate({ rule: "lockup_weight", lockupDays });
+  return result.status === "allow" ? result.value! : 100;
 }
 
 // ── Canonical evaluator ─────────────────────────────────────────────────────

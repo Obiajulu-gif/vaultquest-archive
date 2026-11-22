@@ -1,12 +1,16 @@
+import {
+  POOL_STATES,
+  POOL_STATE_ALIASES,
+} from "./pool-lifecycle";
+
+/**
+ * Canonical lifecycle states plus the legacy/on-chain alias tokens, derived
+ * from `lib/pool-lifecycle.ts` so display, guards, and aliases share one source
+ * of truth (#763). The canonical keys come from {@link POOL_STATES}; the alias
+ * tokens are kept for backward-compatible callers (`POOL_STATUS.OPEN`, etc.).
+ */
 export const POOL_STATUS = {
-  DRAFT: "draft",
-  UPCOMING: "upcoming",
-  ACTIVE: "active",
-  PAUSED: "paused",
-  MATURED: "matured",
-  SETTLING: "settling",
-  COMPLETED: "completed",
-  CANCELLED: "cancelled",
+  ...POOL_STATES,
   OPEN: "open",
   LOCKED: "locked",
   DRAWING: "drawing",
@@ -98,27 +102,13 @@ const TONE_CLASSES: Record<PoolStatusMeta["tone"], string> = {
   danger: "border-rose-500/20 bg-rose-500/10 text-rose-300",
 };
 
-const STATUS_ALIASES: Record<string, string> = {
-  active: "active",
-  open: "open",
-  upcoming: "upcoming",
-  draft: "draft",
-  paused: "paused",
-  locked: "locked",
-  matured: "matured",
-  settling: "settling",
-  drawing: "drawing",
-  completed: "completed",
-  settled: "settled",
-  cancelled: "cancelled",
-  canceled: "cancelled",
-  pending: "pending",
-};
-
+// Aliases are owned by `lib/pool-lifecycle.ts` (single source of truth, #763).
+// This module only resolves them for presentation; unknown tokens are returned
+// unchanged so `getPoolStatusMeta` can fall back to the draft meta.
 export function normalizePoolStatus(status?: string | null): string {
   if (!status) return "draft";
   const normalized = status.trim().toLowerCase();
-  return STATUS_ALIASES[normalized] ?? normalized;
+  return POOL_STATE_ALIASES[normalized] ?? normalized;
 }
 
 export function getPoolStatusMeta(status?: string | null): PoolStatusMeta {

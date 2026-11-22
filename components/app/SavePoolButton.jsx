@@ -35,7 +35,7 @@ export default function SavePoolButton({ pool, className = "" }) {
           ? "bg-yellow-500/20 text-yellow-500 hover:bg-yellow-500/30"
           : "bg-vault-surface text-vault-muted hover:bg-vault-surface/80 hover:text-yellow-500"
       } ${isProcessing ? "opacity-50 cursor-not-allowed" : ""} ${className}`}
-      aria-label={isSaved ? "Remove from watchlist" : "Add to watchlist"}
+      aria-label={isSaved ? `Remove ${pool.name ?? "pool"} from watchlist` : `Add ${pool.name ?? "pool"} to watchlist`}
       title={isSaved ? "Remove from watchlist" : "Add to watchlist"}
     >
       <Star

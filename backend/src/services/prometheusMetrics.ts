@@ -7,9 +7,14 @@ import {
   type Registry,
 } from "prom-client";
 import type { Logger } from "pino";
+import { LabelCardinalityGuard } from "./telemetryGuard.js";
+
+const HTTP_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]);
 
 export class PrometheusMetrics {
   private registry: Registry;
+  /** Bounds every request-derived label so abusive input cannot create unbounded series (#925). */
+  private readonly labelGuard = new LabelCardinalityGuard();
 
   // HTTP metrics
   readonly httpRequestDuration: Histogram;
@@ -41,6 +46,17 @@ export class PrometheusMetrics {
   readonly indexerLatestLedger: Gauge;
   readonly indexerLastSyncTime: Gauge;
   readonly indexerSyncErrors: Counter;
+  readonly indexerChainLatestLedger: Gauge;
+  readonly indexerQuarantinedEvents: Gauge;
+
+  // Replay-equivalence metrics (#751)
+  readonly replayEquivalenceDivergences: Gauge;
+  readonly replayEquivalenceLastRunTimestamp: Gauge;
+
+  // Domain operation telemetry (#770)
+  readonly operationsTotal: Counter;
+  readonly operationDuration: Histogram;
+  readonly operationFailuresTotal: Counter;
 
   // Reconciliation metrics
   readonly staleOrphansCurrent: Gauge;
@@ -182,6 +198,33 @@ export class PrometheusMetrics {
       registers: [this.registry],
     });
 
+    // Ingestion leading indicators (#752). indexer_latest_ledger holds the
+    // ledger the indexer has provably scanned through, so
+    // indexer_chain_latest_ledger - indexer_latest_ledger is the lag.
+    this.indexerChainLatestLedger = new Gauge({
+      name: "indexer_chain_latest_ledger",
+      help: "Latest ledger sequence reported by the Soroban RPC on the last indexer fetch",
+      registers: [this.registry],
+    });
+
+    this.indexerQuarantinedEvents = new Gauge({
+      name: "indexer_quarantined_events",
+      help: "Unresolved quarantined (poison) events; any non-zero value holds the indexer cursor",
+      registers: [this.registry],
+    });
+
+    this.replayEquivalenceDivergences = new Gauge({
+      name: "replay_equivalence_divergences",
+      help: "Rows that differed between live state and a fresh replay of the chain event log on the last run",
+      registers: [this.registry],
+    });
+
+    this.replayEquivalenceLastRunTimestamp = new Gauge({
+      name: "replay_equivalence_last_run_timestamp_seconds",
+      help: "Unix time (seconds) the last replay-equivalence run completed",
+      registers: [this.registry],
+    });
+
     // Initialize Reconciliation metrics
     // `bucket` distinguishes 7d (7–30 days old) from 30d (escalated, >30 days old).
     this.staleOrphansCurrent = new Gauge({
@@ -204,6 +247,28 @@ export class PrometheusMetrics {
       registers: [this.registry],
     });
 
+    this.operationsTotal = new Counter({
+      name: "vaultquest_operations_total",
+      help: "Domain operations by name, actor type and result",
+      labelNames: ["operation", "actor_type", "result"],
+      registers: [this.registry],
+    });
+
+    this.operationDuration = new Histogram({
+      name: "vaultquest_operation_duration_seconds",
+      help: "Domain operation latency in seconds",
+      labelNames: ["operation", "actor_type", "result"],
+      buckets: [0.005, 0.025, 0.1, 0.5, 1, 2.5, 10, 30],
+      registers: [this.registry],
+    });
+
+    this.operationFailuresTotal = new Counter({
+      name: "vaultquest_operation_failures_total",
+      help: "Failed domain operations by name and stable error code",
+      labelNames: ["operation", "error_code"],
+      registers: [this.registry],
+    });
+
     logger?.info("Prometheus metrics initialized");
   }
 
@@ -218,6 +283,8 @@ export class PrometheusMetrics {
     requestSize?: number,
     responseSize?: number,
   ) {
+    method = HTTP_METHODS.has(method) ? method : "OTHER";
+    route = this.labelGuard.resolve("http", "route", route);
     this.httpRequestDuration.observe(
       { method, route, status_code: statusCode },
       durationSeconds,
@@ -239,6 +306,32 @@ export class PrometheusMetrics {
         responseSize,
       );
     }
+  }
+
+  /**
+   * Record a domain operation outcome (#770)
+   */
+  recordOperation(
+    operation: string,
+    actorType: string,
+    result: "success" | "failure",
+    durationSeconds: number,
+    errorCode?: string,
+  ) {
+    operation = this.labelGuard.resolve("operation", "operation", operation);
+    actorType = this.labelGuard.resolve("operation", "actor_type", actorType);
+    errorCode = errorCode === undefined ? undefined : this.labelGuard.resolve("operation", "error_code", errorCode);
+    const labels = { operation, actor_type: actorType, result };
+    this.operationsTotal.inc(labels);
+    this.operationDuration.observe(labels, durationSeconds);
+    if (result === "failure") {
+      this.operationFailuresTotal.inc({ operation, error_code: errorCode ?? "INTERNAL" });
+    }
+  }
+
+  /** Distinct, overflowed and rejected label counts per guarded label (#925). */
+  getLabelCardinalityReport() {
+    return this.labelGuard.report();
   }
 
   /**
@@ -276,6 +369,30 @@ export class PrometheusMetrics {
 
   recordIndexerSyncError() {
     this.indexerSyncErrors.inc();
+  }
+
+  /**
+   * Record one indexer tick's leading indicators (#752). Null ledgers are
+   * left untouched so a source that can't report the tip never zeroes it.
+   */
+  recordIngestionProgress(progress: {
+    chainLatestLedger: number | null;
+    ingestedLedger: number | null;
+    pendingEvents: number;
+    quarantinedEvents: number;
+  }) {
+    if (progress.chainLatestLedger !== null) this.indexerChainLatestLedger.set(progress.chainLatestLedger);
+    if (progress.ingestedLedger !== null) this.indexerLatestLedger.set(progress.ingestedLedger);
+    this.pendingEventsSize.set(progress.pendingEvents);
+    this.indexerQuarantinedEvents.set(progress.quarantinedEvents);
+  }
+
+  /**
+   * Record a completed replay-equivalence run (#751).
+   */
+  recordReplayEquivalence(divergences: number, completedAtMs: number) {
+    this.replayEquivalenceDivergences.set(divergences);
+    this.replayEquivalenceLastRunTimestamp.set(completedAtMs / 1000);
   }
 
   /**

@@ -21,11 +21,8 @@ import {
   type UserPosition,
   type VaultContractClient,
 } from "./types";
-import {
-  validateDepositAmount,
-  validateWithdrawLockup,
-  type ContractBehaviorError,
-} from "../../../../lib/conformance-spec";
+import type { ContractBehaviorError } from "../../../../lib/conformance-spec";
+import { BusinessPolicyEngine } from "../../../../lib/business-policy";
 
 export interface MockVaultConfig {
   /** Whether a wallet is connected. Defaults to true. */
@@ -48,6 +45,8 @@ export interface MockVaultConfig {
   currentLedger?: number;
   /** Deterministic tx hash generator (defaults to a counter). */
   txHashFactory?: (type: PoolActionType, input: PoolActionInput) => string;
+  /** Shared configurable rules for local wallet-flow simulation. */
+  businessPolicy?: BusinessPolicyEngine;
 }
 
 export const SAMPLE_ADDRESS = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
@@ -60,6 +59,7 @@ export function createMockVaultClient(config: MockVaultConfig = {}): VaultContra
   const rewardHistory = config.rewardHistory ?? [];
   const lockupWindows = config.lockupWindows ?? {};
   const currentLedger = config.currentLedger ?? Number.MAX_SAFE_INTEGER;
+  const businessPolicy = config.businessPolicy ?? new BusinessPolicyEngine();
   let counter = 0;
 
   const nextTxHash = (type: PoolActionType, input: PoolActionInput): string =>
@@ -96,13 +96,23 @@ export function createMockVaultClient(config: MockVaultConfig = {}): VaultContra
   };
 
   const validatePrincipalAction = (type: PoolActionType, input: PoolActionInput): void => {
-    const err = validateDepositAmount(parseAmount(input));
-    if (err) contractReject(err);
+    const depositDecision = businessPolicy.evaluate({ rule: "deposit", amount: parseAmount(input) });
+    if (depositDecision.status === "deny") {
+      if (depositDecision.code === "InvalidAmount") contractReject("InvalidAmount");
+      throw new ContractInterfaceError("contract_error", depositDecision.message);
+    }
     if (type === "withdraw") {
       const lockedUntil = lockupWindows[input.poolId];
       if (lockedUntil != null) {
-        const lockupErr = validateWithdrawLockup(lockedUntil, currentLedger);
-        if (lockupErr) contractReject(lockupErr);
+        const withdrawalDecision = businessPolicy.evaluate({
+          rule: "withdrawal",
+          lockedUntilLedger: lockedUntil,
+          currentLedger
+        });
+        if (withdrawalDecision.status === "deny") {
+          if (withdrawalDecision.code === "LockupActive") contractReject("LockupActive");
+          throw new ContractInterfaceError("contract_error", withdrawalDecision.message);
+        }
       }
     }
   };

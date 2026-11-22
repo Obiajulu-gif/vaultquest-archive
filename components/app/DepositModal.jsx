@@ -1,30 +1,42 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
-import { X, Loader2, CheckCircle2, AlertTriangle, ArrowLeft, RefreshCw } from "lucide-react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { X, Loader2, CheckCircle2, AlertTriangle, ArrowLeft, RefreshCw, Wallet } from "lucide-react";
 import GasPrioritySelector from "@/components/app/GasPrioritySelector";
 import { toast } from "react-hot-toast";
+import { usePrefersReducedMotion } from "@/lib/usePrefersReducedMotion";
+import { formatAssetAmount } from "@/lib/formatting";
+import { calculateDepositPreview } from "../../stellar-wallet-connect/src/vault/lib/depositPreview";
 
 const MIN_DEPOSIT = 1;
 const MAX_DEPOSIT = 100_000;
-const QUICK_AMOUNTS = [25, 50, 75] as const;
-
-import { formatAssetAmount } from "@/lib/formatting";
-import { calculateDepositPreview } from "../../stellar-wallet-connect/src/vault/lib/depositPreview";
+const QUICK_AMOUNTS = [25, 50, 75];
 
 function formatToken(value, token) {
   return formatAssetAmount(value, token);
 }
 
-export default function DepositModal({ isOpen, onClose }) {
-  const [step, setStep] = useState("input"); // "input" | "confirm" | "loading" | "success"
-  const [amount, setAmount] = useState("250");
+export default function DepositModal({
+  isOpen,
+  onClose,
+  initialAmount = "250",
+  onDeposit = null,
+  isConnected = true,
+  onConnectWallet = null,
+  poolSummary = null,
+}) {
+  const [step, setStep] = useState("input"); // "input" | "confirm" | "loading" | "success" | "error"
+  const [amount, setAmount] = useState(initialAmount);
   const [feeState, setFeeState] = useState(null);
   const [error, setError] = useState(null);
   const [walletBalance, setWalletBalance] = useState(0.0018);
-  const [usdcBalance, setUsdcBalance] = useState(1000.00);
+  const [usdcBalance, setUsdcBalance] = useState(1000.0);
   const [refreshing, setRefreshing] = useState(false);
 
+  const dialogRef = useRef(null);
+  const titleRef = useRef(null);
+  const previouslyFocusedRef = useRef(null);
+  const prefersReducedMotion = usePrefersReducedMotion();
 
   const gasBudget = useMemo(() => feeState?.estimatedNative ?? 0, [feeState]);
   const amountNum = useMemo(() => parseFloat(amount) || 0, [amount]);
@@ -36,33 +48,42 @@ export default function DepositModal({ isOpen, onClose }) {
   const isInsufficientUsdc = amountNum > usdcBalance;
   const isInsufficientNative = gasBudget > 0 && walletBalance < gasBudget;
 
-  const mockPoolSummary = useMemo(() => ({
-    id: "usdc_pool",
-    name: "USDC Stable Pool",
-    status: "open",
-    tvl: "500000",
-    asset: "USDC",
-    participantCount: 142,
-    expectedYield: "5.2% APY",
-    opensAt: null,
-    locksAt: null,
-    drawsAt: null,
-    strategyExposureBps: 8000,
-    idleLiquidity: "100000",
-    queuedWithdrawals: "15000",
-    maxStrategyExposureBps: 8500,
-    minIdleRatioBps: 1500,
-  }), []);
+  const mockPoolSummary = useMemo(
+    () =>
+      poolSummary ?? {
+        id: "usdc_pool",
+        name: "USDC Stable Pool",
+        status: "open",
+        tvl: "500000",
+        asset: "USDC",
+        participantCount: 142,
+        expectedYield: "5.2% APY",
+        opensAt: null,
+        locksAt: null,
+        drawsAt: null,
+        strategyExposureBps: 8000,
+        idleLiquidity: "100000",
+        queuedWithdrawals: "15000",
+        maxStrategyExposureBps: 8500,
+        minIdleRatioBps: 1500,
+      },
+    [poolSummary],
+  );
 
-  const depositPreview = useMemo(() => calculateDepositPreview(mockPoolSummary, amountNum), [mockPoolSummary, amountNum]);
+  const depositPreview = useMemo(
+    () => calculateDepositPreview(mockPoolSummary, amountNum),
+    [mockPoolSummary, amountNum],
+  );
 
-
-  const handleQuickAmount = useCallback((pct) => {
-    const raw = usdcBalance * (pct / 100);
-    const clamped = Math.min(raw, MAX_DEPOSIT);
-    setAmount(formatAssetAmount(clamped, "USDC", { showSymbol: false }));
-    setError(null);
-  }, [usdcBalance]);
+  const handleQuickAmount = useCallback(
+    (pct) => {
+      const raw = usdcBalance * (pct / 100);
+      const clamped = Math.min(raw, MAX_DEPOSIT);
+      setAmount(formatAssetAmount(clamped, "USDC", { showSymbol: false }));
+      setError(null);
+    },
+    [usdcBalance],
+  );
 
   const handleMaxAmount = useCallback(() => {
     const max = Math.min(usdcBalance, MAX_DEPOSIT);
@@ -72,22 +93,66 @@ export default function DepositModal({ isOpen, onClose }) {
 
   const refreshBalances = useCallback(async () => {
     setRefreshing(true);
-    // Simulate balance refresh — in production this would call the RPC
     await new Promise((resolve) => setTimeout(resolve, 600));
     setRefreshing(false);
     toast.success("Balances refreshed", { duration: 2000 });
   }, []);
 
+  // Save previous activeElement on open and restore on close
   useEffect(() => {
-    if (!isOpen) {
+    if (isOpen) {
+      if (typeof document !== "undefined") {
+        previouslyFocusedRef.current = document.activeElement;
+      }
+      if (titleRef.current) {
+        titleRef.current.focus();
+      }
+    } else {
       setStep("input");
       setError(null);
-      return undefined;
+      if (previouslyFocusedRef.current && typeof previouslyFocusedRef.current.focus === "function") {
+        previouslyFocusedRef.current.focus();
+      }
     }
+  }, [isOpen]);
+
+  // When step changes, shift focus to the step heading for screen readers
+  useEffect(() => {
+    if (isOpen && titleRef.current) {
+      titleRef.current.focus();
+    }
+  }, [step, isOpen]);
+
+  // Focus trap and Escape listener
+  useEffect(() => {
+    if (!isOpen) return;
 
     const onKeyDown = (event) => {
       if (event.key === "Escape" && step !== "loading") {
         onClose?.();
+        return;
+      }
+
+      if (event.key === "Tab") {
+        const root = dialogRef.current;
+        if (!root) return;
+        const focusables = root.querySelectorAll(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        );
+        if (focusables.length === 0) {
+          event.preventDefault();
+          return;
+        }
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
       }
     };
 
@@ -100,6 +165,10 @@ export default function DepositModal({ isOpen, onClose }) {
   }
 
   const handleContinue = () => {
+    if (!isConnected) {
+      setError("Please connect your wallet before proceeding.");
+      return;
+    }
     if (!amount || isNaN(amountNum) || amountNum <= 0) {
       setError("Please enter a valid deposit amount.");
       return;
@@ -124,9 +193,14 @@ export default function DepositModal({ isOpen, onClose }) {
     setStep("confirm");
   };
 
-  const handleConfirmDeposit = () => {
+  const handleConfirmDeposit = async () => {
     setStep("loading");
-    setTimeout(() => {
+    try {
+      if (onDeposit) {
+        await onDeposit(amount);
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
       setStep("success");
       toast.success(
         <div className="flex flex-col gap-1">
@@ -140,9 +214,18 @@ export default function DepositModal({ isOpen, onClose }) {
             View transaction
           </a>
         </div>,
-        { duration: 5000 }
+        { duration: 5000 },
       );
-    }, 1800);
+    } catch (err) {
+      const msg = err?.message || "Transaction failed or was rejected by wallet.";
+      setError(msg);
+      setStep("error");
+    }
+  };
+
+  const handleRetry = () => {
+    setError(null);
+    handleConfirmDeposit();
   };
 
   const getHeaderTitle = () => {
@@ -153,6 +236,8 @@ export default function DepositModal({ isOpen, onClose }) {
         return "Broadcasting transaction";
       case "success":
         return "Transaction confirmed";
+      case "error":
+        return "Transaction failed";
       case "input":
       default:
         return "Review gas before signing";
@@ -160,15 +245,29 @@ export default function DepositModal({ isOpen, onClose }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/70 px-4 py-6 backdrop-blur-sm sm:items-center">
-      <div className="vq-glass w-full max-w-5xl overflow-hidden border border-vault-border/60 shadow-2xl">
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/70 px-4 py-6 backdrop-blur-sm sm:items-center"
+      data-testid="deposit-modal-backdrop"
+    >
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="deposit-modal-title"
+        className="vq-glass w-full max-w-5xl overflow-hidden border border-vault-border/60 shadow-2xl"
+      >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-vault-border/40 px-5 py-4 sm:px-6">
           <div>
             <p className="text-xs font-medium uppercase tracking-[0.22em] text-vault-muted">
               Deposit flow
             </p>
-            <h2 className="mt-1 text-xl font-semibold text-vault-text">
+            <h2
+              id="deposit-modal-title"
+              ref={titleRef}
+              tabIndex={-1}
+              className="mt-1 text-xl font-semibold text-vault-text outline-none"
+            >
               {getHeaderTitle()}
             </h2>
           </div>
@@ -183,6 +282,33 @@ export default function DepositModal({ isOpen, onClose }) {
           </button>
         </div>
 
+        {/* Authorization Alert if wallet not connected */}
+        {!isConnected && (
+          <div
+            role="alert"
+            aria-live="polite"
+            className="mx-6 mt-4 flex items-center justify-between gap-3 rounded-2xl border border-amber-500/40 bg-amber-500/10 p-4 text-amber-200"
+          >
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-400 shrink-0" aria-hidden="true" />
+              <span className="text-sm font-medium">
+                Wallet connection required to deposit. Please connect your Stellar wallet.
+              </span>
+            </div>
+            {onConnectWallet && (
+              <button
+                type="button"
+                onClick={onConnectWallet}
+                className="flex items-center gap-1.5 rounded-xl bg-amber-500/20 px-3 py-1.5 text-xs font-semibold text-amber-200 hover:bg-amber-500/30 focus:outline-none focus:ring-2 focus:ring-amber-400"
+                aria-label="Connect wallet to continue"
+              >
+                <Wallet className="h-3.5 w-3.5" aria-hidden="true" />
+                Connect Wallet
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Body Content */}
         <div className="p-5 lg:p-6">
           {step === "input" && (
@@ -190,23 +316,26 @@ export default function DepositModal({ isOpen, onClose }) {
               <section className="space-y-4 rounded-3xl border border-vault-border/40 bg-vault-surface/30 p-5">
                 <div>
                   <div className="flex items-center justify-between">
-                    <p className="text-xs font-medium uppercase tracking-wide text-vault-muted">
+                    <label
+                      htmlFor="deposit-amount"
+                      className="text-xs font-medium uppercase tracking-wide text-vault-muted"
+                    >
                       Deposit amount
-                    </p>
+                    </label>
                     <button
                       type="button"
                       onClick={refreshBalances}
                       disabled={refreshing}
-                      className="flex items-center gap-1 text-xs text-vault-muted hover:text-vault-text transition-colors"
+                      className="flex items-center gap-1 text-xs text-vault-muted hover:text-vault-text transition-colors focus:outline-none focus:ring-2 focus:ring-red-400/25"
                       aria-label="Refresh wallet balances"
                     >
-                      <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
+                      <RefreshCw
+                        className={`h-3 w-3 ${refreshing && !prefersReducedMotion ? "animate-spin" : ""}`}
+                        aria-hidden="true"
+                      />
                       Refresh
                     </button>
                   </div>
-                  <label htmlFor="deposit-amount" className="sr-only">
-                    Deposit amount
-                  </label>
                   <input
                     id="deposit-amount"
                     value={amount}
@@ -215,6 +344,9 @@ export default function DepositModal({ isOpen, onClose }) {
                       setError(null);
                     }}
                     inputMode="decimal"
+                    aria-required="true"
+                    aria-invalid={error ? "true" : "false"}
+                    aria-describedby={error ? "deposit-amount-error" : undefined}
                     className={`mt-2 w-full rounded-2xl border bg-vault-surface px-4 py-3 text-lg font-semibold text-vault-text outline-none transition focus:ring-2 ${
                       error
                         ? "border-red-500/50 focus:border-red-500 focus:ring-red-500/25"
@@ -223,7 +355,12 @@ export default function DepositModal({ isOpen, onClose }) {
                     placeholder="0.00"
                   />
                   {error && (
-                    <p className="mt-2 text-sm text-red-500 font-semibold" role="alert">
+                    <p
+                      id="deposit-amount-error"
+                      className="mt-2 text-sm text-red-500 font-semibold"
+                      role="alert"
+                      aria-live="assertive"
+                    >
                       {error}
                     </p>
                   )}
@@ -252,134 +389,70 @@ export default function DepositModal({ isOpen, onClose }) {
                   <div className="mt-3 rounded-2xl border border-vault-border/40 bg-vault-surface/50 p-4 space-y-2">
                     <p className="text-xs font-medium uppercase tracking-wide text-vault-muted">
                       Balance impact
-                    </p>                     <div className="flex justify-between text-sm">
+                    </p>
+                    <div className="flex justify-between text-sm">
                       <span className="text-vault-muted">Current USDC balance</span>
-                      <span className="font-medium text-vault-text">{formatAssetAmount(usdcBalance, "USDC")}</span>
+                      <span className="font-medium text-vault-text">
+                        {formatAssetAmount(usdcBalance, "USDC")}
+                      </span>
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-vault-muted">Deposit amount</span>
-                      <span className="font-medium text-red-500">-{amountNum > 0 ? formatAssetAmount(amountNum, "USDC") : "0.00 USDC"}</span>
+                      <span className="font-medium text-vault-text">
+                        {formatAssetAmount(amountNum, "USDC")}
+                      </span>
                     </div>
-                    <div className="border-t border-vault-border/30 pt-2 flex justify-between text-sm">
-                      <span className="font-semibold text-vault-text">Remaining after deposit</span>
-                      <span className={`font-bold ${remainingUsdc < 0 ? "text-red-500" : "text-vault-text"}`}>
-                        {remainingUsdc >= 0 ? formatAssetAmount(remainingUsdc, "USDC") : "0.00 USDC"}
+                    <div className="flex justify-between text-sm border-t border-vault-border/40 pt-2">
+                      <span className="text-vault-muted">Remaining USDC</span>
+                      <span className="font-medium text-vault-text">
+                        {formatAssetAmount(Math.max(0, remainingUsdc), "USDC")}
                       </span>
                     </div>
                   </div>
-
-                  {/* Min/Max hint */}
-                  <p className="mt-1 text-xs text-vault-muted">
-                    Min: {MIN_DEPOSIT} USDC · Max: {MAX_DEPOSIT.toLocaleString()} USDC
-                  </p>
                 </div>
-
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="rounded-2xl border border-vault-border/40 bg-vault-surface/35 p-4">
-                    <p className="text-xs font-medium uppercase tracking-wide text-vault-muted">
-                      Deposit preview
-                    </p>
-                    <p className="mt-1 text-lg font-semibold text-vault-text">
-                      {amount || "0.00"} USDC
-                    </p>
-                  </div>
-                  <div className="rounded-2xl border border-vault-border/40 bg-vault-surface/35 p-4">
-                    <p className="text-xs font-medium uppercase tracking-wide text-vault-muted">
-                      Est. remaining native
-                    </p>
-                    <p className="mt-1 text-lg font-semibold text-vault-text">
-                      {formatToken(remainingNative, "AVAX")}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-vault-border/40 bg-slate-950/75 p-4 text-sm text-slate-200">
-                  <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-                    Transaction payload
-                  </p>
-                  <pre className="mt-2 overflow-auto text-xs leading-relaxed text-slate-200">
-                    {JSON.stringify(
-                      {
-                        amount: amountNum,
-                        asset: "USDC",
-                        gasBudget: formatToken(gasBudget, "AVAX"),
-                        walletBalance: formatToken(walletBalance, "AVAX"),
-                        remainingBalance: formatToken(remainingNative, "AVAX"),
-                      },
-                      null,
-                      2,
-                    )}
-                  </pre>
-                </div>
-
-                {isGasShort && (
-                  <div
-                    role="alert"
-                    aria-live="assertive"
-                    className="rounded-2xl border border-amber-400/35 bg-amber-500/10 p-4 text-sm text-amber-100"
-                  >
-                    <p className="font-semibold text-vault-text">Network fee warning</p>
-                    <p className="mt-1 text-vault-muted">
-                      The connected wallet has insufficient AVAX to cover the estimated network fee of {formatToken(gasBudget, "AVAX")}.
-                    </p>
-                  </div>
-                )}
               </section>
 
-              <GasPrioritySelector nativeBalance={walletBalance} onChange={setFeeState} />
+              {/* Right column: Gas fee breakdown */}
+              <section className="space-y-4 rounded-3xl border border-vault-border/40 bg-vault-surface/30 p-5">
+                <GasPrioritySelector onFeeCalculated={setFeeState} />
+              </section>
             </div>
           )}
 
           {step === "confirm" && (
-            <section className="space-y-6 rounded-3xl border border-vault-border/40 bg-vault-surface/30 p-6 max-w-2xl mx-auto my-2">
-              <div className="text-center">
-                <p className="text-xs font-medium uppercase tracking-[0.24em] text-vault-muted">
-                  Review transaction
-                </p>
-                <h3 className="mt-2 text-2xl font-bold text-vault-text">
-                  Deposit Confirmation
+            <section className="space-y-4 max-w-xl mx-auto py-4">
+              <div className="rounded-2xl border border-vault-border/40 bg-vault-surface/40 p-5 space-y-3">
+                <h3 className="text-sm font-semibold text-vault-muted uppercase tracking-wider">
+                  Transaction Summary
                 </h3>
-              </div>
-
-              <div className="divide-y divide-vault-border rounded-2xl border border-vault-border/40 bg-vault-surface/40 px-6 py-2 space-y-3">
-                <div className="flex justify-between py-2.5">
-                  <span className="text-vault-muted">Amount to Deposit</span>
-                  <span className="font-bold text-vault-text">{amount} USDC</span>
+                <div className="flex justify-between text-base">
+                  <span className="text-vault-muted">Pool:</span>
+                  <span className="font-semibold text-vault-text">{mockPoolSummary.name}</span>
                 </div>
-                <div className="flex justify-between py-2.5">
-                  <span className="text-vault-muted">Destination Pool</span>
-                  <span className="font-medium text-vault-text">USDC Stable Pool</span>
+                <div className="flex justify-between text-base">
+                  <span className="text-vault-muted">Deposit:</span>
+                  <span className="font-semibold text-emerald-400">{amount} USDC</span>
                 </div>
-                <div className="flex justify-between py-2.5">
-                  <span className="text-vault-muted">Estimated Gas Fee</span>
-                  <span className="font-medium text-vault-text">{formatToken(gasBudget, "AVAX")}</span>
+                <div className="flex justify-between text-sm text-vault-muted">
+                  <span>Network Gas Fee:</span>
+                  <span>{gasBudget.toFixed(4)} XLM</span>
                 </div>
-                <div className="flex justify-between py-2.5">
-                  <span className="text-vault-muted">Remaining USDC Balance</span>
-                  <span className="font-medium text-vault-text">{formatAssetAmount(remainingUsdc, "USDC")}</span>
-                </div>
-                <div className="flex justify-between py-2.5">
-                  <span className="text-vault-muted">Remaining AVAX Balance</span>
-                  <span className="font-medium text-vault-text">{formatToken(remainingNative, "AVAX")}</span>
-                </div>
-                <div className="flex justify-between py-2.5 pt-4">
-                  <span className="font-semibold text-vault-text">Deduction Summary</span>
-                  <span className="font-bold text-red-500">
-                    {amount} USDC + {formatToken(gasBudget, "AVAX")}
-                  </span>
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-4 text-xs text-vault-muted">
-                Yield generated from pooled deposits funds periodic prize drawings. Your original deposit (principal) remains fully withdrawable at any time.
               </div>
             </section>
           )}
 
           {step === "loading" && (
-            <section className="flex flex-col items-center justify-center py-16 space-y-4">
+            <section
+              role="status"
+              aria-live="polite"
+              aria-busy="true"
+              className="flex flex-col items-center justify-center py-16 space-y-4"
+            >
               <div className="flex h-16 w-16 items-center justify-center rounded-full border-2 border-red-500/30">
-                <Loader2 className="h-8 w-8 animate-spin text-red-400" />
+                <Loader2
+                  className={`h-8 w-8 text-red-400 ${prefersReducedMotion ? "" : "animate-spin"}`}
+                  aria-hidden="true"
+                />
               </div>
               <h3 className="text-lg font-semibold text-vault-text">Processing Deposit</h3>
               <p className="text-sm text-vault-muted max-w-xs text-center">
@@ -389,9 +462,16 @@ export default function DepositModal({ isOpen, onClose }) {
           )}
 
           {step === "success" && (
-            <section className="flex flex-col items-center justify-center py-8 space-y-4 max-w-md mx-auto">
+            <section
+              role="status"
+              aria-live="polite"
+              className="flex flex-col items-center justify-center py-8 space-y-4 max-w-md mx-auto"
+            >
               <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 shadow-glow-green">
-                <CheckCircle2 className="h-10 w-10 animate-bounce" />
+                <CheckCircle2
+                  className={`h-10 w-10 ${prefersReducedMotion ? "" : "animate-bounce"}`}
+                  aria-hidden="true"
+                />
               </div>
               <h3 className="text-2xl font-bold text-vault-text">Deposit Successful!</h3>
               <p className="text-sm text-vault-muted text-center">
@@ -401,7 +481,7 @@ export default function DepositModal({ isOpen, onClose }) {
               <div className="w-full divide-y divide-vault-border rounded-2xl border border-vault-border/40 bg-vault-surface/40 px-5 py-3 text-xs">
                 <div className="flex justify-between py-2">
                   <span className="text-vault-muted">Pool</span>
-                  <span className="text-vault-text font-medium">USDC Stable Pool</span>
+                  <span className="text-vault-text font-medium">{mockPoolSummary.name}</span>
                 </div>
                 <div className="flex justify-between py-2">
                   <span className="text-vault-muted">Transaction Hash</span>
@@ -414,6 +494,25 @@ export default function DepositModal({ isOpen, onClose }) {
               </div>
             </section>
           )}
+
+          {step === "error" && (
+            <section
+              role="alert"
+              aria-live="assertive"
+              className="flex flex-col items-center justify-center py-8 space-y-4 max-w-md mx-auto"
+            >
+              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-red-500/10 text-red-500 border border-red-500/20">
+                <AlertTriangle className="h-10 w-10 text-red-400" aria-hidden="true" />
+              </div>
+              <h3 className="text-2xl font-bold text-vault-text">Transaction Failed</h3>
+              <p className="text-sm text-vault-muted text-center">
+                {error || "An unexpected error occurred while processing your transaction."}
+              </p>
+              <p className="text-xs text-vault-muted text-center">
+                Your entered amount ({amount} USDC) was preserved. You can safely retry without creating a duplicate.
+              </p>
+            </section>
+          )}
         </div>
 
         {/* Footer */}
@@ -423,6 +522,7 @@ export default function DepositModal({ isOpen, onClose }) {
             {step === "confirm" && "Double check transaction payload and destination pool details before signing."}
             {step === "loading" && "Do not close this modal or refresh the page while the transaction is broadcasting."}
             {step === "success" && "Transaction completed successfully. You can close this modal."}
+            {step === "error" && "Transaction did not complete. Review the error details and choose an action."}
           </div>
           <div className="flex gap-3">
             {step === "input" && (
@@ -430,7 +530,12 @@ export default function DepositModal({ isOpen, onClose }) {
                 <button type="button" onClick={onClose} className="vq-btn-ghost">
                   Cancel
                 </button>
-                <button type="button" onClick={handleContinue} className="vq-btn-primary">
+                <button
+                  type="button"
+                  onClick={handleContinue}
+                  className="vq-btn-primary"
+                  aria-disabled={!isConnected}
+                >
                   Confirm deposit
                 </button>
               </>
@@ -438,7 +543,7 @@ export default function DepositModal({ isOpen, onClose }) {
             {step === "confirm" && (
               <>
                 <button type="button" onClick={() => setStep("input")} className="vq-btn-ghost">
-                  <ArrowLeft className="h-4 w-4 mr-1 inline" /> Back
+                  <ArrowLeft className="h-4 w-4 mr-1 inline" aria-hidden="true" /> Back
                 </button>
                 <button type="button" onClick={handleConfirmDeposit} className="vq-btn-primary">
                   Sign & Submit
@@ -446,7 +551,12 @@ export default function DepositModal({ isOpen, onClose }) {
               </>
             )}
             {step === "loading" && (
-              <button type="button" disabled className="vq-btn-primary opacity-50 cursor-not-allowed">
+              <button
+                type="button"
+                disabled
+                aria-busy="true"
+                className="vq-btn-primary opacity-50 cursor-not-allowed"
+              >
                 Broadcasting...
               </button>
             )}
@@ -454,6 +564,21 @@ export default function DepositModal({ isOpen, onClose }) {
               <button type="button" onClick={onClose} className="vq-btn-primary">
                 Close
               </button>
+            )}
+            {step === "error" && (
+              <>
+                <button type="button" onClick={() => setStep("input")} className="vq-btn-ghost">
+                  Back to edit
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRetry}
+                  className="vq-btn-primary"
+                  aria-label={`Retry deposit of ${amount} USDC`}
+                >
+                  Retry deposit
+                </button>
+              </>
             )}
           </div>
         </div>

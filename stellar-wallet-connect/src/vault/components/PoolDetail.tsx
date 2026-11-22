@@ -16,6 +16,7 @@ import { NetworkDiagnostics } from "../../components/NetworkDiagnostics";
 import { TransactionTimeline } from "../../components/TransactionTimeline";
 import type { TxFlowResult } from "../lib/txStateMachine";
 import type { ReadConfidenceLevel } from "../../core/criticalReadPolicy";
+import { normalizePoolState, POOL_STATES } from "../../../../lib/pool-lifecycle";
 import PoolStatusBadge from "./PoolStatusBadge";
 
 /**
@@ -111,15 +112,18 @@ const EMERGENCY_BLOCKED_ACTIONS: ReadonlySet<PoolActionType> = new Set(["join", 
 /** Actions available to the connected user given pool state and position. */
 export function availableActions(pool: PoolSummary, position: UserPosition | null): PoolActionType[] {
   const joined = position?.joined ?? false;
+  // Derive canonical state from the shared lifecycle model (#763) instead of
+  // switching on raw on-chain tokens, so UI and API never interpret status
+  // differently (e.g. `open`/`locked`/`settled` alias to active/paused/completed).
+  const state = normalizePoolState(pool.status);
   const actions = (() => {
-    switch (pool.status) {
-      case "open":
+    switch (state) {
+      case POOL_STATES.ACTIVE:
         return joined ? ["drip", "withdraw"] : ["join"];
-      case "locked":
+      case POOL_STATES.PAUSED:
         return joined ? ["withdraw"] : [];
-      case "settled":
+      case POOL_STATES.COMPLETED:
         return joined ? ["claim", "withdraw"] : [];
-      case "drawing":
       default:
         return [];
     }

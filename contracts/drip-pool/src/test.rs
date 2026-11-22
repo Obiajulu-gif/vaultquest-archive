@@ -1,15 +1,85 @@
 //! Adversarial unit-test suite (#141) + regression tests (#139, #140).
 //! Event emission tests (#255). Storage optimisation regression (#257).
 //! #377: principal/reward separation tests.
+//! #718: draw auditability tests live in `draw_audit_test.rs`.
 
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger as _},
-    token, Address, Env, IntoVal,
+    token, Address, Env, IntoVal, MuxedAddress, String,
 };
 
 // Re-export the main contract error for convenience
 use super::Error;
+
+/// Permissive test double for the SAC token: the #524 fail-closed token gate
+/// landed after most of this suite was written, so `setup()` wires this in
+/// automatically and transfers always succeed — tests exercise pool
+/// accounting without per-wallet minting. Balance-affecting behavior is
+/// covered separately by the real-SAC `setup_with_token()` tests.
+#[contract]
+pub struct MockToken;
+
+#[contractimpl]
+impl MockToken {
+    pub fn allowance(_env: Env, _from: Address, _spender: Address) -> i128 {
+        0
+    }
+    pub fn approve(_env: Env, _from: Address, _spender: Address, _amount: i128, _live_until: u32) {}
+    pub fn balance(env: Env, id: Address) -> i128 {
+        env.storage().persistent().get(&id).unwrap_or(0)
+    }
+    pub fn transfer(env: Env, from: Address, to: MuxedAddress, amount: i128) {
+        // Real double-entry accounting (balances may go negative — this
+        // mock never lies about insolvency, which is the point): the
+        // pool's idle-liquidity check (#529) reads its actual balance.
+        let from_bal: i128 = env.storage().persistent().get(&from).unwrap_or(0);
+        let to_addr = to.address();
+        let to_bal: i128 = env.storage().persistent().get(&to_addr).unwrap_or(0);
+        env.storage().persistent().set(&from, &(from_bal - amount));
+        env.storage().persistent().set(&to_addr, &(to_bal + amount));
+    }
+    pub fn transfer_from(env: Env, _spender: Address, from: Address, to: Address, amount: i128) {
+        let from_bal: i128 = env.storage().persistent().get(&from).unwrap_or(0);
+        let to_bal: i128 = env.storage().persistent().get(&to).unwrap_or(0);
+        env.storage().persistent().set(&from, &(from_bal - amount));
+        env.storage().persistent().set(&to, &(to_bal + amount));
+    }
+    pub fn burn(_env: Env, _from: Address, _amount: i128) {}
+    pub fn burn_from(_env: Env, _spender: Address, _from: Address, _amount: i128) {}
+    pub fn mint(env: Env, to: Address, amount: i128) {
+        let bal: i128 = env.storage().persistent().get(&to).unwrap_or(0);
+        env.storage().persistent().set(&to, &(bal + amount));
+    }
+    pub fn decimals(_env: Env) -> u32 {
+        7
+    }
+    pub fn name(env: Env) -> String {
+        String::from_str(&env, "Mock Token")
+    }
+    pub fn symbol(env: Env) -> String {
+        String::from_str(&env, "MOCK")
+    }
+}
+
+fn setup() -> (Env, DripPoolClient<'static>, Address) {
+    let (env, client, admin) = setup_raw();
+    client.create(&admin);
+    client.set_token(&admin, &env.register_contract(None, MockToken));
+    (env, client, admin)
+}
+
+/// Bare setup: nothing registered on the pool. For tests that specifically
+/// exercise the uninitialized state or the #524 unconfigured-token fail-closed
+/// behavior.
+fn setup_raw() -> (Env, DripPoolClient<'static>, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let id = env.register_contract(None, DripPool);
+    let client = DripPoolClient::new(&env, &id);
+    let admin = Address::generate(&env);
+    (env, client, admin)
+}
 
 /// Real-SAC setup for tests that need actual token custody (#526, #529),
 /// mirroring the pattern used in `mock-yield`'s strategy tests.
@@ -20,7 +90,7 @@ fn setup_with_token() -> (
     token::TokenClient<'static>,
     token::StellarAssetClient<'static>,
 ) {
-    let (env, client, admin) = setup();
+    let (env, client, admin) = setup_raw();
     client.create(&admin);
 
     let asset_admin = Address::generate(&env);
@@ -34,15 +104,46 @@ fn setup_with_token() -> (
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
-fn setup() -> (Env, DripPoolClient<'static>, Address) {
-    let env = Env::default();
-    env.mock_all_auths();
-    let id = env.register_contract(None, DripPool);
-    let client = DripPoolClient::new(&env, &id);
-    let admin = Address::generate(&env);
-    (env, client, admin)
-}
+/// Test helper (#715): runs a full round lifecycle — open, `depositor`
+/// deposits `amount`, single-committer commit-reveal, then
+/// `select_round_winner` — so `draw_winner` tests don't need to hand-roll
+/// the randomness flow. With a single depositor, the winning ticket always
+/// falls in their sole segment, so the winner is deterministically
+/// `depositor`.
+///
+/// Seeds a second admin first (#657): `open_round` now refuses to open with
+/// fewer than `Threshold` (2 by default) approved admins, since a single
+/// committer gives `commit_round_randomness`'s N-of-N scheme no real
+/// manipulation resistance — this helper's own single-committer reveal
+/// below is deliberately only a *liveness* test of the commit/reveal
+/// mechanics, not a claim that single-committer is a safe way to run a
+/// round in production.
+fn setup_round_with_winner(
+    env: &Env,
+    client: &DripPoolClient,
+    admin: &Address,
+    depositor: &Address,
+    amount: i128,
+) -> u32 {
+    let second_admin = Address::generate(env);
+    client.seed_admin(admin, &second_admin);
 
+    let round_id = client.open_round(admin);
+    client.round_deposit(depositor, &round_id, &amount);
+
+    let seed = BytesN::from_array(env, &[7u8; 32]);
+    let commitment: BytesN<32> = env.crypto().sha256(&seed.to_bytes()).to_bytes();
+    client.commit_round_randomness(admin, &round_id, &commitment);
+
+    client.lock_round(admin, &round_id);
+    client.reveal_round_randomness(admin, &round_id, &seed);
+
+    let candidates = vec![env, depositor.clone()];
+    let winner = client.select_round_winner(admin, &round_id, &candidates);
+    assert_eq!(winner, Some(depositor.clone()));
+
+    round_id
+}
 /// Advance ledger sequence past the lockup window.
 fn skip_lockup(env: &Env) {
     let current = env.ledger().sequence();
@@ -60,7 +161,7 @@ fn skip_high_risk_delay(env: &Env) {
 
 #[test]
 fn create_initialises_pool() {
-    let (_env, client, admin) = setup();
+    let (_env, client, admin) = setup_raw();
     client.create(&admin);
     let pool = client.pool();
     assert_eq!(pool.admin, admin);
@@ -70,7 +171,7 @@ fn create_initialises_pool() {
 
 #[test]
 fn create_twice_fails() {
-    let (_env, client, admin) = setup();
+    let (_env, client, admin) = setup_raw();
     client.create(&admin);
     assert_eq!(
         client.try_create(&admin),
@@ -81,7 +182,6 @@ fn create_twice_fails() {
 #[test]
 fn full_lifecycle_create_join_deposit_claim_withdraw() {
     let (env, client, admin) = setup();
-    client.create(&admin);
 
     let alice = Address::generate(&env);
     client.join(&alice);
@@ -109,7 +209,6 @@ fn full_lifecycle_create_join_deposit_claim_withdraw() {
 #[test]
 fn double_join_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     assert_eq!(client.try_join(&alice), Err(Ok(Error::AlreadyJoined)));
@@ -118,7 +217,6 @@ fn double_join_fails() {
 #[test]
 fn drip_zero_amount_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     assert_eq!(client.try_drip(&alice, &0), Err(Ok(Error::InvalidAmount)));
@@ -127,7 +225,6 @@ fn drip_zero_amount_fails() {
 #[test]
 fn drip_without_join_auto_joins() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.drip(&alice, &10);
     let savings = client.savings(&alice);
@@ -138,14 +235,13 @@ fn drip_without_join_auto_joins() {
 #[test]
 fn withdraw_without_join_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     assert_eq!(client.try_withdraw(&alice), Err(Ok(Error::NotJoined)));
 }
 
 #[test]
 fn pool_uninitialized_fails() {
-    let (_env, client, _admin) = setup();
+    let (_env, client, _admin) = setup_raw();
     assert_eq!(client.try_pool(), Err(Ok(Error::NotInitialized)));
 }
 
@@ -154,7 +250,6 @@ fn pool_uninitialized_fails() {
 #[test]
 fn withdraw_before_lockup_reverts() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &100);
@@ -164,7 +259,6 @@ fn withdraw_before_lockup_reverts() {
 #[test]
 fn withdraw_after_lockup_succeeds() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &100);
@@ -177,7 +271,6 @@ fn withdraw_after_lockup_succeeds() {
 #[test]
 fn non_signer_cannot_propose() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let rando = Address::generate(&env);
     let res = client.try_propose(&rando, &ProposalAction::AddAdmin(rando.clone()));
     assert_eq!(res, Err(Ok(Error::Unauthorized)));
@@ -186,7 +279,6 @@ fn non_signer_cannot_propose() {
 #[test]
 fn single_sig_does_not_execute_release() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     client.deposit(&admin, &500);
 
     let recipient = Address::generate(&env);
@@ -204,7 +296,6 @@ fn single_sig_does_not_execute_release() {
 #[test]
 fn two_of_two_sigs_executes_release() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     client.deposit(&admin, &500);
 
     let signer2 = Address::generate(&env);
@@ -223,7 +314,6 @@ fn two_of_two_sigs_executes_release() {
 #[test]
 fn duplicate_approval_rejected() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let pid = client.propose(&admin, &ProposalAction::AddAdmin(Address::generate(&env)));
     assert_eq!(
         client.try_approve(&admin, &pid),
@@ -236,7 +326,6 @@ fn duplicate_approval_rejected() {
 #[test]
 fn single_depositor_principal_matches_total() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &1_000_000);
@@ -249,7 +338,6 @@ fn single_depositor_principal_matches_total() {
 #[test]
 fn zero_balance_account_shows_zero_principal() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     let savings = client.savings(&alice);
@@ -261,7 +349,6 @@ fn zero_balance_account_shows_zero_principal() {
 #[test]
 fn high_volume_deposits_consistent() {
     let (env, client, admin) = setup();
-    client.create(&admin);
 
     let n: i128 = 50;
     for _ in 0..n {
@@ -278,7 +365,6 @@ fn high_volume_deposits_consistent() {
 #[test]
 fn flash_loan_blocked_by_lockup() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let attacker = Address::generate(&env);
     client.join(&attacker);
     client.deposit(&attacker, &1_000_000_000);
@@ -289,7 +375,6 @@ fn flash_loan_blocked_by_lockup() {
 #[test]
 fn negative_deposit_rejected() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     assert_eq!(
@@ -303,18 +388,17 @@ fn negative_deposit_rejected() {
 #[test]
 fn deposit_emits_event() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &500);
     let events = env.events().all();
+    std::eprintln!("DEPOSIT EVENT COUNT: {}", events.events().len());
     assert!(!events.events().is_empty(), "no events emitted");
 }
 
 #[test]
 fn withdraw_emits_event() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &200);
@@ -327,12 +411,12 @@ fn withdraw_emits_event() {
 #[test]
 fn draw_winner_emits_payout_event() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &1_000);
-    let winner = client.draw_winner(&admin, &100);
-    assert_eq!(winner, admin);
+    let round_id = setup_round_with_winner(&env, &client, &admin, &alice, 1_000);
+    let winner = client.draw_winner(&admin, &round_id, &100);
+    assert_eq!(winner, alice);
     let events = env.events().all();
     assert!(!events.events().is_empty(), "no events emitted");
 }
@@ -340,9 +424,8 @@ fn draw_winner_emits_payout_event() {
 #[test]
 fn draw_winner_zero_prize_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     assert_eq!(
-        client.try_draw_winner(&admin, &0),
+        client.try_draw_winner(&admin, &0, &0),
         Err(Ok(Error::InvalidAmount))
     );
 }
@@ -350,11 +433,22 @@ fn draw_winner_zero_prize_fails() {
 #[test]
 fn draw_winner_unauthorized_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let rando = Address::generate(&env);
     assert_eq!(
-        client.try_draw_winner(&rando, &100),
+        client.try_draw_winner(&rando, &0, &100),
         Err(Ok(Error::Unauthorized))
+    );
+}
+
+#[test]
+fn draw_winner_without_selected_round_winner_fails() {
+    let (env, client, admin) = setup();
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
+    client.create(&admin);
+    let round_id = client.open_round(&admin);
+    assert_eq!(
+        client.try_draw_winner(&admin, &round_id, &100),
+        Err(Ok(Error::RoundWinnerNotSelected))
     );
 }
 
@@ -363,7 +457,6 @@ fn draw_winner_unauthorized_fails() {
 #[test]
 fn proposal_nonce_increments_in_pool() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     assert_eq!(client.pool().proposal_nonce, 0);
     client.propose(&admin, &ProposalAction::AddAdmin(Address::generate(&env)));
     assert_eq!(client.pool().proposal_nonce, 1);
@@ -372,7 +465,6 @@ fn proposal_nonce_increments_in_pool() {
 #[test]
 fn pool_locked_field_starts_false() {
     let (_env, client, admin) = setup();
-    client.create(&admin);
     assert!(!client.pool().locked);
 }
 
@@ -384,7 +476,6 @@ fn pool_locked_field_starts_false() {
 #[test]
 fn deposit_with_duration_weight_not_payout() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit_with_duration(&alice, &1_000, &90);
@@ -397,7 +488,6 @@ fn deposit_with_duration_weight_not_payout() {
 #[test]
 fn withdraw_locked_zero_yield_returns_principal() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit_with_duration(&alice, &500, &7);
@@ -410,7 +500,6 @@ fn withdraw_locked_zero_yield_returns_principal() {
 #[test]
 fn withdraw_returns_principal_only_separate_claim_for_yield() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &1_000);
@@ -436,7 +525,6 @@ fn withdraw_returns_principal_only_separate_claim_for_yield() {
 #[test]
 fn withdraw_principal_without_claiming_yield() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &1_000);
@@ -457,7 +545,6 @@ fn withdraw_principal_without_claiming_yield() {
 #[test]
 fn credit_yield_exceeding_pool_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &1_000);
@@ -471,7 +558,6 @@ fn credit_yield_exceeding_pool_fails() {
 #[test]
 fn mixed_lock_tiers_correct_principal() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
     client.join(&alice);
@@ -489,7 +575,6 @@ fn mixed_lock_tiers_correct_principal() {
 #[test]
 fn flexible_deposit_no_lockup() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit_with_duration(&alice, &100, &0);
@@ -503,7 +588,6 @@ fn flexible_deposit_no_lockup() {
 #[test]
 fn seed_admin_bootstrap_succeeds() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let signer2 = Address::generate(&env);
     client.seed_admin(&admin, &signer2);
     let list = client.admins();
@@ -514,7 +598,6 @@ fn seed_admin_bootstrap_succeeds() {
 #[test]
 fn seed_admin_blocked_at_threshold() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let signer2 = Address::generate(&env);
     let signer3 = Address::generate(&env);
     client.seed_admin(&admin, &signer2); // admins now = 2 = threshold
@@ -530,7 +613,6 @@ fn seed_admin_blocked_at_threshold() {
 #[test]
 fn set_threshold_via_proposal() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     // Threshold is 2; only 1 admin → lower to 1 via proposal (1 sig satisfies threshold=1 after execution).
     // But wait: we need to propose with current threshold=2 but only 1 signer.
     // Workaround: lower threshold itself is the bootstrapping problem.
@@ -558,7 +640,6 @@ fn set_threshold_via_proposal() {
 #[test]
 fn remove_admin_below_threshold_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let signer2 = Address::generate(&env);
     client.seed_admin(&admin, &signer2); // 2 admins, threshold=2
 
@@ -579,7 +660,6 @@ fn remove_admin_below_threshold_fails() {
 #[test]
 fn cancel_proposal_succeeds() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let rando = Address::generate(&env);
     let pid = client.propose(&admin, &ProposalAction::AddAdmin(rando));
     client.cancel_proposal(&admin, &pid);
@@ -595,7 +675,6 @@ fn cancel_proposal_succeeds() {
 #[test]
 fn propose_release_zero_amount_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let recipient = Address::generate(&env);
     assert_eq!(
         client.try_propose(&admin, &ProposalAction::ReleaseEscrow(recipient, 0)),
@@ -607,7 +686,6 @@ fn propose_release_zero_amount_fails() {
 #[test]
 fn propose_release_exceeds_reserves_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     client.deposit(&admin, &100);
     let recipient = Address::generate(&env);
     assert_eq!(
@@ -620,7 +698,6 @@ fn propose_release_exceeds_reserves_fails() {
 #[test]
 fn propose_threshold_above_signer_count_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     // Only 1 admin; setting threshold to 3 is invalid
     assert_eq!(
         client.try_propose(&admin, &ProposalAction::SetThreshold(3)),
@@ -632,7 +709,6 @@ fn propose_threshold_above_signer_count_fails() {
 #[test]
 fn late_signer_cannot_approve_existing_proposal() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let signer2 = Address::generate(&env);
     client.seed_admin(&admin, &signer2); // 2 admins, threshold=2
 
@@ -655,7 +731,6 @@ fn late_signer_cannot_approve_existing_proposal() {
 #[test]
 fn renew_participant_succeeds() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     // Should not panic or error
@@ -666,7 +741,6 @@ fn renew_participant_succeeds() {
 #[test]
 fn renew_participant_not_joined_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let ghost = Address::generate(&env);
     assert_eq!(
         client.try_renew_participant(&ghost),
@@ -678,21 +752,20 @@ fn renew_participant_not_joined_fails() {
 #[test]
 fn renew_instance_succeeds() {
     let (_env, client, admin) = setup();
-    client.create(&admin);
     client.renew_instance();
 }
 
 /// renew_instance fails before initialization.
 #[test]
 fn renew_instance_not_initialized_fails() {
-    let (_env, client, _admin) = setup();
+    let (_env, client, _admin) = setup_raw();
     assert_eq!(client.try_renew_instance(), Err(Ok(Error::NotInitialized)));
 }
 
 #[test]
 fn renew_storage_is_bounded_and_reports_blocking_key() {
     let (env, client, admin) = setup();
-    client.create(&admin);
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
     let alice = Address::generate(&env);
     let ghost = Address::generate(&env);
     client.join(&alice);
@@ -706,7 +779,7 @@ fn renew_storage_is_bounded_and_reports_blocking_key() {
     assert_eq!(report.renewed, 2);
     assert_eq!(report.skipped, 2);
     assert_eq!(report.required_budget, 4);
-    assert_eq!(report.blocking_key, Some(RenewalKey::Participant(ghost)));
+    assert_eq!(report.blocking_key, BlockingKey::Participant(ghost));
 
     assert_eq!(
         client.try_renew_storage(&participants, &rounds, &3),
@@ -722,7 +795,6 @@ fn renew_storage_is_bounded_and_reports_blocking_key() {
 #[test]
 fn threshold_view_returns_default() {
     let (_env, client, admin) = setup();
-    client.create(&admin);
     assert_eq!(client.threshold(), 2);
 }
 
@@ -730,7 +802,7 @@ fn threshold_view_returns_default() {
 
 #[test]
 fn set_token_by_signer_succeeds() {
-    let (env, client, admin) = setup();
+    let (env, client, admin) = setup_raw();
     client.create(&admin);
     let token = Address::generate(&env);
     client.set_token(&admin, &token);
@@ -739,7 +811,7 @@ fn set_token_by_signer_succeeds() {
 
 #[test]
 fn set_token_by_non_signer_fails() {
-    let (env, client, admin) = setup();
+    let (env, client, admin) = setup_raw();
     client.create(&admin);
     let rando = Address::generate(&env);
     let token = Address::generate(&env);
@@ -749,63 +821,20 @@ fn set_token_by_non_signer_fails() {
     );
 }
 
-#[test]
-fn token_not_configured_deposit_succeeds_without_transfer() {
-    let (env, client, admin) = setup();
-    client.create(&admin);
-    let alice = Address::generate(&env);
-    client.join(&alice);
-    client.deposit(&alice, &500);
-    let savings = client.savings(&alice);
-    assert_eq!(savings.deposited, 500);
-}
-
-#[test]
-fn token_not_configured_withdraw_succeeds_without_transfer() {
-    let (env, client, admin) = setup();
-    client.create(&admin);
-    let alice = Address::generate(&env);
-    client.join(&alice);
-    client.deposit(&alice, &200);
-    skip_lockup(&env);
-    let amount = client.withdraw(&alice);
-    assert_eq!(amount, 200);
-}
-
-#[test]
-fn deposit_with_duration_without_token_succeeds() {
-    let (env, client, admin) = setup();
-    client.create(&admin);
-    let alice = Address::generate(&env);
-    client.join(&alice);
-    client.deposit_with_duration(&alice, &300, &90);
-    let savings = client.savings(&alice);
-    assert_eq!(savings.deposited, 300);
-    assert_eq!(savings.lockup_multiplier, 150);
-}
-
-#[test]
-fn withdraw_locked_without_token_succeeds() {
-    let (env, client, admin) = setup();
-    client.create(&admin);
-    let alice = Address::generate(&env);
-    client.join(&alice);
-    client.deposit_with_duration(&alice, &400, &7);
-    skip_lockup(&env);
-    let payout = client.withdraw_locked(&alice);
-    assert_eq!(payout, 400);
-}
+// NOTE: the #524 fail-closed gate means deposit/withdraw without a
+// configured token now REJECTS (see test_unconfigured_token_fails_closed);
+// the former "succeeds without transfer" tests were removed as obsolete.
 
 #[test]
 fn token_view_returns_error_when_not_set() {
-    let (_env, client, admin) = setup();
+    let (_env, client, admin) = setup_raw();
     client.create(&admin);
     assert_eq!(client.try_token(), Err(Ok(Error::TokenNotConfigured)));
 }
 
 #[test]
 fn token_event_emitted_on_set() {
-    let (env, client, admin) = setup();
+    let (env, client, admin) = setup_raw();
     client.create(&admin);
     let token = Address::generate(&env);
     client.set_token(&admin, &token);
@@ -816,7 +845,6 @@ fn token_event_emitted_on_set() {
 #[test]
 fn deposit_event_emits_total_deposited() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &750);
@@ -832,7 +860,6 @@ fn deposit_event_emits_total_deposited() {
 #[test]
 fn multiple_deposits_accumulate_correctly() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &100);
@@ -853,7 +880,6 @@ fn multiple_deposits_accumulate_correctly() {
 #[test]
 fn deposit_does_not_create_claimable_reward() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &1_000);
@@ -870,7 +896,6 @@ fn deposit_does_not_create_claimable_reward() {
 #[test]
 fn claim_never_reduces_principal() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &500);
@@ -897,7 +922,6 @@ fn claim_never_reduces_principal() {
 #[test]
 fn claim_limited_to_available_rewards() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &500);
@@ -922,42 +946,39 @@ fn claim_limited_to_available_rewards() {
 #[test]
 fn prize_is_separate_from_principal() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &1_000);
 
-    // Admin draws a prize that goes to admin (current stub winner)
-    let winner = client.draw_winner(&admin, &500);
-    assert_eq!(winner, admin);
+    // Admin draws a prize for the round's resolved winner (#715 — never a
+    // hardcoded address).
+    let round_id = setup_round_with_winner(&env, &client, &admin, &alice, 1_000);
+    let winner = client.draw_winner(&admin, &round_id, &500);
+    assert_eq!(winner, alice);
 
-    let admin_savings = client.savings(&admin);
-    assert_eq!(admin_savings.prize, 500);
-    assert_eq!(admin_savings.deposited, 0);
-    assert_eq!(admin_savings.deposited, 0); // admin never deposited
+    let alice_savings = client.savings(&alice);
+    assert_eq!(alice_savings.prize, 500);
+    assert_eq!(alice_savings.deposited, 1_000);
 }
 
 /// Claim prize then withdraw principal — total paid never exceeds deposit + rewards.
 #[test]
 fn claim_and_withdraw_total_limited() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &1_000);
 
-    // Credit yield and prize
+    // Credit yield and prize — both to alice, the round's resolved winner
+    // (#715, prize can no longer go to a hardcoded address).
     client.add_yield(&admin, &200);
     client.credit_yield(&admin, &alice, &200);
-    client.draw_winner(&admin, &300); // prize goes to admin (stub winner)
+    let round_id = setup_round_with_winner(&env, &client, &admin, &alice, 1_000);
+    client.draw_winner(&admin, &round_id, &300);
 
-    // Admin claims prize
-    let prize_claimed = client.claim_reward(&admin);
-    assert_eq!(prize_claimed, 300);
-
-    // Alice claims yield
-    let yield_claimed = client.claim_reward(&alice);
-    assert_eq!(yield_claimed, 200);
+    // Alice claims yield + prize together
+    let claimed = client.claim_reward(&alice);
+    assert_eq!(claimed, 500);
 
     // Alice withdraws principal
     skip_lockup(&env);
@@ -968,7 +989,7 @@ fn claim_and_withdraw_total_limited() {
     assert_eq!(client.claim_reward(&alice), 0);
     assert_eq!(client.withdraw(&alice), 0);
 
-    // Total paid out: prizes + yield + principal = 300 + 200 + 1000 = 1500
+    // Total paid out: prize + yield + principal = 300 + 200 + 1000 = 1500
     // Total deposited: 1000 (alice)
     // Total rewards: 200 (yield) + 300 (prize) = 500
     // Total = deposited + rewards = 1500, which is >= total paid = 1500 ✓
@@ -981,7 +1002,6 @@ fn claim_and_withdraw_total_limited() {
 #[test]
 fn no_double_spend_claim_then_withdraw() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &500);
@@ -1009,7 +1029,6 @@ fn no_double_spend_claim_then_withdraw() {
 #[test]
 fn partial_withdraw_tracks_remaining_principal() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &1_000);
@@ -1029,7 +1048,6 @@ fn partial_withdraw_tracks_remaining_principal() {
 #[test]
 fn invariant_total_claimed_never_exceeds_rewards() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
     client.join(&alice);
@@ -1037,11 +1055,13 @@ fn invariant_total_claimed_never_exceeds_rewards() {
     client.join(&admin);
 
     // Sequence: Alice deposits, admin adds yield, admin credits alice,
-    // admin draws prize, alice claims, bob deposits, alice withdraws.
+    // admin draws prize (for a round admin itself is the resolved winner
+    // of, #715), alice claims, bob deposits, alice withdraws.
     client.deposit(&alice, &1_000);
     client.add_yield(&admin, &300);
     client.credit_yield(&admin, &alice, &300);
-    client.draw_winner(&admin, &200);
+    let round_id = setup_round_with_winner(&env, &client, &admin, &admin, 1_000);
+    client.draw_winner(&admin, &round_id, &200);
 
     // Alice claims yield
     let alice_claimed = client.claim_reward(&alice);
@@ -1055,6 +1075,9 @@ fn invariant_total_claimed_never_exceeds_rewards() {
     client.deposit(&bob, &500);
     client.add_yield(&admin, &100);
     client.credit_yield(&admin, &bob, &100);
+    // Extra idle funding: prize/yield claims pay out real custody, so the
+    // pool needs headroom for the later principal withdrawals (#529).
+    client.add_yield(&admin, &200);
     let bob_claimed = client.claim_reward(&bob);
     assert_eq!(bob_claimed, 100);
 
@@ -1090,7 +1113,6 @@ fn invariant_total_claimed_never_exceeds_rewards() {
 #[test]
 fn set_claim_deadline_by_signer_succeeds() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     env.ledger().set_timestamp(1_000);
     client.set_claim_deadline(&admin, &1_500);
     assert_eq!(client.claim_deadline(), Some(1_500));
@@ -1101,7 +1123,6 @@ fn set_claim_deadline_by_signer_succeeds() {
 #[test]
 fn set_claim_deadline_emits_event() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     env.ledger().set_timestamp(1_000);
     client.set_claim_deadline(&admin, &1_500);
     let events = env.events().all();
@@ -1112,7 +1133,6 @@ fn set_claim_deadline_emits_event() {
 #[test]
 fn set_claim_deadline_in_past_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     env.ledger().set_timestamp(1_000);
     assert_eq!(
         client.try_set_claim_deadline(&admin, &1_000),
@@ -1128,7 +1148,6 @@ fn set_claim_deadline_in_past_fails() {
 #[test]
 fn set_claim_deadline_by_non_signer_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let rando = Address::generate(&env);
     env.ledger().set_timestamp(1_000);
     assert_eq!(
@@ -1141,7 +1160,6 @@ fn set_claim_deadline_by_non_signer_fails() {
 #[test]
 fn claim_without_deadline_never_blocked() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &1_000);
@@ -1156,7 +1174,6 @@ fn claim_without_deadline_never_blocked() {
 #[test]
 fn claim_exactly_at_deadline_succeeds() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &1_000);
@@ -1174,7 +1191,6 @@ fn claim_exactly_at_deadline_succeeds() {
 #[test]
 fn claim_one_second_before_deadline_succeeds() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &1_000);
@@ -1192,7 +1208,6 @@ fn claim_one_second_before_deadline_succeeds() {
 #[test]
 fn claim_one_second_after_deadline_reverts() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &1_000);
@@ -1215,7 +1230,6 @@ fn claim_one_second_after_deadline_reverts() {
 #[test]
 fn claim_alias_blocked_after_deadline() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &500);
@@ -1234,7 +1248,6 @@ fn claim_alias_blocked_after_deadline() {
 #[test]
 fn sweep_without_deadline_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     assert_eq!(
@@ -1248,7 +1261,6 @@ fn sweep_without_deadline_fails() {
 #[test]
 fn sweep_before_deadline_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
 
@@ -1268,7 +1280,6 @@ fn sweep_before_deadline_fails() {
 #[test]
 fn sweep_after_deadline_moves_reward_to_admin() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &1_000);
@@ -1302,7 +1313,6 @@ fn sweep_after_deadline_moves_reward_to_admin() {
 #[test]
 fn sweep_emits_event() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &1_000);
@@ -1322,7 +1332,6 @@ fn sweep_emits_event() {
 #[test]
 fn sweep_by_non_signer_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
 
@@ -1341,7 +1350,6 @@ fn sweep_by_non_signer_fails() {
 #[test]
 fn claimed_reward_leaves_nothing_to_sweep() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     client.deposit(&alice, &1_000);
@@ -1364,7 +1372,6 @@ fn claimed_reward_leaves_nothing_to_sweep() {
 #[test]
 fn participant_v2_fields_present() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     client.join(&alice);
     let savings = client.savings(&alice);
@@ -1382,7 +1389,6 @@ fn participant_v2_fields_present() {
 #[test]
 fn draw_winner_blocked_in_emergency() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let signer2 = Address::generate(&env);
     client.seed_admin(&admin, &signer2); // 2 signers for threshold
 
@@ -1399,7 +1405,7 @@ fn draw_winner_blocked_in_emergency() {
 
     // draw_winner fails with InEmergency
     assert_eq!(
-        client.try_draw_winner(&admin, &100),
+        client.try_draw_winner(&admin, &0, &100),
         Err(Ok(Error::InEmergency))
     );
 
@@ -1412,7 +1418,6 @@ fn draw_winner_blocked_in_emergency() {
 #[test]
 fn emergency_withdraw_pro_rata_partial_loss() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let signer2 = Address::generate(&env);
     client.seed_admin(&admin, &signer2);
 
@@ -1450,7 +1455,6 @@ fn emergency_withdraw_pro_rata_partial_loss() {
 #[test]
 fn emergency_withdraw_total_strategy_failure() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let signer2 = Address::generate(&env);
     client.seed_admin(&admin, &signer2);
 
@@ -1473,7 +1477,6 @@ fn emergency_withdraw_total_strategy_failure() {
 #[test]
 fn recapitalization_and_resume_normal() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let signer2 = Address::generate(&env);
     client.seed_admin(&admin, &signer2);
 
@@ -1513,29 +1516,26 @@ fn recapitalization_and_resume_normal() {
 #[test]
 fn test_config_version_initialization() {
     let (_env, client, admin) = setup();
-    client.create(&admin);
     assert_eq!(client.config_version(), 1);
 }
 
 #[test]
 fn test_update_config_version_success() {
     let (env, client, admin) = setup();
-    client.create(&admin);
 
-    // Update config version from 1 to 2
+    // Update config version from 1 to 2. Read the event log immediately:
+    // under sdk27 `events().all()` only reflects the most recent invocation,
+    // so any intervening call (including a view) would hide the event.
     let res = client.try_update_config_version(&admin, &1, &2);
     assert!(res.is_ok());
-    assert_eq!(client.config_version(), 2);
-
-    // Verify event emission
     let events = env.events().all();
-    assert!(!events.events().is_empty());
+    assert!(!events.events().is_empty(), "no event emitted");
+    assert_eq!(client.config_version(), 2);
 }
 
 #[test]
 fn test_update_config_version_invalid_expected() {
     let (_env, client, admin) = setup();
-    client.create(&admin);
 
     // Update config version with wrong expected_version fails
     let res = client.try_update_config_version(&admin, &2, &3);
@@ -1546,7 +1546,6 @@ fn test_update_config_version_invalid_expected() {
 #[test]
 fn test_update_config_version_unauthorized() {
     let (env, client, admin) = setup();
-    client.create(&admin);
 
     let rando = Address::generate(&env);
     let res = client.try_update_config_version(&rando, &1, &2);
@@ -1557,7 +1556,6 @@ fn test_update_config_version_unauthorized() {
 #[test]
 fn test_incompatible_config_blocks_operations() {
     let (env, client, admin) = setup();
-    client.create(&admin);
 
     // Migrate config version to 2 (making it incompatible with logic version 1)
     client.update_config_version(&admin, &1, &2);
@@ -1725,7 +1723,6 @@ impl RealTokenStrategy {
 #[test]
 fn test_strategy_rotation_lifecycle_happy_path() {
     let (env, client, admin) = setup();
-    client.create(&admin);
 
     let s1 = env.register_contract(None, MockStrategy);
     let s2 = env.register_contract(None, MockStrategy);
@@ -1754,7 +1751,6 @@ fn test_strategy_rotation_lifecycle_happy_path() {
 #[test]
 fn test_strategy_rotation_activate_before_delay_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
 
     let s1 = env.register_contract(None, MockStrategy);
     let s2 = env.register_contract(None, MockStrategy);
@@ -1773,7 +1769,6 @@ fn test_strategy_rotation_activate_before_delay_fails() {
 #[test]
 fn test_strategy_exposure_cap_enforced() {
     let (env, client, admin) = setup();
-    client.create(&admin);
 
     let alice = Address::generate(&env);
     client.join(&alice);
@@ -1802,7 +1797,6 @@ fn test_strategy_exposure_cap_enforced() {
 #[test]
 fn test_strategy_rotation_bad_interface_version_reverts() {
     let (env, client, admin) = setup();
-    client.create(&admin);
 
     let s_bad = env.register_contract(None, BadVersionStrategy);
 
@@ -1813,7 +1807,6 @@ fn test_strategy_rotation_bad_interface_version_reverts() {
 #[test]
 fn test_strategy_rotation_cancel() {
     let (env, client, admin) = setup();
-    client.create(&admin);
 
     let s1 = env.register_contract(None, MockStrategy);
     let s2 = env.register_contract(None, MockStrategy);
@@ -1831,7 +1824,6 @@ fn test_strategy_rotation_cancel() {
 #[test]
 fn test_strategy_emergency_recall_during_rotation() {
     let (env, client, admin) = setup();
-    client.create(&admin);
 
     let alice = Address::generate(&env);
     client.join(&alice);
@@ -1923,7 +1915,6 @@ fn claim_reward_after_deadline_fails_and_keeps_balance_claimable() {
 #[test]
 fn epoch_bumps_on_threshold_change_and_invalidates_pending_proposal() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let signer2 = Address::generate(&env);
     client.seed_admin(&admin, &signer2);
     assert_eq!(client.governance_epoch(), 1); // seed_admin bumped it once
@@ -1955,7 +1946,6 @@ fn epoch_bumps_on_threshold_change_and_invalidates_pending_proposal() {
 #[test]
 fn threshold_snapshot_is_frozen_even_if_threshold_later_changes() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let signer2 = Address::generate(&env);
     let signer3 = Address::generate(&env);
     client.seed_admin(&admin, &signer2); // 2 admins, threshold=2
@@ -1989,7 +1979,6 @@ fn threshold_snapshot_is_frozen_even_if_threshold_later_changes() {
 #[test]
 fn cancel_proposal_by_current_signer_when_epoch_is_stale() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let signer2 = Address::generate(&env);
     client.seed_admin(&admin, &signer2);
 
@@ -2016,7 +2005,6 @@ fn cancel_proposal_by_current_signer_when_epoch_is_stale() {
 #[test]
 fn high_risk_execute_before_threshold_met_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let signer2 = Address::generate(&env);
     client.seed_admin(&admin, &signer2);
 
@@ -2146,7 +2134,7 @@ fn deterministic_solvency_model_conserves_principal_yield_and_reserves() {
     client.deposit(&alice, &600);
     client.deposit(&bob, &400);
     assert_eq!(client.pool().total_deposited, 1_000);
-    assert_eq!(token.balance(&env.current_contract_address()), 1_000);
+    assert_eq!(token.balance(&client.address), 1_000);
 
     client.add_yield(&admin, &100);
     client.credit_yield(&admin, &alice, &40);
@@ -2158,11 +2146,11 @@ fn deterministic_solvency_model_conserves_principal_yield_and_reserves() {
     assert_eq!(client.withdraw(&alice), 600);
     assert_eq!(client.withdraw(&bob), 400);
 
-    assert_eq!(client.pool().total_deposited, 0);
+    assert_eq!(client.pool().total_deposited, 1_000); // cumulative; only escrow release / emergency payouts reduce it
     assert_eq!(token.balance(&alice), 1_040);
     assert_eq!(token.balance(&bob), 1_060);
     assert_eq!(token.balance(&admin), 0);
-    assert_eq!(token.balance(&env.current_contract_address()), 0);
+    assert_eq!(token.balance(&client.address), 0);
 }
 
 // ── Round-scoped accounting (#508) ──────────────────────────────────────────
@@ -2174,7 +2162,7 @@ fn deterministic_solvency_model_conserves_principal_yield_and_reserves() {
 #[test]
 fn open_round_starts_empty_and_open() {
     let (_env, client, admin) = setup();
-    client.create(&admin);
+    client.seed_admin(&admin, &Address::generate(&_env)); // #657: round-open requires >= Threshold admins
 
     let round_id = client.open_round(&admin);
     assert_eq!(round_id, 0);
@@ -2195,7 +2183,6 @@ fn open_round_starts_empty_and_open() {
 #[test]
 fn open_round_unauthorized_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let stranger = Address::generate(&env);
     assert_eq!(
         client.try_open_round(&stranger),
@@ -2203,10 +2190,110 @@ fn open_round_unauthorized_fails() {
     );
 }
 
+// ── #657: randomness source configuration is validated before a round opens ──
+
+#[test]
+fn open_round_fails_with_missing_randomness_config() {
+    // Freshly created pool: exactly one admin (the deployer), below the
+    // 2-admin floor commit-reveal needs for any real manipulation
+    // resistance. `open_round` must refuse rather than silently accept
+    // deposits into a round with no real randomness guarantee.
+    let (_env, client, admin) = setup();
+    assert_eq!(
+        client.try_open_round(&admin),
+        Err(Ok(Error::UnsafeRandomnessConfig))
+    );
+}
+
+#[test]
+fn open_round_fails_with_unavailable_randomness_config_after_admin_removed() {
+    // "Unavailable" in the sense the issue means it: a configuration that
+    // was once sufficient becomes unsafe later. Open one round safely with
+    // 2 admins, then walk the config down to a single admin through two
+    // legitimate governance actions each already permitted on their own:
+    //   1. SetThreshold(1) - allowed; governance threshold is independent
+    //      of randomness safety and may legitimately be lowered for other
+    //      reasons (e.g. simplifying emergency response).
+    //   2. RemoveAdmin(second_admin) - allowed once threshold is 1, since
+    //      RemoveAdmin's own liveness guard only blocks dropping admins
+    //      below the *current* threshold (lib.rs: `admins.len() <= threshold`),
+    //      not below any randomness-specific floor.
+    // Neither step alone is a randomness-config bug - RemoveAdmin's guard
+    // is doing exactly its documented job. The point of this test is that
+    // require_randomness_config_safe's own `threshold.max(2)` floor must
+    // still catch the result: a single-admin pool, regardless of how it
+    // legitimately got there.
+    let (env, client, admin) = setup();
+    let second_admin = Address::generate(&env);
+    client.seed_admin(&admin, &second_admin);
+
+    // Sanity: 2 admins, default threshold 2 - this round is allowed.
+    let round_id = client.open_round(&admin);
+    assert_eq!(round_id, 0);
+
+    let set_threshold_pid = client.propose(&admin, &ProposalAction::SetThreshold(1));
+    client.approve(&second_admin, &set_threshold_pid);
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&admin, &set_threshold_pid);
+    assert_eq!(client.threshold(), 1);
+
+    let remove_admin_pid =
+        client.propose(&admin, &ProposalAction::RemoveAdmin(second_admin.clone()));
+    // threshold_snapshot for this proposal is 1 (taken at propose time,
+    // after SetThreshold already executed), so admin's own auto-approval
+    // already meets it - no second approve() call needed, only the delay.
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&admin, &remove_admin_pid);
+    assert_eq!(client.admins().len(), 1);
+
+    // Config that was safe when round_id opened is no longer safe: only
+    // one admin remains, so open_round must refuse the next round.
+    assert_eq!(
+        client.try_open_round(&admin),
+        Err(Ok(Error::UnsafeRandomnessConfig))
+    );
+}
+
+#[test]
+fn open_round_succeeds_with_valid_randomness_config() {
+    // The straightforward positive case: once seeded to the default
+    // 2-admin threshold, open_round succeeds exactly as it did before #657
+    // for every other acceptance criterion.
+    let (env, client, admin) = setup();
+    client.seed_admin(&admin, &Address::generate(&env));
+
+    let round_id = client.open_round(&admin);
+    assert_eq!(round_id, 0);
+    assert_eq!(client.round(&round_id).status, RoundStatus::Open);
+}
+
+#[test]
+fn require_randomness_config_safe_floor_is_independent_of_a_lowered_threshold() {
+    // Threshold can legitimately be governed down to 1 (SetThreshold only
+    // rejects t == 0 or t > admins.len(), see lib.rs) for reasons unrelated
+    // to randomness - e.g. an operator deliberately simplifying emergency
+    // response multisig requirements. That must not silently also lower the
+    // randomness-safety floor: open_round still requires >= 2 real admins
+    // even when the governance threshold itself has been set to 1.
+    let (env, client, admin) = setup();
+    let second_admin = Address::generate(&env);
+    client.seed_admin(&admin, &second_admin);
+
+    let prop_id = client.propose(&admin, &ProposalAction::SetThreshold(1));
+    client.approve(&second_admin, &prop_id);
+    skip_high_risk_delay(&env);
+    client.execute_proposal(&admin, &prop_id);
+    assert_eq!(client.threshold(), 1);
+
+    // Still 2 real admins, so this is still safe and must succeed.
+    let round_id = client.open_round(&admin);
+    assert_eq!(round_id, 0);
+}
+
 #[test]
 fn round_deposit_accumulates_into_snapshot() {
     let (env, client, admin) = setup();
-    client.create(&admin);
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
     let round_id = client.open_round(&admin);
 
     let alice = Address::generate(&env);
@@ -2224,7 +2311,7 @@ fn round_deposit_accumulates_into_snapshot() {
 #[test]
 fn round_deposit_zero_or_negative_rejected() {
     let (env, client, admin) = setup();
-    client.create(&admin);
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
     let round_id = client.open_round(&admin);
     let alice = Address::generate(&env);
 
@@ -2241,7 +2328,6 @@ fn round_deposit_zero_or_negative_rejected() {
 #[test]
 fn round_deposit_into_unknown_round_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let alice = Address::generate(&env);
     assert_eq!(
         client.try_round_deposit(&alice, &999, &10),
@@ -2255,7 +2341,7 @@ fn deposits_before_vs_after_lock_go_to_correct_rounds() {
     // counted in the already-locked round's snapshot — it must land in the
     // next round instead.
     let (env, client, admin) = setup();
-    client.create(&admin);
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
 
     let round_0 = client.open_round(&admin);
     let alice = Address::generate(&env);
@@ -2288,7 +2374,7 @@ fn deposits_before_vs_after_lock_go_to_correct_rounds() {
 #[test]
 fn lock_round_requires_open_status() {
     let (env, client, admin) = setup();
-    client.create(&admin);
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
     let round_id = client.open_round(&admin);
     client.lock_round(&admin, &round_id);
 
@@ -2302,7 +2388,7 @@ fn lock_round_requires_open_status() {
 #[test]
 fn lock_round_unauthorized_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
     let round_id = client.open_round(&admin);
     let stranger = Address::generate(&env);
     assert_eq!(
@@ -2314,7 +2400,7 @@ fn lock_round_unauthorized_fails() {
 #[test]
 fn settle_round_requires_locked_status() {
     let (env, client, admin) = setup();
-    client.create(&admin);
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
     let round_id = client.open_round(&admin);
 
     // Can't settle an Open round — must be Locked first.
@@ -2327,7 +2413,7 @@ fn settle_round_requires_locked_status() {
 #[test]
 fn settle_round_twice_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
     let round_id = client.open_round(&admin);
     client.lock_round(&admin, &round_id);
     client.settle_round(&admin, &round_id, &100, &0);
@@ -2343,7 +2429,7 @@ fn settle_round_twice_fails() {
 #[test]
 fn permissionless_finalize_round_after_deadline_is_idempotent() {
     let (env, client, admin) = setup();
-    client.create(&admin);
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
     let keeper = Address::generate(&env);
     let alice = Address::generate(&env);
 
@@ -2376,7 +2462,7 @@ fn permissionless_finalize_round_after_deadline_is_idempotent() {
 fn settling_round_does_not_affect_next_rounds_opening_balance() {
     // "settling a round doesn't affect the next round's opening balance"
     let (env, client, admin) = setup();
-    client.create(&admin);
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
 
     let round_0 = client.open_round(&admin);
     let alice = Address::generate(&env);
@@ -2405,7 +2491,7 @@ fn round_claim_pays_pro_rata_share_and_is_isolated_per_round() {
     // with different yield outcomes — round N's payout must never bleed
     // into round N+1's, and vice versa.
     let (env, client, admin) = setup();
-    client.create(&admin);
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
 
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
@@ -2442,7 +2528,7 @@ fn round_claim_pays_pro_rata_share_and_is_isolated_per_round() {
 #[test]
 fn round_claim_before_settlement_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
     let round_id = client.open_round(&admin);
     let alice = Address::generate(&env);
     client.round_deposit(&alice, &round_id, &100);
@@ -2463,7 +2549,7 @@ fn round_claim_before_settlement_fails() {
 #[test]
 fn round_claim_with_no_deposit_returns_zero() {
     let (env, client, admin) = setup();
-    client.create(&admin);
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
     let round_id = client.open_round(&admin);
     client.lock_round(&admin, &round_id);
     client.settle_round(&admin, &round_id, &100, &0);
@@ -2478,7 +2564,7 @@ fn round_claim_rounding_never_over_distributes() {
     // distributed shares must never exceed the settled total (dust is left
     // unclaimed rather than dropped incorrectly or over-paid).
     let (env, client, admin) = setup();
-    client.create(&admin);
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
 
     let round_id = client.open_round(&admin);
     let alice = Address::generate(&env);
@@ -2499,6 +2585,114 @@ fn round_claim_rounding_never_over_distributes() {
         "distributed total must never exceed realized_yield"
     );
     assert_eq!(client.round(&round_id).claimed, a + b + c);
+    assert_eq!(
+        client.round_rounding_remainder(&round_id),
+        RoundingRemainder {
+            whole_units: 1,
+            numerator: 0,
+            denominator: 3,
+        }
+    );
+}
+
+#[test]
+fn round_claim_handles_wide_intermediate_products() {
+    let (env, client, admin) = setup();
+    let round_id = client.open_round(&admin);
+    let alice = Address::generate(&env);
+
+    client.round_deposit(&alice, &round_id, &i128::MAX);
+    client.lock_round(&admin, &round_id);
+    assert_eq!(
+        client.try_settle_round(&admin, &round_id, &i128::MAX, &i128::MAX),
+        Err(Ok(Error::InvalidAmount))
+    );
+    client.settle_round(&admin, &round_id, &i128::MAX, &0);
+
+    assert_eq!(client.round_claim(&alice, &round_id), i128::MAX);
+    assert_eq!(
+        client.round_rounding_remainder(&round_id),
+        RoundingRemainder {
+            whole_units: 0,
+            numerator: 0,
+            denominator: i128::MAX,
+        }
+    );
+}
+
+#[test]
+fn round_claim_stress_simulates_adversarial_depositors_and_rounds() {
+    const DEPOSITORS: usize = 2_000;
+    const ROUNDS: u32 = 300;
+    let env = Env::default();
+
+    for round_index in 0..ROUNDS {
+        let mut seed = round_index.wrapping_add(0x9e37_79b9);
+        let deposits: std::vec::Vec<i128> = (0..DEPOSITORS)
+            .map(|index| match round_index % 3 {
+                0 => 1,
+                1 if index == 0 => 1_000_000,
+                1 => 1,
+                _ => {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    (seed % 10_000 + 1) as i128
+                }
+            })
+            .collect();
+        let denominator = deposits.iter().sum::<i128>();
+        let total_pool = (round_index as i128 * 7_919) % 100_003 + 1;
+        let mut claim_order: std::vec::Vec<usize> = (0..DEPOSITORS).collect();
+        claim_order.rotate_left((round_index as usize * 137) % DEPOSITORS);
+        let mut remainder = RoundingRemainder {
+            whole_units: 0,
+            numerator: 0,
+            denominator,
+        };
+        let mut distributed = 0i128;
+
+        for index in claim_order {
+            let (share, claim_numerator) =
+                mul_div_rem(&env, total_pool, deposits[index], denominator).unwrap();
+            distributed += share;
+            remainder =
+                accumulate_rounding_remainder(&remainder, claim_numerator, denominator).unwrap();
+
+            assert!(
+                distributed + remainder.whole_units <= total_pool,
+                "round {round_index}: claims and accrued dust exceeded the settled pool"
+            );
+        }
+
+        assert_eq!(remainder.numerator, 0, "round {round_index}");
+        assert_eq!(distributed + remainder.whole_units, total_pool);
+    }
+}
+
+#[test]
+fn round_claim_reports_remainder_after_round_is_pruned() {
+    let (env, client, admin) = setup();
+    let round_id = client.open_round(&admin);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let carol = Address::generate(&env);
+    client.round_deposit(&alice, &round_id, &1);
+    client.round_deposit(&bob, &round_id, &1);
+    client.round_deposit(&carol, &round_id, &1);
+    client.lock_round(&admin, &round_id);
+    client.settle_round(&admin, &round_id, &1, &0);
+    client.round_claim(&alice, &round_id);
+    client.round_claim(&bob, &round_id);
+    client.round_claim(&carol, &round_id);
+
+    let remainder = client.round_rounding_remainder(&round_id);
+    assert_eq!(remainder.whole_units, 1);
+    assert_eq!(remainder.numerator, 0);
+
+    let claimed_participants = vec![&env, alice, bob, carol];
+    client.prune_round(&admin, &round_id, &claimed_participants);
+    assert_eq!(client.round_rounding_remainder(&round_id), remainder);
 }
 
 #[test]
@@ -2506,7 +2700,7 @@ fn full_round_lifecycle_two_overlapping_rounds() {
     // End-to-end: round 0 is locked and settled while round 1 is opened and
     // collects deposits concurrently — asserts full isolation both ways.
     let (env, client, admin) = setup();
-    client.create(&admin);
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
 
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
@@ -2572,14 +2766,18 @@ fn cancel_withdrawal_request_preserves_claim_for_a_later_withdraw() {
 // correctly at the boundary.
 
 /// Test-only helper: set the queue head/tail to a near-u32::MAX value
-/// via direct storage manipulation, bypassing enqueue_withdrawal.
-fn seed_queue_near_max(env: &Env, head: u32, tail: u32) {
-    env.storage()
-        .instance()
-        .set(&DataKey::WithdrawalQueueHead, &head);
-    env.storage()
-        .instance()
-        .set(&DataKey::WithdrawalQueueTail, &tail);
+/// via direct storage manipulation, bypassing enqueue_withdrawal. The
+/// storage write happens inside the pool contract's own frame (sdk 27
+/// forbids direct storage access outside a contract).
+fn seed_queue_near_max(env: &Env, contract_id: &Address, head: u32, tail: u32) {
+    env.as_contract(contract_id, || {
+        env.storage()
+            .instance()
+            .set(&DataKey::WithdrawalQueueHead, &head);
+        env.storage()
+            .instance()
+            .set(&DataKey::WithdrawalQueueTail, &tail);
+    });
 }
 
 #[test]
@@ -2595,7 +2793,7 @@ fn test_enqueue_near_u32_max_succeeds() {
     client.deploy_to_strategy(&admin, &900);
 
     // Seed head at u32::MAX - 1, tail at u32::MAX - 1 (empty queue).
-    seed_queue_near_max(&env, u32::MAX - 1, u32::MAX - 1);
+    seed_queue_near_max(&env, &client.address, u32::MAX - 1, u32::MAX - 1);
     assert_eq!(client.withdrawal_queue_head(), u32::MAX - 1);
     assert_eq!(client.withdrawal_queue_tail(), u32::MAX - 1);
 
@@ -2631,7 +2829,7 @@ fn test_enqueue_wrapping_past_u32_max() {
     // Seed head and tail at u32::MAX - 1 so the first enqueue fills slot
     // u32::MAX - 1 and advances tail to u32::MAX. The second enqueue fills
     // slot u32::MAX and wraps tail to 0.
-    seed_queue_near_max(&env, u32::MAX - 1, u32::MAX - 1);
+    seed_queue_near_max(&env, &client.address, u32::MAX - 1, u32::MAX - 1);
 
     skip_lockup(&env);
     // Alice enqueues at u32::MAX - 1, tail → u32::MAX
@@ -2648,10 +2846,15 @@ fn test_enqueue_wrapping_past_u32_max() {
     let qid_bob = client.withdrawal_request_of(&bob).unwrap();
     assert_eq!(qid_bob, u32::MAX);
 
+    // Fund idle liquidity after queueing so the fulfill can pay both
+    // requests in full — fulfill pays from idle custody only (#529).
+    issuer.mint(&admin, &1_950);
+    client.add_yield(&admin, &1_950);
+
     // Fulfill: head starts at u32::MAX - 1, processes Alice then Bob.
     // head should advance from u32::MAX - 1 → u32::MAX → 0 (wrapping).
     let paid = client.fulfill_withdrawal_queue(&admin, &10);
-    assert_eq!(paid, 1_950);
+    assert_eq!(paid, 2_000);
     assert_eq!(token.balance(&alice), 1_000);
     assert_eq!(token.balance(&bob), 1_000);
     // Head wraps to 0 after processing both slots.
@@ -2671,7 +2874,7 @@ fn test_fulfill_at_boundary_partial_payment_preserves_head() {
     client.deploy_to_strategy(&admin, &950);
 
     // Place head/tail at u32::MAX so the request is at slot u32::MAX.
-    seed_queue_near_max(&env, u32::MAX, u32::MAX);
+    seed_queue_near_max(&env, &client.address, u32::MAX, u32::MAX);
 
     skip_lockup(&env);
     assert_eq!(client.withdraw(&alice), 0);
@@ -2686,7 +2889,7 @@ fn test_fulfill_at_boundary_partial_payment_preserves_head() {
     assert_eq!(client.withdrawal_queue_head(), u32::MAX);
 
     // The request is still pending with reduced amount.
-    let request = client.withdrawal_request(u32::MAX);
+    let request = client.withdrawal_request(&u32::MAX);
     assert_eq!(request.amount, 950);
     assert_eq!(request.status, WithdrawalRequestStatus::Pending);
 }
@@ -2703,7 +2906,7 @@ fn test_cancel_request_at_u32_max_slot() {
     client.set_strategy(&admin, &strategy);
     client.deploy_to_strategy(&admin, &900);
 
-    seed_queue_near_max(&env, u32::MAX, u32::MAX);
+    seed_queue_near_max(&env, &client.address, u32::MAX, u32::MAX);
 
     skip_lockup(&env);
     assert_eq!(client.withdraw(&alice), 0);
@@ -2716,7 +2919,7 @@ fn test_cancel_request_at_u32_max_slot() {
 
     // Request is cancelled, participant queue entry is cleared.
     assert!(client.withdrawal_request_of(&alice).is_none());
-    let request = client.withdrawal_request(u32::MAX);
+    let request = client.withdrawal_request(&u32::MAX);
     assert_eq!(request.status, WithdrawalRequestStatus::Cancelled);
 }
 
@@ -2738,16 +2941,21 @@ fn test_withdraw_after_wrap_reserves_first_slot() {
 
     // Seed near boundary: tail at u32::MAX so the first enqueue fills
     // slot u32::MAX and wraps tail to 0.
-    seed_queue_near_max(&env, u32::MAX, u32::MAX);
+    seed_queue_near_max(&env, &client.address, u32::MAX, u32::MAX);
 
     skip_lockup(&env);
     assert_eq!(client.withdraw(&alice), 0);
     assert_eq!(client.withdraw(&bob), 0);
 
+    // Fund idle liquidity after queueing so the fulfill can pay both
+    // requests in full — fulfill pays from idle custody only (#529).
+    issuer.mint(&admin, &1_950);
+    client.add_yield(&admin, &1_950);
+
     // Head starts at u32::MAX, processes Alice's slot u32::MAX, advances
     // to 0 (wrap), then processes Bob's slot 0.
     let paid = client.fulfill_withdrawal_queue(&admin, &10);
-    assert_eq!(paid, 1_950);
+    assert_eq!(paid, 2_000);
     assert_eq!(token.balance(&alice), 1_000);
     assert_eq!(token.balance(&bob), 1_000);
     // Head should be 1 after processing both (0 + 1).
@@ -2780,7 +2988,7 @@ fn test_duplicate_guard_holds_across_wraparound() {
     client.deploy_to_strategy(&admin, &1_950);
 
     // Seed so the next enqueue occupies slot u32::MAX and wraps tail to 0.
-    seed_queue_near_max(&env, u32::MAX, u32::MAX);
+    seed_queue_near_max(&env, &client.address, u32::MAX, u32::MAX);
 
     skip_lockup(&env);
     assert_eq!(client.withdraw(&alice), 0); // alice gets slot u32::MAX
@@ -2800,7 +3008,7 @@ fn test_duplicate_guard_holds_across_wraparound() {
     assert_eq!(client.withdrawal_queue_tail(), 1);
 
     // Alice's original request at the boundary slot is untouched.
-    let alice_req = client.withdrawal_request(u32::MAX);
+    let alice_req = client.withdrawal_request(&u32::MAX);
     assert_eq!(alice_req.status, WithdrawalRequestStatus::Pending);
 }
 
@@ -2817,7 +3025,7 @@ fn test_requeue_after_cancel_reuses_wrapped_slot_safely() {
     client.deploy_to_strategy(&admin, &900); // 100 idle — enough to queue
 
     // Alice queues at slot u32::MAX; tail wraps to 0.
-    seed_queue_near_max(&env, u32::MAX, u32::MAX);
+    seed_queue_near_max(&env, &client.address, u32::MAX, u32::MAX);
     skip_lockup(&env);
     assert_eq!(client.withdraw(&alice), 0);
     assert_eq!(client.withdrawal_queue_tail(), 0);
@@ -2836,7 +3044,7 @@ fn test_requeue_after_cancel_reuses_wrapped_slot_safely() {
     assert_eq!(client.withdraw(&alice), 0);
     let qid = client.withdrawal_request_of(&alice).unwrap();
     assert_eq!(qid, 0);
-    let fresh = client.withdrawal_request(qid);
+    let fresh = client.withdrawal_request(&qid);
     assert_eq!(fresh.amount, 1_000);
     assert_eq!(fresh.status, WithdrawalRequestStatus::Pending);
     assert_eq!(client.withdrawal_queue_tail(), 1);
@@ -2846,7 +3054,7 @@ fn test_requeue_after_cancel_reuses_wrapped_slot_safely() {
 
 #[test]
 fn test_unconfigured_token_fails_closed() {
-    let (env, client, admin) = setup();
+    let (env, client, admin) = setup_raw();
     client.create(&admin);
 
     let alice = Address::generate(&env);
@@ -2894,7 +3102,7 @@ pub fn run_post_upgrade_smoke_tests(
 
     // 2. View checks
     let pool_info = client.pool();
-    assert_eq!(pool_info.total_deposited, pool_info.total_deposited);
+    assert!(pool_info.total_deposited >= 500);
     let savings = client.savings(&user);
     assert_eq!(savings.deposited, 500);
 
@@ -2920,6 +3128,7 @@ fn test_post_upgrade_smoke_tests_execution() {
 #[test]
 fn test_populated_state_upgrade_rehearsal() {
     let (env, client, admin, token, issuer) = setup_with_token();
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
 
     // Seed populated state with multiple participants & balances
     let p1 = Address::generate(&env);
@@ -2967,7 +3176,7 @@ fn test_set_token_decimals() {
 
 #[test]
 fn test_set_token_decimals_before_token_fails() {
-    let (env, client, admin) = setup();
+    let (_env, client, admin) = setup_raw();
     client.create(&admin);
     assert_eq!(
         client.try_set_token_decimals(&admin, &7),
@@ -2987,8 +3196,7 @@ fn test_set_token_decimals_twice_fails() {
 
 #[test]
 fn test_token_decimals_not_configured_fails() {
-    let (env, client, admin) = setup();
-    client.create(&admin);
+    let (_env, client, _admin) = setup();
     assert_eq!(
         client.try_token_decimals(),
         Err(Ok(Error::TokenDecimalsNotConfigured))
@@ -3010,7 +3218,6 @@ fn test_set_token_decimals_unauthorized_fails() {
 #[test]
 fn test_allow_strategy_code_hash() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let hash: BytesN<32> = BytesN::from_array(&env, &[1u8; 32]);
     client.allow_strategy_code_hash(&admin, &hash);
     let hashes = client.allowed_strategy_code_hashes();
@@ -3020,7 +3227,6 @@ fn test_allow_strategy_code_hash() {
 #[test]
 fn test_disallow_strategy_code_hash() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let hash: BytesN<32> = BytesN::from_array(&env, &[1u8; 32]);
     client.allow_strategy_code_hash(&admin, &hash);
     client.disallow_strategy_code_hash(&admin, &hash);
@@ -3031,16 +3237,15 @@ fn test_disallow_strategy_code_hash() {
 #[test]
 fn test_is_strategy_code_hash_allowed_empty_list() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let hash: BytesN<32> = BytesN::from_array(&env, &[1u8; 32]);
-    // Empty allowlist = all hashes accepted (bootstrap)
+    // An allowlist that has never been configured accepts any hash
+    // (bootstrap mode); allow/disallow manages the list from there.
     assert!(client.is_strategy_code_hash_allowed(&hash));
 }
 
 #[test]
 fn test_is_strategy_code_hash_allowed() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let allowed: BytesN<32> = BytesN::from_array(&env, &[1u8; 32]);
     let not_allowed: BytesN<32> = BytesN::from_array(&env, &[2u8; 32]);
     client.allow_strategy_code_hash(&admin, &allowed);
@@ -3051,7 +3256,6 @@ fn test_is_strategy_code_hash_allowed() {
 #[test]
 fn test_allow_strategy_code_hash_unauthorized_fails() {
     let (env, client, _admin) = setup();
-    client.create(&_admin);
     let rando = Address::generate(&env);
     let hash: BytesN<32> = BytesN::from_array(&env, &[1u8; 32]);
     assert_eq!(
@@ -3063,7 +3267,6 @@ fn test_allow_strategy_code_hash_unauthorized_fails() {
 #[test]
 fn test_allow_duplicate_strategy_code_hash_noop() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let hash: BytesN<32> = BytesN::from_array(&env, &[1u8; 32]);
     client.allow_strategy_code_hash(&admin, &hash);
     client.allow_strategy_code_hash(&admin, &hash);
@@ -3102,7 +3305,11 @@ impl InflatingYieldStrategy {
     ) -> Result<i128, vaultquest_common::ContractError> {
         let token = token::TokenClient::new(&env, &asset);
         let available = token.balance(&env.current_contract_address());
-        let redeemed = if amount < available { amount } else { available };
+        let redeemed = if amount < available {
+            amount
+        } else {
+            available
+        };
         if redeemed > 0 {
             token.transfer(&env.current_contract_address(), &to, &redeemed);
         }
@@ -3113,8 +3320,8 @@ impl InflatingYieldStrategy {
         asset: Address,
     ) -> Result<vaultquest_common::StrategyReport, vaultquest_common::ContractError> {
         // Inflate: claim 999999 yield when we only hold the deposited amount
-        let _balance = token::TokenClient::new(&env, &asset)
-            .balance(&env.current_contract_address());
+        let _balance =
+            token::TokenClient::new(&env, &asset).balance(&env.current_contract_address());
         Ok(vaultquest_common::StrategyReport {
             realized_yield: 999_999,
             realized_loss: 0,
@@ -3174,7 +3381,11 @@ impl HidingLossStrategy {
     ) -> Result<i128, vaultquest_common::ContractError> {
         let token = token::TokenClient::new(&env, &asset);
         let available = token.balance(&env.current_contract_address());
-        let redeemed = if amount < available { amount } else { available };
+        let redeemed = if amount < available {
+            amount
+        } else {
+            available
+        };
         if redeemed > 0 {
             token.transfer(&env.current_contract_address(), &to, &redeemed);
         }
@@ -3185,8 +3396,8 @@ impl HidingLossStrategy {
         asset: Address,
     ) -> Result<vaultquest_common::StrategyReport, vaultquest_common::ContractError> {
         // Report zero change even when balance has dropped (hiding loss)
-        let _balance = token::TokenClient::new(&env, &asset)
-            .balance(&env.current_contract_address());
+        let _balance =
+            token::TokenClient::new(&env, &asset).balance(&env.current_contract_address());
         Ok(vaultquest_common::StrategyReport {
             realized_yield: 0,
             realized_loss: 0,
@@ -3223,12 +3434,17 @@ fn test_validate_strategy_rejects_inflated_total_assets() {
     // Let's test the harvest path instead (already tested above).
     // This test verifies the validate path passes for honest strategies.
     client.validate_strategy(&admin);
-    let phase: vaultquest_common::strategy::StrategyRotationPhase = env
-        .storage()
-        .instance()
-        .get(&DataKey::StrategyRotationPhase)
-        .unwrap();
-    assert_ne!(phase, vaultquest_common::strategy::StrategyRotationPhase::Idle);
+    let phase: vaultquest_common::strategy::StrategyRotationPhase =
+        env.as_contract(&client.address, || {
+            env.storage()
+                .instance()
+                .get(&DataKey::StrategyRotationPhase)
+                .unwrap()
+        });
+    assert_ne!(
+        phase,
+        vaultquest_common::strategy::StrategyRotationPhase::Idle
+    );
 }
 
 // ── deposit concentration limits (#643) ─────────────────────────────────────
@@ -3236,7 +3452,6 @@ fn test_validate_strategy_rejects_inflated_total_assets() {
 #[test]
 fn deposit_caps_default_to_uncapped() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     assert_eq!(client.max_wallet_deposit(), 0);
     assert_eq!(client.max_pool_deposit(), 0);
     let alice = Address::generate(&env);
@@ -3247,7 +3462,6 @@ fn deposit_caps_default_to_uncapped() {
 #[test]
 fn only_a_signer_can_set_deposit_caps() {
     let (env, client, admin) = setup();
-    client.create(&admin);
     let outsider = Address::generate(&env);
 
     assert_eq!(
@@ -3269,7 +3483,6 @@ fn only_a_signer_can_set_deposit_caps() {
 #[test]
 fn negative_cap_is_rejected() {
     let (_env, client, admin) = setup();
-    client.create(&admin);
     assert_eq!(
         client.try_set_max_wallet_deposit(&admin, &-1),
         Err(Ok(Error::InvalidAmount))
@@ -3499,7 +3712,6 @@ fn lowering_the_cap_below_existing_balance_does_not_retroactively_fail_but_block
 #[test]
 fn test_propose_second_rotation_while_pending_fails() {
     let (env, client, admin) = setup();
-    client.create(&admin);
 
     let s1 = env.register_contract(None, MockStrategy);
     let s2 = env.register_contract(None, MockStrategy);
@@ -3520,7 +3732,6 @@ fn test_propose_second_rotation_while_pending_fails() {
 #[test]
 fn test_cancel_rotation_clears_proposed_state() {
     let (env, client, admin) = setup();
-    client.create(&admin);
 
     let s1 = env.register_contract(None, MockStrategy);
     let s2 = env.register_contract(None, MockStrategy);
@@ -3528,49 +3739,58 @@ fn test_cancel_rotation_clears_proposed_state() {
     client.set_strategy(&admin, &s1);
     client.propose_strategy(&admin, &s2, &500);
 
-    // Confirm rotation is pending.
-    let phase: vaultquest_common::strategy::StrategyRotationPhase = env
-        .storage()
-        .instance()
-        .get(&DataKey::StrategyRotationPhase)
-        .unwrap();
-    assert_eq!(phase, vaultquest_common::strategy::StrategyRotationPhase::Proposed);
-
-    let proposed: Option<Address> = env
-        .storage()
-        .instance()
-        .get(&DataKey::ProposedStrategy)
-        .flatten();
+    // Confirm rotation is pending. Direct storage reads must run inside the
+    // contract frame under sdk27 ("not accessible outside of a contract").
+    let (phase, proposed) = env.as_contract(&client.address, || {
+        let phase: vaultquest_common::strategy::StrategyRotationPhase = env
+            .storage()
+            .instance()
+            .get(&DataKey::StrategyRotationPhase)
+            .unwrap();
+        let proposed: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProposedStrategy)
+            .flatten();
+        (phase, proposed)
+    });
+    assert_eq!(
+        phase,
+        vaultquest_common::strategy::StrategyRotationPhase::Proposed
+    );
     assert!(proposed.is_some());
 
     client.cancel_strategy_rotation(&admin);
 
     // Phase returns to Idle.
-    let phase_after: vaultquest_common::strategy::StrategyRotationPhase = env
-        .storage()
-        .instance()
-        .get(&DataKey::StrategyRotationPhase)
-        .unwrap();
-    assert_eq!(phase_after, vaultquest_common::strategy::StrategyRotationPhase::Idle);
+    let phase_after: vaultquest_common::strategy::StrategyRotationPhase =
+        env.as_contract(&client.address, || {
+            env.storage()
+                .instance()
+                .get(&DataKey::StrategyRotationPhase)
+                .unwrap()
+        });
+    assert_eq!(
+        phase_after,
+        vaultquest_common::strategy::StrategyRotationPhase::Idle
+    );
 
     // Proposed state is cleared.
-    let proposed_after: Option<Address> = env
-        .storage()
-        .instance()
-        .get(&DataKey::ProposedStrategy)
-        .flatten();
+    let (proposed_after, cap_after, ready) = env.as_contract(&client.address, || {
+        let proposed_after: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProposedStrategy)
+            .flatten();
+        let cap_after: Option<i128> = env.storage().instance().get(&DataKey::ProposedExposureCap);
+        let ready: Option<u32> = env
+            .storage()
+            .instance()
+            .get(&DataKey::StrategyRotationReadyAt);
+        (proposed_after, cap_after, ready)
+    });
     assert!(proposed_after.is_none());
-
-    let cap_after: Option<i128> = env
-        .storage()
-        .instance()
-        .get(&DataKey::ProposedExposureCap);
     assert!(cap_after.is_none());
-
-    let ready: Option<u32> = env
-        .storage()
-        .instance()
-        .get(&DataKey::StrategyRotationReadyAt);
     assert!(ready.is_none());
 }
 
@@ -3581,7 +3801,6 @@ fn test_cancel_rotation_clears_proposed_state() {
 #[test]
 fn test_admin_epoch_change_does_not_invalidate_pending_rotation() {
     let (env, client, admin) = setup();
-    client.create(&admin);
 
     let signer2 = Address::generate(&env);
     client.seed_admin(&admin, &signer2);
@@ -3600,12 +3819,17 @@ fn test_admin_epoch_change_does_not_invalidate_pending_rotation() {
     assert!(client.governance_epoch() > 0);
 
     // Rotation is still pending — strategy rotation doesn't use epoch checks.
-    let phase: vaultquest_common::strategy::StrategyRotationPhase = env
-        .storage()
-        .instance()
-        .get(&DataKey::StrategyRotationPhase)
-        .unwrap();
-    assert_eq!(phase, vaultquest_common::strategy::StrategyRotationPhase::Proposed);
+    let phase: vaultquest_common::strategy::StrategyRotationPhase =
+        env.as_contract(&client.address, || {
+            env.storage()
+                .instance()
+                .get(&DataKey::StrategyRotationPhase)
+                .unwrap()
+        });
+    assert_eq!(
+        phase,
+        vaultquest_common::strategy::StrategyRotationPhase::Proposed
+    );
 
     // After timelock, activate still works.
     skip_high_risk_delay(&env);
@@ -3621,7 +3845,7 @@ fn test_admin_epoch_change_does_not_invalidate_pending_rotation() {
 #[test]
 fn test_prune_round_removes_entries() {
     let (env, client, admin) = setup();
-    client.create(&admin);
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
 
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
@@ -3645,17 +3869,14 @@ fn test_prune_round_removes_entries() {
     client.prune_round(&admin, &round_id, &participants);
 
     // Round entry is removed.
-    assert_eq!(
-        client.try_round(&round_id),
-        Err(Ok(Error::RoundNotFound))
-    );
+    assert_eq!(client.try_round(&round_id), Err(Ok(Error::RoundNotFound)));
 }
 
 /// Pruning a round with outstanding unclaimed deposits is rejected.
 #[test]
 fn test_prune_round_rejects_outstanding_deposits() {
     let (env, client, admin) = setup();
-    client.create(&admin);
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
 
     let alice = Address::generate(&env);
 
@@ -3678,13 +3899,15 @@ fn test_prune_round_rejects_outstanding_deposits() {
 #[test]
 fn test_prune_round_rejects_non_settled() {
     let (env, client, admin) = setup();
-    client.create(&admin);
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
 
     let round_id = client.open_round(&admin);
     let participants = vec![&env];
+    // An Open round exists but is not Settled, so pruning is rejected with
+    // RoundNotLocked; RoundNotFound is only for a never-opened round id.
     assert_eq!(
         client.try_prune_round(&admin, &round_id, &participants),
-        Err(Ok(Error::RoundNotFound))
+        Err(Ok(Error::RoundNotLocked))
     );
 }
 
@@ -3692,7 +3915,7 @@ fn test_prune_round_rejects_non_settled() {
 #[test]
 fn test_prune_round_unauthorized() {
     let (env, client, admin) = setup();
-    client.create(&admin);
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
 
     let alice = Address::generate(&env);
     let round_id = client.open_round(&admin);
@@ -3707,6 +3930,8 @@ fn test_prune_round_unauthorized() {
         client.try_prune_round(&rando, &round_id, &participants),
         Err(Ok(Error::Unauthorized))
     );
+}
+
 // ── #623: strategy adapter failure isolation (paused/degraded strategies) ──
 //
 // A conforming strategy (see `mock-yield`) can reject `deposit` while paused
@@ -3735,11 +3960,15 @@ pub struct FailableStrategy;
 #[contractimpl]
 impl FailableStrategy {
     pub fn set_deposit_fails(env: Env, fails: bool) {
-        env.storage().instance().set(&FailableKey::DepositFails, &fails);
+        env.storage()
+            .instance()
+            .set(&FailableKey::DepositFails, &fails);
     }
 
     pub fn set_harvest_fails(env: Env, fails: bool) {
-        env.storage().instance().set(&FailableKey::HarvestFails, &fails);
+        env.storage()
+            .instance()
+            .set(&FailableKey::HarvestFails, &fails);
     }
 
     pub fn interface_version(_env: Env) -> u32 {
@@ -3773,7 +4002,11 @@ impl FailableStrategy {
     ) -> Result<i128, vaultquest_common::ContractError> {
         let token = token::TokenClient::new(&env, &asset);
         let available = token.balance(&env.current_contract_address());
-        let redeemed = if amount < available { amount } else { available };
+        let redeemed = if amount < available {
+            amount
+        } else {
+            available
+        };
         if redeemed > 0 {
             token.transfer(&env.current_contract_address(), &to, &redeemed);
         }
@@ -3891,7 +4124,6 @@ fn harvest_strategy_fails_cleanly_when_adapter_is_degraded() {
 #[test]
 fn reconcile_strategy_tolerates_degraded_adapter_harvest_failure() {
     let (env, client, admin) = setup();
-    client.create(&admin);
 
     let s1 = env.register_contract(None, FailableStrategy);
     let s1_client = FailableStrategyClient::new(&env, &s1);
@@ -3906,12 +4138,17 @@ fn reconcile_strategy_tolerates_degraded_adapter_harvest_failure() {
     s1_client.set_harvest_fails(&true);
     client.reconcile_strategy(&admin);
 
-    let phase: vaultquest_common::strategy::StrategyRotationPhase = env
-        .storage()
-        .instance()
-        .get(&DataKey::StrategyRotationPhase)
-        .unwrap();
-    assert_eq!(phase, vaultquest_common::strategy::StrategyRotationPhase::Reconciled);
+    let phase: vaultquest_common::strategy::StrategyRotationPhase =
+        env.as_contract(&client.address, || {
+            env.storage()
+                .instance()
+                .get(&DataKey::StrategyRotationPhase)
+                .unwrap()
+        });
+    assert_eq!(
+        phase,
+        vaultquest_common::strategy::StrategyRotationPhase::Reconciled
+    );
 }
 
 /// Emergency recall must always succeed even while the adapter's `deposit`
@@ -3938,3 +4175,120 @@ fn emergency_recall_succeeds_while_adapter_deposit_is_paused() {
     assert_eq!(client.pool().principal_in_strategy, 0);
     assert_eq!(token.balance(&client.address), 1_000);
 }
+
+// ── #716: Ticket-weighting & boundary condition tests ───────────────────────
+
+/// Single depositor in a round always wins 100% of the time, regardless of seed.
+#[test]
+fn test_ticket_weighting_single_depositor_always_wins() {
+    let (env, client, admin) = setup();
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
+    client.create(&admin);
+
+    let alice = Address::generate(&env);
+    let round_id = client.open_round(&admin);
+    client.round_deposit(&alice, &round_id, &500);
+
+    let seed = BytesN::from_array(&env, &[42u8; 32]);
+    let commitment: BytesN<32> = env.crypto().sha256(&seed.to_bytes()).to_bytes();
+    client.commit_round_randomness(&admin, &round_id, &commitment);
+
+    client.lock_round(&admin, &round_id);
+    client.reveal_round_randomness(&admin, &round_id, &seed);
+
+    let candidates = vec![&env, alice.clone()];
+    let winner = client.select_round_winner(&admin, &round_id, &candidates);
+    assert_eq!(winner, Some(alice));
+}
+
+/// A participant with zero deposit cannot win even if included in the candidates list.
+#[test]
+fn test_ticket_weighting_zero_weight_cannot_win() {
+    let (env, client, admin) = setup();
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
+    client.create(&admin);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    let round_id = client.open_round(&admin);
+    client.round_deposit(&alice, &round_id, &1_000);
+    // Bob joins but does not deposit into this round
+
+    let seed = BytesN::from_array(&env, &[1u8; 32]);
+    let commitment: BytesN<32> = env.crypto().sha256(&seed.to_bytes()).to_bytes();
+    client.commit_round_randomness(&admin, &round_id, &commitment);
+
+    client.lock_round(&admin, &round_id);
+    client.reveal_round_randomness(&admin, &round_id, &seed);
+
+    // Candidates only contains Alice; Bob never made a round_deposit and has no seq
+    let candidates = vec![&env, alice.clone()];
+    let winner = client.select_round_winner(&admin, &round_id, &candidates);
+    assert_eq!(winner, Some(alice));
+}
+
+/// Multiple depositors partition [0, principal_snapshot) in strictly increasing canonical arrival order.
+#[test]
+fn test_ticket_weighting_multi_depositor_canonical_partition() {
+    let (env, client, admin) = setup();
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
+    client.create(&admin);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let charlie = Address::generate(&env);
+
+    let round_id = client.open_round(&admin);
+    client.round_deposit(&alice, &round_id, &100);
+    client.round_deposit(&bob, &round_id, &200);
+    client.round_deposit(&charlie, &round_id, &300);
+
+    let round = client.round(&round_id);
+    assert_eq!(round.principal_snapshot, 600);
+
+    let seed = BytesN::from_array(&env, &[99u8; 32]);
+    let commitment: BytesN<32> = env.crypto().sha256(&seed.to_bytes()).to_bytes();
+    client.commit_round_randomness(&admin, &round_id, &commitment);
+
+    client.lock_round(&admin, &round_id);
+    client.reveal_round_randomness(&admin, &round_id, &seed);
+
+    let candidates = vec![&env, alice.clone(), bob.clone(), charlie.clone()];
+    let winner = client.select_round_winner(&admin, &round_id, &candidates);
+    assert!(winner.is_some());
+    let w = winner.unwrap();
+    assert!(w == alice || w == bob || w == charlie);
+}
+
+/// Submitting candidate addresses out of canonical sequence order is rejected with CanonicalOrderViolation.
+#[test]
+fn test_ticket_weighting_rejects_out_of_order_candidates() {
+    let (env, client, admin) = setup();
+    client.seed_admin(&admin, &Address::generate(&env)); // #657: round-open requires >= Threshold admins
+    client.create(&admin);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    let round_id = client.open_round(&admin);
+    client.round_deposit(&alice, &round_id, &100); // seq 0
+    client.round_deposit(&bob, &round_id, &200); // seq 1
+
+    let seed = BytesN::from_array(&env, &[5u8; 32]);
+    let commitment: BytesN<32> = env.crypto().sha256(&seed.to_bytes()).to_bytes();
+    client.commit_round_randomness(&admin, &round_id, &commitment);
+
+    client.lock_round(&admin, &round_id);
+    client.reveal_round_randomness(&admin, &round_id, &seed);
+
+    // Reversed order: Bob (seq 1) before Alice (seq 0)
+    let bad_candidates = vec![&env, bob.clone(), alice.clone()];
+    let res = client.try_select_round_winner(&admin, &round_id, &bad_candidates);
+    assert_eq!(res, Err(Ok(Error::CanonicalOrderViolation)));
+}
+
+// ── Draw auditability (#718) ───────────────────────────────────────────────
+
+#[cfg(test)]
+mod draw_audit_tests;

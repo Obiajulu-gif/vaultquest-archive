@@ -212,6 +212,52 @@ export class CacheService {
     }
   }
 
+  /**
+   * Invalidate a bounded set of cache keys sharing a prefix.
+   * The Redis scan is capped so one invalidation cannot become an unbounded
+   * operation. Process-memory entries are always considered even when Redis is
+   * offline.
+   */
+  async invalidatePrefix(prefix: string, maxKeys = 500): Promise<number> {
+    const normalizedPrefix = prefix.trim();
+    if (!normalizedPrefix) throw new Error("cache key prefix is required");
+    const limit = Math.min(MAX_STALE_SCAN_LIMIT, Math.max(1, Math.floor(maxKeys)));
+    let invalidated = 0;
+
+    for (const key of [...this.pendingMap.keys()].filter((key) => pendingEventKey(key).startsWith(normalizedPrefix))) {
+      this.pendingMap.delete(key);
+      invalidated += 1;
+    }
+    for (const key of [...this.assetMap.keys()].filter((key) =>
+      key.startsWith(normalizedPrefix) || `asset:${key}`.startsWith(normalizedPrefix))) {
+      this.assetMap.delete(key);
+      invalidated += 1;
+    }
+    for (const key of [...this.configMap.keys()].filter((key) => `config:${key}`.startsWith(normalizedPrefix))) {
+      this.configMap.delete(key);
+      invalidated += 1;
+    }
+
+    if (!this.redis || !this.isOnline) return invalidated;
+
+    let cursor = "0";
+    const visited = new Set<string>();
+    do {
+      const [nextCursor, keys] = await this.redis.sscan(STALE_INDEX_KEY, cursor, "COUNT", Math.min(100, limit));
+      cursor = nextCursor;
+      for (const key of keys) {
+        if (visited.size >= limit) break;
+        if (!key.startsWith(normalizedPrefix) || visited.has(key)) continue;
+        visited.add(key);
+        await this.redis.del(key);
+        await this.redis.srem(STALE_INDEX_KEY, key);
+        invalidated += 1;
+      }
+    } while (cursor !== "0" && visited.size < limit);
+
+    return invalidated;
+  }
+
   // --- indexer checkpoint (Redis write-behind, PostgreSQL source of truth) --
 
   async getCheckpoint(): Promise<Partial<IndexerCheckpoint> | null> {

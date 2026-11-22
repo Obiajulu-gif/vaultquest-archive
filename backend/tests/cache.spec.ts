@@ -193,6 +193,28 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
   });
 
   describe("stale cache detection and repair", () => {
+    it("invalidates a prefix within a bounded process and Redis scan", async () => {
+      const service = new CacheService(
+        mockPrisma,
+        mockLogger,
+        "redis://127.0.0.1:6379",
+        500,
+      );
+      const connectCallback = mockRedisInstance.on.mock.calls.find((c) => c[0] === "connect")?.[1];
+      connectCallback?.();
+      mockRedisInstance.sscan.mockResolvedValue(["0", ["pool:one", "pool:two", "other"]]);
+
+      await service.setAssetMetadata({ asset: "POOL:A", decimals: 7, lastUpdated: new Date(), version: 1 });
+      await service.setAssetMetadata({ asset: "OTHER", decimals: 7, lastUpdated: new Date(), version: 1 });
+
+      const invalidated = await service.invalidatePrefix("pool:", 20);
+      expect(invalidated).toBeGreaterThanOrEqual(2);
+      expect(await service.getAssetMetadata("POOL:A")).toBeNull();
+      expect(await service.getAssetMetadata("OTHER")).not.toBeNull();
+      expect(mockRedisInstance.del).toHaveBeenCalledWith("pool:one");
+      expect(mockRedisInstance.del).toHaveBeenCalledWith("pool:two");
+    });
+
     it("detects source-version drift and returns an actionable, scoped finding", async () => {
       const service = new CacheService(mockPrisma, mockLogger);
       await service.setAssetMetadata({

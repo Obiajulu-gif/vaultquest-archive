@@ -167,6 +167,21 @@ describe("DataExportService", () => {
     expect(metadata.sections).toEqual(["actions"]);
   });
 
+  it("supports field-level privacy projections and rejects unknown fields", async () => {
+    const svc = new DataExportService(source([action(1)], [pool("p1")]));
+    const { data } = await svc.build({
+      principal: alice,
+      sections: ["actions"],
+      fields: ["id", "amount"],
+    });
+    expect(data.actions![0]).toEqual({ id: "a1", amount: "10" });
+
+    await expect(svc.build({
+      principal: alice,
+      fields: ["password_hash" as any],
+    })).rejects.toMatchObject({ statusCode: 403 });
+  });
+
   it("handles an empty export", async () => {
     const { metadata, data } = await new DataExportService(source([], [])).build({ principal: alice });
     expect(data).toEqual({ actions: [], saved_pools: [] });

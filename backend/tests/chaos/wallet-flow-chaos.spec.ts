@@ -97,4 +97,12 @@ describe("Wallet Flow Chaos Tests", () => {
           });
         } catch (err) {
           if (err instanceof AppError && err.code === ERROR_CODES.NETWORK_ERROR) {
-     
+            // Expected - network timeout injected
+          } else {
+            throw err;
+          }
+        }
+      },
+    );
+  });
+});

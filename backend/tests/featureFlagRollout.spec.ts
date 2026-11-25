@@ -10,6 +10,7 @@ import {
   type RollbackCheck,
 } from "../src/services/featureFlagRollout.js";
 import { featureFlagRolloutRoutes } from "../src/routes/featureFlagRollouts.js";
+import { requirePermission } from "../src/middleware/rbac.js";
 
 const FLAG = FEATURE_FLAGS.WITHDRAWAL_SUBMISSION_ENABLED;
 const TTL = 30_000;
@@ -21,7 +22,7 @@ function flagServiceOver(store: InMemoryFlagRolloutStore) {
     featureFlag: {
       findUnique: vi.fn(async ({ where }: any) => {
         const row = store.rows.get(`${where.key_scope.key}:${where.key_scope.scope}`);
-        return row ? { enabled: row.enabled } : null;
+        return row ? { enabled: row.enabled, metadata: row.metadata } : null;
       }),
     },
   };
@@ -270,6 +271,98 @@ describe("FeatureFlagRolloutGuard — automatic rollback and verification", () =
   });
 });
 
+describe("emergency disablement", () => {
+  const ops = { actor: "maintainer:bob", reason: "withdrawals double-submitting" };
+
+  it("turns off a flag a completed rollout left on, latches it, and blocks re-enabling until released", async () => {
+    const { guard, flags, store } = setup();
+    await guard.start(FLAG, "global", startInput);
+    await guard.complete(FLAG, "global", { actor: "maintainer:a", reason: "healthy" });
+
+    const res = await guard.emergencyDisable(FLAG, "global", ops);
+    expect(res).toMatchObject({
+      enabled: false,
+      emergency: { disabledBy: "maintainer:bob", reason: ops.reason, previousEnabled: true, disabledAt: new Date(T0).toISOString() },
+      rollout: { state: "completed" },
+    });
+    expect(await flags.isEnabled(FLAG)).toBe(false);
+    expect(store.audits.at(-1)).toMatchObject({ previousValue: true, newValue: false, actor: "maintainer:bob", reason: `[emergency global] ${ops.reason}` });
+    await expect(guard.start(FLAG, "global", startInput)).rejects.toMatchObject({ code: "EMERGENCY_DISABLED" });
+
+    const released = await guard.releaseEmergency(FLAG, "global", { actor: "maintainer:bob", reason: "fix deployed" });
+    expect(released).toMatchObject({ enabled: false, emergency: null });
+    expect(await flags.isEnabled(FLAG)).toBe(false);
+    expect((await guard.start(FLAG, "global", startInput)).state).toBe("active");
+  });
+
+  it("latches an untouched scope off so nothing can enable it", async () => {
+    const { guard, store } = setup();
+    const res = await guard.emergencyDisable(FLAG, "wallet:GABC", ops);
+    expect(res).toMatchObject({ enabled: false, rollout: null, emergency: { previousEnabled: false } });
+    expect(store.rows.get(`${FLAG}:wallet:GABC`)!.enabled).toBe(false);
+    await expect(guard.start(FLAG, "wallet:GABC", startInput)).rejects.toMatchObject({ code: "EMERGENCY_DISABLED" });
+  });
+
+  it("ends an active rollout as a verified rollback and stops watching it", async () => {
+    const { guard, flags, advance } = setup();
+    await guard.start(FLAG, "global", startInput);
+    const res = await guard.emergencyDisable(FLAG, "global", ops);
+    expect(res.rollout).toMatchObject({ state: "rollback_unverified", endedBy: "maintainer:bob", endReason: `emergency: ${ops.reason}`, automatic: false });
+    expect(await flags.isEnabled(FLAG)).toBe(false);
+    expect(await feed(guard, "global", 0, 50)).toBeNull(); // the guard no longer acts on outcomes
+
+    advance(TTL);
+    expect((await guard.verify(FLAG, "global")).state).toBe("rolled_back");
+  });
+
+  it("is idempotent, and forces the flag back off if something re-enabled it behind the latch", async () => {
+    const { guard, flags, store } = setup();
+    await guard.emergencyDisable(FLAG, "global", ops);
+    const audits = store.audits.length;
+    await guard.emergencyDisable(FLAG, "global", ops);
+    await Promise.all([guard.emergencyDisable(FLAG, "global", ops), guard.emergencyDisable(FLAG, "global", ops)]);
+    expect(store.audits).toHaveLength(audits);
+
+    store.rows.get(`${FLAG}:global`)!.enabled = true; // stale writer / manual SQL
+    flags.invalidate(FLAG, "global");
+    expect(await flags.isEnabled(FLAG)).toBe(false); // the latch wins on the read path
+
+    await guard.emergencyDisable(FLAG, "global", ops);
+    expect(store.rows.get(`${FLAG}:global`)!.enabled).toBe(false);
+    expect(store.audits.at(-1)).toMatchObject({ previousValue: true, newValue: false, reason: expect.stringContaining("re-asserting") });
+  });
+
+  it("release writes the flag off rather than exposing a value flipped on behind the latch, and is a no-op when not latched", async () => {
+    const { guard, flags, store } = setup();
+    await guard.emergencyDisable(FLAG, "global", ops);
+    store.rows.get(`${FLAG}:global`)!.enabled = true;
+    await guard.releaseEmergency(FLAG, "global", { actor: "maintainer:bob", reason: "fix deployed" });
+    flags.invalidate(FLAG, "global");
+    expect(await flags.isEnabled(FLAG)).toBe(false);
+
+    const audits = store.audits.length;
+    expect(await guard.releaseEmergency(FLAG, "global", { actor: "maintainer:bob", reason: "retry" })).toMatchObject({ enabled: false, emergency: null });
+    expect(await guard.releaseEmergency(FLAG, "vault:none", { actor: "maintainer:bob", reason: "retry" })).toMatchObject({ enabled: false, emergency: null, rollout: null });
+    expect(store.audits).toHaveLength(audits);
+  });
+
+  it("changes nothing when the store fails, so the call can be retried", async () => {
+    const { guard, store } = setup();
+    await guard.start(FLAG, "global", startInput);
+    const mutate = vi.spyOn(store, "mutate").mockRejectedValueOnce(new Error("db down"));
+    await expect(guard.emergencyDisable(FLAG, "global", ops)).rejects.toThrow("db down");
+    expect(store.rows.get(`${FLAG}:global`)!.enabled).toBe(true);
+    mutate.mockRestore();
+    expect((await guard.emergencyDisable(FLAG, "global", ops)).enabled).toBe(false);
+  });
+
+  it("rejects a malformed scope", async () => {
+    const { guard } = setup();
+    await expect(guard.emergencyDisable(FLAG, "bogus", ops)).rejects.toMatchObject({ code: "INVALID_SCOPE" });
+    await expect(guard.releaseEmergency(FLAG, "bogus", ops)).rejects.toMatchObject({ code: "INVALID_SCOPE" });
+  });
+});
+
 describe("domain verification checks", () => {
   it("fails verification when withdrawals keep being submitted after the rollback", async () => {
     const counter = vi.fn(async () => 2);
@@ -340,6 +433,41 @@ describe("rollout admin routes", () => {
     expect((await app.inject({ method: "POST", url: "/admin/feature-flags/nope/rollout", payload: { reason: "abc" } })).statusCode).toBe(400);
     expect((await app.inject({ method: "POST", url, payload: { scope: "bogus", reason: "abc" } })).statusCode).toBe(400);
     expect((await app.inject({ method: "POST", url: `${url}/verify`, payload: { scope: "global" } })).statusCode).toBe(404);
+    await app.close();
+  });
+
+  it("emergency-disables and releases through the API, admin.flags.write only", async () => {
+    const { guard } = setup();
+    const app = Fastify();
+    app.setErrorHandler(errorHandler as any);
+    const byHeader = async (req: any) => {
+      const role = req.headers["x-role"];
+      return role ? { role, subject: String(req.headers["x-subject"] ?? "w") } : null;
+    };
+    app.register(featureFlagRolloutRoutes(guard, {
+      read: requirePermission("admin.flags.read", [byHeader]),
+      write: requirePermission("admin.flags.write", [byHeader]),
+    }));
+    const kill = `/admin/feature-flags/${FLAG}/emergency-disable`;
+    const payload = { scope: "global", reason: "double submits" };
+
+    expect((await app.inject({ method: "POST", url: kill, payload })).statusCode).toBe(401);
+    expect((await app.inject({ method: "POST", url: kill, payload, headers: { "x-role": "user" } })).statusCode).toBe(403);
+    expect((await app.inject({ method: "POST", url: kill, payload: { scope: "global" }, headers: { "x-role": "maintainer" } })).statusCode).toBe(400);
+
+    const admin = { "x-role": "maintainer", "x-subject": "bob" };
+    const res = await app.inject({ method: "POST", url: kill, payload, headers: admin });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data).toMatchObject({ enabled: false, emergency: { disabledBy: "maintainer:bob", reason: "double submits" } });
+
+    const get = await app.inject({ method: "GET", url: `${url}?scope=global`, headers: admin });
+    expect(get.json().data).toMatchObject({ enabled: false, emergency: { disabledBy: "maintainer:bob" } });
+    const start = await app.inject({ method: "POST", url, payload: { scope: "global", reason: "canary" }, headers: admin });
+    expect(start.statusCode).toBe(409);
+
+    const release = await app.inject({ method: "POST", url: `${kill}/release`, payload: { scope: "global", reason: "fixed" }, headers: admin });
+    expect(release.statusCode).toBe(200);
+    expect(release.json().data).toMatchObject({ enabled: false, emergency: null });
     await app.close();
   });
 });

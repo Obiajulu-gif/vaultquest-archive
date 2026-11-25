@@ -276,6 +276,32 @@ describe("recovery routes (#813)", () => {
       ["recovery.resolve", ADMIN],
     ]);
   });
+
+  it("explains the risk and requires it acknowledged before failing an on-chain withdrawal (#1135)", async () => {
+    const ctx = build();
+    app = ctx.app;
+    ctx.rows.set(ACTION_ID, actionRow({ actionType: "withdraw" }));
+    const scan = await app.inject({ method: "POST", url: "/admin/recovery/scan", headers: auth("admin-token"), payload: {} });
+    const url = `/admin/recovery/cases/${scan.json().data.opened[0].id}/resolve`;
+    const payload = { outcome: "failed", reason: "tx never landed" };
+
+    expect((await app.inject({ method: "POST", url, headers: auth("owner-token"), payload: { ...payload, acknowledged_risk_score: 55 } })).statusCode).toBe(403);
+    expect((await app.inject({ method: "POST", url, headers: auth("admin-token"), payload: { ...payload, acknowledged_risk_score: 101 } })).statusCode).toBe(400);
+
+    const refused = await app.inject({ method: "POST", url, headers: auth("admin-token"), payload });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().error.issues.risk_assessment).toMatchObject({
+      score: 55,
+      level: "high",
+      requires_review: true,
+      factors: [{ code: "action_type:withdraw" }, { code: "submitted_on_chain", explanation: expect.stringMatching(/may still confirm/) }],
+    });
+    expect(ctx.rows.get(ACTION_ID)!.status).toBe("submitted");
+
+    const resolved = await app.inject({ method: "POST", url, headers: auth("admin-token"), payload: { ...payload, acknowledged_risk_score: 55 } });
+    expect(resolved.statusCode).toBe(200);
+    expect(ctx.rows.get(ACTION_ID)!.status).toBe("failed");
+  });
 });
 
 describe("audit trail routes (#814)", () => {

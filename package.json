@@ -34,7 +34,7 @@
     "canvas-confetti": "^1.9.4",
     "framer-motion": "^11.15.0",
     "lucide-react": "^0.460.0",
-    "next": "^16.2.11",
+    "next": "^16.4.6",
     "next-i18next": "^15.4.1",
     "next-themes": "^0.4.4",
     "react": "^18.3.1",
@@ -44,7 +44,7 @@
     "recharts": "^3.8.1",
     "viem": "^2.21.54",
     "wagmi": "^2.14.6",
-    "zod": "^3.25.76"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
@@ -58,21 +58,44 @@
     "jsdom": "^25.0.1",
     "postcss": "^8.5.23",
     "tailwindcss": "^3.4.17",
-    "vitest": "^2.1.8"
+    "vite": "^6.4.4",
+    "vitest": "^4.1.12"
   },
   "pnpm": {
     "overrides": {
-      "undici": "^6.28.1",
-      "fast-uri": "^3.1.8",
+      "undici": "^6.29.1",
+      "fast-uri": "^4.2.4",
       "protobufjs": "^7.6.5",
-      "fastify": "^5.12.5",
+      "fastify": "^5.12.8",
       "ws": "^8.21.0",
       "axios": "^1.20.0",
       "brace-expansion": "^2.1.7",
-      "ip-address": "^10.7.1",
-      "qs": "^6.16.0",
-      "glob": "^10.5.0",
-      "js-yaml": "^4.3.2"
+      "ip-address": "^10.7.6",
+      "qs": "^6.17.1",
+      "glob": "^14.0.2",
+      "js-yaml": "^4.3.2",
+      "engine.io": "^6.6.13",
+      "@grpc/grpc-js": "^1.14.7",
+      "hono": "^4.13.22",
+      "smol-toml": "^1.9.1",
+      "source-map-js": "^1.2.4",
+      "fast-copy": "^4.3.4",
+      "pbkdf2": "^3.1.7",
+      "follow-redirects": "^1.16.3",
+      "postcss-selector-parser": "^6.1.6",
+      "@typescript-eslint/eslint-plugin": "^8.74.0",
+      "esbuild": "^0.25.0",
+      "vite": "^6.4.4",
+      "vitest": "^4.1.12",
+      "@vitest/mocker": "^4.1.12",
+      "uuid": "^11.1.1",
+      "decode-uri-component": "^0.5.1",
+      "stream-json": "^3.6.0",
+      "toml": "^5.0.1",
+      "sharp": "^0.35.5",
+      "tinypool": "^2.1.2",
+      "zod": "^4.6.7",
+      "minimatch": "^11.0.1"
     }
   },
   "packageManager": "pnpm@10.28.2+sha512.41872f037ad22f7348e3b1debbaf7e867cfd448f2726d9cf74c08f19507c31d2c8e7a11525b983febc2df640b5438dee6023ebb1f84ed43cc2d654d2bc326264"

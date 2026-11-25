@@ -346,3 +346,6 @@ describe("CacheService fallback, caching, and stale repair", () => {
     expect(await service.getAssetMetadata("USDC")).not.toBeNull();
   });
 });
+
+}
+);

@@ -65,4 +65,7 @@ Every payload that crosses a trust boundary — rendered into user-visible notic
 - `backend/src/services/webhookDelivery.ts` — delivery with target validation, signing, retry/timeout
 - `backend/src/routes/actions.ts` — CSV/JSON export wiring
 - `backend/tests/content-boundaries.spec.ts` — unit + integration tests
+- `backend/src/services/strictAllowlistService.ts` — URL/file/destination allow-lists, including bounded filename decoding (#1162)
+- `backend/tests/strictAllowlist.spec.ts` — allow-list regression coverage (#990, #1162)
+- `docs/strict-allowlist-encoded-paths.md` — encoded-path policy, edge cases and recovery (#1162)
 - `docs/SECURITY_BOUNDARIES.md` — this document

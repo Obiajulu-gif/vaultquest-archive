@@ -19,6 +19,18 @@ const PAGE_SIZE = 500;
 export const EXPORT_SECTIONS = ["actions", "saved_pools"] as const;
 export type ExportSection = (typeof EXPORT_SECTIONS)[number];
 
+/**
+ * Field-level authorization. These fields come from the action's free-form
+ * payload, which lib/sensitive-field-access.ts classes as sensitive (`amount`,
+ * `action_payload`), so only the wallet's owner receives them. An export of
+ * someone else's wallet (`admin.export.any`) omits them and lists them in
+ * `metadata.redacted_fields`.
+ */
+export const OWNER_ONLY_FIELDS: Readonly<Record<ExportSection, readonly string[]>> = {
+  actions: ["pool_id", "asset", "amount"],
+  saved_pools: [],
+};
+
 type Page<T> = { items: T[]; nextCursor: string | null };
 
 /** Narrow read port so the service is testable without a database. */
@@ -48,6 +60,8 @@ export type ExportBundle = {
     generated_by_role: string;
     sections: ExportSection[];
     record_counts: Record<string, number>;
+    /** `section.field` names withheld from this caller; empty for the wallet's owner. */
+    redacted_fields: string[];
     truncated: boolean;
     max_records_per_section: number;
     checksum: string;
@@ -92,6 +106,10 @@ function projectSavedPool(r: SavedPoolRecord) {
     draws_at: r.drawsAt?.toISOString() ?? null,
     ...(r.provenance ? { provenance: structuredClone(r.provenance) } : {}),
   };
+}
+
+function omit(row: Record<string, unknown>, fields: readonly string[]): Record<string, unknown> {
+  return fields.length ? Object.fromEntries(Object.entries(row).filter(([key]) => !fields.includes(key))) : row;
 }
 
 async function collect<T, U>(
@@ -160,11 +178,14 @@ export class DataExportService {
     const now = req.now ?? new Date();
     const data: ExportBundle["data"] = {};
     let truncated = false;
+    // Same test authorize() passes the owner on; everyone else got here through admin.export.any.
+    const isOwner = req.principal.walletAddress === wallet;
+    const withheld = (section: ExportSection) => (isOwner ? [] : OWNER_ONLY_FIELDS[section]);
 
     if (sections.includes("actions")) {
       const r = await collect(
         (cursor, limit) => this.source.listActions( { walletAddress: wallet, cursor, limit }),
-        projectAction,
+        (row) => omit(projectAction(row), withheld("actions")),
         (row) => row.redactedAt === null || row.redactedAt === undefined, // scrubbed rows are never exported
         max,
         req.signal,
@@ -175,7 +196,7 @@ export class DataExportService {
     if (sections.includes("saved_pools")) {
       const r = await collect(
         (cursor, limit) => this.source.listSavedPools(wallet, cursor, limit),
-        projectSavedPool,
+        (row) => omit(projectSavedPool(row), withheld("saved_pools")),
         () => true,
         max,
         req.signal,
@@ -185,9 +206,11 @@ export class DataExportService {
     }
 
     const recordCounts = Object.fromEntries(sections.map((s) => [s, data[s]?.length ?? 0]));
+    const redactedFields = sections.flatMap((s) => withheld(s).map((f) => `${s}.${f}`));
     this.accessLogger.logAccess({
       actor: sensitiveAccessId(req.principal.subject), purpose: "data_export", resourceType: "wallet_export", resourceId: sensitiveAccessId(wallet),
-      fieldNames: ["wallet_address", ...(sections.includes("actions") ? ["amount", "action_payload"] : [])],
+      // Only the sensitive fields this caller actually received.
+      fieldNames: ["wallet_address", ...(sections.includes("actions") && isOwner ? ["amount", "action_payload"] : [])],
       authorized: true, resourceCount: Math.max(1, Object.values(recordCounts).reduce((a, b) => a + b, 0)),
     });
     return {
@@ -200,6 +223,7 @@ export class DataExportService {
         generated_by_role: req.principal.role,
         sections,
         record_counts: recordCounts,
+        redacted_fields: redactedFields,
         truncated,
         max_records_per_section: max,
         checksum: createHash("sha256").update(JSON.stringify(data)).digest("hex"),

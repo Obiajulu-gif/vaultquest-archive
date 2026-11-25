@@ -105,7 +105,7 @@ jobs:
         run: createdb --host=localhost --username=postgres --maintenance-db=postgres vaultquest_rollback_test
 
       - name: Rehearse pre-release backup and rollback restore
-        run: node scripts/rehearse-release-rollback.cjs
+        run: node scripts/rehearse-release-rollback.cjs --evidence-out recovery-evidence.json
 
       - name: Write and validate release evidence
         env:
@@ -120,6 +120,7 @@ jobs:
           SMOKE_CHECK_EVIDENCE: "Selected CSRF/service-auth tests, PostgreSQL-backed smoke tests, and migration/release-gate suites"
           ROLLBACK_CHECK_RESULT: passed
           ROLLBACK_CHECK_EVIDENCE: "Custom-format backup restored to an isolated database; migration history and table row counts compared"
+          RECOVERY_EVIDENCE_PATH: recovery-evidence.json
         run: |
           node scripts/release-readiness.cjs --write-evidence release-readiness-evidence.json
           node scripts/release-readiness.cjs --evidence release-readiness-evidence.json

@@ -77,9 +77,13 @@ use soroban_sdk::{
 use vaultquest_common::YieldStrategyClient;
 
 pub mod draw_audit;
+pub mod ownership;
 pub mod proxy;
 pub mod strategy_adapter;
 pub mod vault;
+
+#[cfg(test)]
+pub mod fuzz_tests;
 
 // ── Lockup duration (ledgers, ~7 days at 5 s/ledger) ──────────────────────
 const LOCKUP_LEDGERS: u32 = 120_960;
@@ -184,6 +188,8 @@ pub enum DataKey {
     RoundDrawCommit(u32), // RoundDrawCommit — seed commitment + snapshot Merkle root, frozen at lock (#718)
     RoundDrawResult(u32), // RoundDrawResult — revealed seed, winner index, and winner (#718)
     RoundRoundingRemainder(u32), // cumulative pro-rata claim remainder, by round id
+    // ── Ownership transfer (#1123) ─────────────────────────────────────────
+    PendingOwner, // PendingOwnershipTransfer — two-phase ownership handoff record (#1123)
 }
 
 // ── Errors ─────────────────────────────────────────────────────────────────
@@ -262,6 +268,9 @@ pub enum Error {
     RoundDrawNotSettled = 95,    // round_draw called on a round that isn't Settled (#718)
     RoundDrawWinnerNotInSnapshot = 96, // Merkle proof does not verify for this round's snapshot root (#718)
     UnsafeRandomnessConfig = 97, // fewer than `Threshold` approved admins exist to commit randomness seeds (#657)
+    // ── Ownership transfer (#1123) ────────────────────────────────────────
+    OwnershipTransferNotFound = 98,  // accept/cancel/expire called with no pending transfer
+    OwnershipTransferExpired = 99,   // acceptance attempted after the expiry ledger
 }
 
 // ── Structs ────────────────────────────────────────────────────────────────
@@ -3706,6 +3715,54 @@ impl DripPool {
             .instance()
             .get(&DataKey::RoundNonce)
             .unwrap_or(0)
+    }
+
+    // ── Ownership transfer (#1123) ──────────────────────────────────────────
+
+    /// Propose transferring contract ownership to `new_owner`.
+    ///
+    /// Only the current `Pool.admin` may call this.  A second call overwrites
+    /// any existing pending proposal.  Pass `ttl_ledgers = 0` to use the
+    /// default window (~7 days).  Returns `Error::InvalidAction` when
+    /// `ttl_ledgers` exceeds the maximum allowed window (~90 days) or when
+    /// `new_owner == caller` (self-transfer).
+    pub fn propose_ownership_transfer(
+        env: Env,
+        caller: Address,
+        new_owner: Address,
+        ttl_ledgers: u32,
+    ) -> Result<(), Error> {
+        ownership::propose_ownership_transfer(&env, &caller, new_owner, ttl_ledgers)
+    }
+
+    /// Accept a pending ownership transfer.
+    ///
+    /// Must be called by the address named in the pending record and before
+    /// `expires_at`.  Atomically updates `Pool.admin` and removes the pending
+    /// record.
+    pub fn accept_ownership_transfer(env: Env, caller: Address) -> Result<(), Error> {
+        ownership::accept_ownership_transfer(&env, &caller)
+    }
+
+    /// Cancel a pending ownership transfer.
+    ///
+    /// Only the current `Pool.admin` (the original proposer) may cancel.
+    pub fn cancel_ownership_transfer(env: Env, caller: Address) -> Result<(), Error> {
+        ownership::cancel_ownership_transfer(&env, &caller)
+    }
+
+    /// Permissionless: expire a pending ownership transfer that has passed its
+    /// `expires_at` ledger.  Returns `Error::InvalidAction` when not yet
+    /// expired; `Error::OwnershipTransferNotFound` when no proposal exists.
+    pub fn expire_ownership_transfer(env: Env) -> Result<(), Error> {
+        ownership::expire_ownership_transfer(&env)
+    }
+
+    /// View the current pending ownership transfer record, if any.
+    pub fn pending_ownership_transfer(
+        env: Env,
+    ) -> Option<ownership::PendingOwnershipTransfer> {
+        ownership::pending_ownership_transfer(&env)
     }
 }
 

@@ -22,3 +22,4 @@ C:\Users\googl\AppData\Local\pnpm\store\v3/
 mimo/
 *.mimo
 mimo.config.*
+/lib/

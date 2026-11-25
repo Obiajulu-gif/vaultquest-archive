@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assessActionRisk } from "../src/services/actionRiskScoring.js";
+import { assessActionRisk, assessManualFailureRisk } from "../src/services/actionRiskScoring.js";
 
 describe("explainable action risk scoring", () => {
   it("scores a normal claim as low risk without requiring review", () => {
@@ -90,5 +90,40 @@ describe("explainable action risk scoring", () => {
       "action_type:claim",
       "terminal_status:failed",
     ]);
+  });
+});
+
+describe("manual failure risk (recovery resolve)", () => {
+  const tx = "ab".repeat(32);
+
+  it("requires review to fail a withdrawal whose transaction may still confirm, and explains why", () => {
+    expect(assessManualFailureRisk({ actionType: "withdraw", txHash: tx })).toEqual({
+      score: 55,
+      level: "high",
+      requiresReview: true,
+      factors: [
+        { code: "action_type:withdraw", points: 25, explanation: "Withdrawals move assets out of a vault." },
+        {
+          code: "submitted_on_chain",
+          points: 30,
+          explanation: "A transaction hash was recorded, so the transaction may still confirm on-chain after the ledger marks it failed.",
+        },
+      ],
+    });
+  });
+
+  it.each([
+    ["deposit", tx, 35, false],
+    ["withdraw", null, 25, false],
+    ["select_winner", tx, 55, true],
+    ["compensating", tx, 60, true],
+  ])("scores %s (tx hash: %s) as %i, review %s", (actionType, txHash, score, requiresReview) => {
+    expect(assessManualFailureRisk({ actionType, txHash })).toMatchObject({ score, requiresReview });
+  });
+
+  it("treats an unrecognised action type as high impact instead of throwing", () => {
+    const assessment = assessManualFailureRisk({ actionType: "bridge_out", txHash: tx });
+    expect(assessment).toMatchObject({ score: 55, requiresReview: true });
+    expect(assessment.factors[0]!.code).toBe("action_type:unknown");
   });
 });

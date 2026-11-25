@@ -4,9 +4,9 @@ import { AppError } from "../errors.js";
 import { ERROR_CODES } from "../constants.js";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
-import { toUserSafeError } from "../errorTaxonomy.js";
+import { describeError, toUserSafeError } from "../errorTaxonomy.js";
 import { OperationLimitError } from "../services/operationLimits.js";
-import { formatProblemDetails, PROBLEM_DETAILS_CONTENT_TYPE } from "../problemDetails.js";
+import { formatProblemDetails, PROBLEM_DETAILS_CONTENT_TYPE, acceptsProblemDetails } from "../problemDetails.js";
 
 export function errorHandler(
   err: FastifyError,
@@ -103,15 +103,22 @@ export function errorHandler(
   // for 5xx or non-exposable codes.
   // #946: Add RFC 7807 problem-details taxonomy with stable error codes and remediation hints.
   const safe = toUserSafeError(code, statusCode, message);
+  if (statusCode >= 500 || !describeError(code).exposeMessage) {
+    details = undefined;
+    issues = undefined;
+  }
   const problem = formatProblemDetails(code, statusCode, {
     message,
-    instance: req.url,
+    instance: req.url.split("?")[0],
     errorId,
     details,
     issues
   });
 
-  const acceptsProblem = req.headers.accept?.includes(PROBLEM_DETAILS_CONTENT_TYPE);
+  const vary = String(reply.getHeader("Vary") ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+  if (!vary.some((value) => value.toLowerCase() === "accept" || value === "*")) vary.push("Accept");
+  reply.header("Vary", vary.join(", "));
+  const acceptsProblem = acceptsProblemDetails(req.headers.accept);
   if (acceptsProblem) {
     reply.header("content-type", `${PROBLEM_DETAILS_CONTENT_TYPE}; charset=utf-8`);
   }

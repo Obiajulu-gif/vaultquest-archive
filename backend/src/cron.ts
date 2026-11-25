@@ -673,9 +673,8 @@ export function startSearchIndexRepairCron(opts: {
   repairService: SearchIndexRepairService;
   logger: Logger;
   schedule?: string;
-}): cron.ScheduledTask {
   leaseTtlMs?: number;
-}): ScheduledTask {
+}): cron.ScheduledTask {
   const schedule = opts.schedule ?? "0 * * * *"; // default: hourly
 
   const task = cron.schedule(schedule, async () => {

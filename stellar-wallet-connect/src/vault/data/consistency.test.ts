@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { VaultQueryClient } from "./queryClient";
 import { vaultQueryKeys } from "./queryKeys";
 import {
+  CACHE_SNAPSHOT_MAX_ENTRIES,
   CACHE_SNAPSHOT_STORAGE_KEY,
   CACHE_SNAPSHOT_VERSION,
   createVaultCacheSync,
@@ -211,5 +212,20 @@ describe("cross-tab / cross-device dashboard consistency (#749)", () => {
     };
     expect(persisted.version).toBe(CACHE_SNAPSHOT_VERSION);
     expect(persisted.entries[JSON.stringify(key)].data).toEqual(balance(4242));
+  });
+
+  it("keeps only the newest entries in the persisted snapshot (#1129)", () => {
+    mountA();
+    const total = CACHE_SNAPSHOT_MAX_ENTRIES + 5;
+    for (let i = 0; i < total; i += 1) {
+      clientA.setQueryDataAt(vaultQueryKeys.pool(`p${i}`), balance(i), 1_000 + i);
+    }
+
+    const persisted = JSON.parse(storage.getItem(CACHE_SNAPSHOT_STORAGE_KEY) ?? "null") as {
+      entries: Record<string, { updatedAt: number }>;
+    };
+    expect(Object.keys(persisted.entries)).toHaveLength(CACHE_SNAPSHOT_MAX_ENTRIES);
+    expect(persisted.entries[JSON.stringify(vaultQueryKeys.pool("p0"))]).toBeUndefined();
+    expect(persisted.entries[JSON.stringify(vaultQueryKeys.pool(`p${total - 1}`))]).toBeDefined();
   });
 });

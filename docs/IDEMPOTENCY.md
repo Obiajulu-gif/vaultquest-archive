@@ -479,6 +479,27 @@ This implementation:
 - **Rollback Safety**:
   Idempotency keys and version tokens are stored directly alongside rows or in the `idempotency_keys` table. Reverting application code maintains backward compatibility; database rollback restores previous row versions using WAL point-in-time recovery (PITR) or pre-migration snapshot dumps without orphaned lock state.
 
+## Client-Side Duplicate Wallet Submissions (#1130)
+
+The backend keys above stop a duplicate *request* from creating a second ledger row. They cannot stop the wallet from being asked to sign the same action twice. That guard lives in `useTxFlow` (`stellar-wallet-connect/src/vault/lib/txStateMachine.ts`).
+
+### Behavior
+
+- **Normal:** each hook instance ignores a second `run` while its own flow is in flight. Across hook instances in the same tab, a run is ignored while the same action (`type`, `poolId`, `walletAddress`) is in flight anywhere else. The ignored view stays `idle`; the view that started the action shows its progress.
+- **Different wallets, pools or actions** are independent and run at the same time.
+- **Failure and retry:** the action is released when its run ends, whether it succeeds, fails, or is refused, so a retry from the same view or another view submits normally.
+- **Authorization:** a wallet on the wrong network (fails before the signing prompt) or a declined signature releases the action the same way.
+
+### Edge cases
+
+- **Other tabs and devices** are not covered by this guard; the backend idempotency keys handle them.
+- **A wallet prompt that never returns** keeps the action held until `submitAction` settles, the same as the per-view guard. Confirmation waits are capped by `confirmationTimeoutMs` (45 s by default).
+- **No wallet address:** runs without a wallet (the interrupted-transaction replay in `usePersistentTxFlow`) skip the cross-view guard, since there is no wallet to prompt.
+
+### Rollback
+
+The guard is an in-memory `Set` in the module. Reverting the change removes it; no stored data or API shape changes. Tests: `stellar-wallet-connect/src/vault/lib/txStateMachine.test.tsx` (`#1130` block).
+
 ## References
 
 - Related issue: [VaultQuest: Add idempotency and replay protection for high-risk write operations](https://github.com/Obiajulu-gif/vaultquest-archive/issues/XXX)

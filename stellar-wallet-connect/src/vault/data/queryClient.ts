@@ -43,7 +43,14 @@ interface CacheEntry<T> {
    * rolling the dashboard back to stale/out-of-order balances.
    */
   committedSeq: number;
+  /** Sequence of the latest `invalidateQueries` hit; fetches started before it are stale. */
+  invalidatedSeq: number;
+  /** Sequence at which the in-flight `promise` started. */
+  promiseSeq: number;
 }
+
+/** Default cap on cached keys; entries with subscribers or an in-flight fetch are never evicted. */
+export const DEFAULT_MAX_QUERY_ENTRIES = 200;
 
 function toError(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err));
@@ -57,6 +64,8 @@ export type DataCommittedListener = (key: readonly unknown[], data: unknown, upd
 export class VaultQueryClient {
   private readonly entries = new Map<string, CacheEntry<unknown>>();
   private readonly commitListeners = new Set<DataCommittedListener>();
+
+  constructor(private readonly maxEntries = DEFAULT_MAX_QUERY_ENTRIES) {}
 
   getEntry<T>(key: readonly unknown[]): CacheEntry<T> {
     const id = serializeQueryKey(key);
@@ -74,9 +83,32 @@ export class VaultQueryClient {
       listeners: new Set(),
       abortController: undefined,
       committedSeq: 0,
+      invalidatedSeq: 0,
+      promiseSeq: 0,
     };
+    this.evictInactive();
     this.entries.set(id, created as CacheEntry<unknown>);
     return created;
+  }
+
+  /**
+   * Keeps the cache bounded before a new key is added: drops the oldest
+   * entries nothing is rendering (no subscribers) and nothing is loading (no
+   * in-flight fetch). A dropped key refetches the next time a view asks for
+   * it. If every entry is in use the cache may exceed the cap until they free up.
+   */
+  private evictInactive(): void {
+    for (const [id, entry] of this.entries) {
+      if (this.entries.size < this.maxEntries) return;
+      if (entry.listeners.size === 0 && entry.promise === null) {
+        this.entries.delete(id);
+      }
+    }
+  }
+
+  /** True when no commit or invalidation happened after the operation started at `seq`. */
+  private isCurrent(entry: CacheEntry<unknown>, seq: number): boolean {
+    return seq > entry.committedSeq && seq > entry.invalidatedSeq;
   }
 
   /**
@@ -119,7 +151,9 @@ export class VaultQueryClient {
 
   fetchQuery<T>(key: readonly unknown[], fetcher: (opts: { signal: AbortSignal }) => Promise<T>): Promise<T> {
     const entry = this.getEntry<T>(key);
-    if (entry.promise) return entry.promise;
+    // #1129 — only join an in-flight fetch that started after the latest
+    // commit and invalidation; an older one would hand back pre-invalidation data.
+    if (entry.promise && this.isCurrent(entry, entry.promiseSeq)) return entry.promise;
 
     const controller = typeof AbortController !== "undefined" ? new AbortController() : undefined;
     entry.abortController = controller;
@@ -127,15 +161,17 @@ export class VaultQueryClient {
     // #748 — snapshot the operation order now so that, if this fetch resolves
     // after a *newer* commit (another fetch that started later, or an external
     // cross-tab/device sync), it is dropped rather than regressing the cache.
+    // #1129 — the same applies when the key was invalidated after this fetch started.
     const startedSeq = ++globalOpSeq;
+    entry.promiseSeq = startedSeq;
 
     entry.error = null;
     entry.partialError = null;
     this.notify(key);
 
-    entry.promise = fetcher({ signal: controller?.signal as AbortSignal })
+    const promise: Promise<T> = fetcher({ signal: controller?.signal as AbortSignal })
       .then((data) => {
-        if (startedSeq >= entry.committedSeq) {
+        if (this.isCurrent(entry, startedSeq)) {
           this.commitData(key, data, Date.now());
         }
         return data;
@@ -144,7 +180,7 @@ export class VaultQueryClient {
         const error = toError(err);
         // Only surface errors from the freshest eligible operation — an older
         // in-flight failure must not clobber a newer successful commit.
-        if (entry.committedSeq === 0 || startedSeq >= entry.committedSeq) {
+        if (this.isCurrent(entry, startedSeq)) {
           if (entry.data === null) {
             entry.error = error;
           } else {
@@ -154,18 +190,21 @@ export class VaultQueryClient {
         throw error;
       })
       .finally(() => {
-        entry.promise = null;
+        // A newer fetch may have replaced this one; leave its promise alone.
+        if (entry.promise === promise) entry.promise = null;
         this.notify(key);
       });
 
+    entry.promise = promise;
     this.notify(key);
-    return entry.promise;
+    return promise;
   }
 
   invalidateQueries(prefix: readonly unknown[]): void {
     this.entries.forEach((entry) => {
       if (queryKeyStartsWith(entry.key, prefix)) {
         entry.invalidated = true;
+        entry.invalidatedSeq = ++globalOpSeq;
         entry.listeners.forEach((listener) => listener());
       }
     });
@@ -230,7 +269,9 @@ export function useVaultQuery<T>({
 
   const refetch = useCallback(() => {
     if (!enabled) return;
-    client.invalidateQueries(memoKey);
+    // Join a request that is already running instead of invalidating it: a poll
+    // shorter than the response time would otherwise drop every answer (#1129).
+    if (!client.getEntry(memoKey).promise) client.invalidateQueries(memoKey);
     void client.fetchQuery(memoKey, fetcher).catch(() => undefined);
   }, [client, enabled, fetcher, memoKey]);
 

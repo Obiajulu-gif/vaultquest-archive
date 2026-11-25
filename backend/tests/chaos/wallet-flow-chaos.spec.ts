@@ -102,6 +102,7 @@ describe("Wallet Flow Chaos Tests", () => {
               id: action.id,
               checkpoint: { stage: "external_action_started" },
             });
+            // Expected - network timeout injected
           } else {
             throw err;
           }
@@ -125,3 +126,7 @@ describe("Wallet Flow Chaos Tests", () => {
   });
 });
      
+      },
+    );
+  });
+});

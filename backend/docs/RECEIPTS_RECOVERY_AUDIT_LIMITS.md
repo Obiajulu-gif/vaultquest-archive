@@ -135,7 +135,46 @@ retryable|failed|manual_review ──resolve──► resolved
 | `GET /admin/recovery/diagnostics?sample=25` | `admin.recovery.read` |
 | `GET /admin/recovery/cases?state=` | `admin.recovery.read` |
 | `POST /admin/recovery/scan` | `admin.recovery.write` (run from a cron/worker if you want cases opened in bulk) |
-| `POST /admin/recovery/cases/:id/{retry,escalate,resolve}` | `admin.recovery.write`; escalate/resolve need a `reason` |
+| `POST /admin/recovery/cases/:id/{retry,escalate,resolve}` | `admin.recovery.write`; escalate/resolve need a `reason`; resolve may need `acknowledged_risk_score` (below) |
+
+### Risk-scored manual failure (#1135)
+
+Resolving a case as `failed` stops the ledger tracking the action. If its
+transaction already reached the chain it can still confirm afterwards, leaving
+the ledger wrong. So, when the action is still in flight, the resolve is scored
+by `assessManualFailureRisk()` (`src/services/actionRiskScoring.ts`), which
+uses the same action-type weights and thresholds as the ledger's
+`risk_assessment`:
+
+| Factor | Points | Why |
+|---|---|---|
+| `action_type:<type>` | deposit 5, claim 5, create_vault 15, withdraw 25, select_winner 25, compensating 30; unknown types 25 | How much value the action moves |
+| `submitted_on_chain` | 30 | A transaction hash is recorded, so the transaction may still confirm |
+
+A score of 50 or more (`high`/`critical`) requires review. In practice that is
+a withdrawal, winner selection or compensating action with a transaction hash.
+The flow:
+
+1. `POST …/resolve { "outcome": "failed", "reason": "…" }` returns `409`
+   (`CONFLICT`) and changes nothing. The body explains the score in
+   `error.issues.risk_assessment` (`score`, `level`, `requires_review`, and
+   `factors[]` with `code`, `points`, `explanation`).
+2. After checking the chain (for example the transaction hash on a block
+   explorer), resend with `"acknowledged_risk_score": <score>`. A missing or
+   different score is refused again, so an acknowledgement given for an older
+   assessment never applies to a riskier one.
+3. The `recovery.resolve` audit record stores `metadata.risk`
+   (`score`, `level`, `factors`, `acknowledged`).
+
+Below the threshold, and for `dismissed` or for actions that already left
+flight (nothing is written to the ledger), no acknowledgement is asked for. The
+score is still audited when the ledger is touched.
+
+**Compatibility.** `acknowledged_risk_score` is optional, so existing callers
+are unchanged for every resolve that does not require review. Callers that fail
+high-risk actions must handle the `409` and resend once. No migration or
+configuration is needed. To roll back, revert the change; nothing is stored
+except the extra audit metadata.
 
 ## #814 Immutable audit trail
 

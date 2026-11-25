@@ -13,6 +13,18 @@ import {
   useTxFlow,
   type TxFlowState,
 } from "./txStateMachine";
+import { assertNetworkMatchesBeforeSigning, NetworkMismatchError } from "../../core/walletService.js";
+
+// The state machine is tested in isolation: jsdom has no wallet, so the
+// pre-signing checks (#733/#735/#736, covered by their own tests) are stubbed.
+vi.mock("../../core/walletService.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../core/walletService.js")>()),
+  assertNetworkMatchesBeforeSigning: vi.fn(async () => undefined),
+  assertNotMultisigBeforeSigning: vi.fn(),
+}));
+vi.mock("../../core/sessionLiveness.js", () => ({
+  assertSessionAliveBeforeSigning: vi.fn(async () => undefined),
+}));
 
 const input: PoolActionInput = {
   poolId: "pool-1",
@@ -206,7 +218,8 @@ describe("useTxFlow", () => {
       duplicate = result.current.run(client, "drip", input, { indexingDelayMs: 0 });
     });
 
-    expect(submitAction).toHaveBeenCalledTimes(1);
+    // The pre-signing checks are async, so the wallet call lands a tick later.
+    await waitFor(() => expect(submitAction).toHaveBeenCalledTimes(1));
 
     await act(async () => {
       submission.resolve({ txHash: "tx-deduped", status: "submitted" });
@@ -239,6 +252,130 @@ describe("useTxFlow", () => {
 
     expect(submitAction).toHaveBeenCalledTimes(2);
     expect(result.current.state).toEqual({ stage: "success", txHash: "tx-retry" });
+  });
+});
+
+describe("useTxFlow duplicate submissions across hook instances (#1130)", () => {
+  const OTHER_WALLET = "GOTHERWALLETXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
+
+  it("sends one wallet submission when two views submit the same action", async () => {
+    const submission = deferred<PoolActionResult>();
+    const submitAction = vi.fn(() => submission.promise);
+    const client = clientWithSubmit(submitAction);
+    const first = renderHook(() => useTxFlow());
+    const second = renderHook(() => useTxFlow());
+    let firstRun!: Promise<void>;
+    let secondRun!: Promise<void>;
+
+    act(() => {
+      firstRun = first.result.current.run(client, "drip", input, { indexingDelayMs: 0 });
+      secondRun = second.result.current.run(client, "drip", input, { indexingDelayMs: 0 });
+    });
+
+    await act(async () => {
+      submission.resolve({ txHash: "tx-once", status: "submitted" });
+      await Promise.all([firstRun, secondRun]);
+    });
+
+    expect(submitAction).toHaveBeenCalledTimes(1);
+    expect(first.result.current.state).toEqual({ stage: "success", txHash: "tx-once" });
+    expect(second.result.current.state).toEqual({ stage: "idle" });
+  });
+
+  it("lets different wallets, pools and actions submit at the same time", async () => {
+    const submitAction = vi.fn<VaultContractClient["submitAction"]>(async (type, action) => ({
+      txHash: `tx-${type}-${action.poolId}-${action.walletAddress.slice(0, 6)}`,
+      status: "submitted",
+    }));
+    const client = clientWithSubmit(submitAction);
+    const runs = [
+      ["drip", input],
+      ["drip", { ...input, walletAddress: OTHER_WALLET }],
+      ["drip", { ...input, poolId: "pool-2" }],
+      ["claim", input],
+    ] as const;
+    const hooks = runs.map(() => renderHook(() => useTxFlow()));
+
+    await act(async () => {
+      await Promise.all(
+        hooks.map((hook, i) => hook.result.current.run(client, runs[i][0], runs[i][1], { indexingDelayMs: 0 })),
+      );
+    });
+
+    expect(submitAction).toHaveBeenCalledTimes(4);
+    hooks.forEach((hook) => expect(hook.result.current.state.stage).toBe("success"));
+  });
+
+  it("does not apply the cross-view guard to runs without a wallet (recovery replay)", async () => {
+    const submitAction = vi.fn<VaultContractClient["submitAction"]>(async () => ({
+      txHash: "tx-no-wallet",
+      status: "submitted",
+    }));
+    const client = clientWithSubmit(submitAction);
+    const noWallet = { poolId: "", walletAddress: "" };
+    const first = renderHook(() => useTxFlow());
+    const second = renderHook(() => useTxFlow());
+
+    await act(async () => {
+      await Promise.all([
+        first.result.current.run(client, "claim", noWallet, { indexingDelayMs: 0 }),
+        second.result.current.run(client, "claim", noWallet, { indexingDelayMs: 0 }),
+      ]);
+    });
+
+    expect(submitAction).toHaveBeenCalledTimes(2);
+  });
+
+  it("releases the action after a failure so another view can retry it", async () => {
+    const submitAction = vi
+      .fn<VaultContractClient["submitAction"]>()
+      .mockRejectedValueOnce(new ContractInterfaceError("rpc_failure", "RPC temporarily unavailable"))
+      .mockResolvedValueOnce({ txHash: "tx-after-retry", status: "submitted" });
+    const client = clientWithSubmit(submitAction);
+    const first = renderHook(() => useTxFlow());
+    const second = renderHook(() => useTxFlow());
+
+    await act(async () => {
+      await first.result.current.run(client, "withdraw", input, { indexingDelayMs: 0 });
+    });
+    expect(first.result.current.state.stage).toBe("failed");
+
+    await act(async () => {
+      await second.result.current.run(client, "withdraw", input, { indexingDelayMs: 0 });
+    });
+
+    expect(submitAction).toHaveBeenCalledTimes(2);
+    expect(second.result.current.state).toEqual({ stage: "success", txHash: "tx-after-retry" });
+  });
+
+  it("releases the action when the wallet refuses to authorize it", async () => {
+    vi.mocked(assertNetworkMatchesBeforeSigning).mockRejectedValueOnce(
+      new NetworkMismatchError("mainnet", "testnet"),
+    );
+    const submitAction = vi
+      .fn<VaultContractClient["submitAction"]>()
+      .mockRejectedValueOnce(new ContractInterfaceError("signature_rejected", "User declined to sign"))
+      .mockResolvedValueOnce({ txHash: "tx-authorized", status: "submitted" });
+    const client = clientWithSubmit(submitAction);
+    const first = renderHook(() => useTxFlow());
+    const second = renderHook(() => useTxFlow());
+
+    await act(async () => {
+      await first.result.current.run(client, "claim", input, { indexingDelayMs: 0 });
+    });
+    expect(submitAction).not.toHaveBeenCalled();
+    expect(first.result.current.state).toMatchObject({ stage: "failed", failedAt: "preparing" });
+
+    await act(async () => {
+      await second.result.current.run(client, "claim", input, { indexingDelayMs: 0 });
+    });
+    expect(second.result.current.state).toMatchObject({ stage: "failed", failedAt: "awaiting-signature" });
+
+    await act(async () => {
+      await first.result.current.run(client, "claim", input, { indexingDelayMs: 0 });
+    });
+    expect(submitAction).toHaveBeenCalledTimes(2);
+    expect(first.result.current.state).toEqual({ stage: "success", txHash: "tx-authorized" });
   });
 });
 

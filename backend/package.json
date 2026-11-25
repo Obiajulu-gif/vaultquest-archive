@@ -22,6 +22,7 @@
     "diagnostics": "tsx src/scripts/diagnostics.ts",
     "diagnostics:json": "tsx src/scripts/diagnostics.ts --json",
     "integrity-monitor": "tsx src/scripts/integrity-monitor.ts",
+    "repair:orphans": "tsx src/scripts/orphanRepair.ts",
     "db:validate-restore": "tsx src/scripts/validateRestore.ts",
     "backup:snapshot": "tsx src/scripts/backupSnapshot.ts",
     "projections:rebuild": "tsx src/scripts/rebuildProjections.ts",

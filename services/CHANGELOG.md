@@ -8,6 +8,18 @@ PATCH = no behavioral change. Every PR touching `services/**` or
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- `syntheticMonitor.ts` (#1128): runs of the same journey no longer overlap; a
+  scheduled tick or manual trigger during an in-flight run shares its result,
+  after the caller's own authorization check. The timeout timer is cleared once
+  a probe settles. `retentionHours` is now applied, so results older than the
+  window are pruned and `getStatus()` reports `unknown` for a monitor that
+  stopped running. No guarantee ID in `CONTRACT.md` changes. See
+  [`docs/SYNTHETIC_MONITORING.md`](../docs/SYNTHETIC_MONITORING.md).
+
 ## [1.0.0] - 2026-09-24
 
 ### Added

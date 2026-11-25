@@ -226,6 +226,8 @@ and the `metadata` column already exist (migration `20260927000001`).
 | POST | `/admin/feature-flags/:key/rollout/rollback` | `{ scope, reason }` | Idempotent; returns the record with its verification report |
 | POST | `/admin/feature-flags/:key/rollout/verify` | `{ scope }` | Re-runs verification and persists the report |
 | POST | `/admin/feature-flags/:key/rollout/complete` | `{ scope, reason }` | Promote: the flag stays on |
+| POST | `/admin/feature-flags/:key/emergency-disable` | `{ scope, reason }` | Kill switch: off now and latched off (see [Emergency disablement](#emergency-disablement)) |
+| POST | `/admin/feature-flags/:key/emergency-disable/release` | `{ scope, reason }` | Lifts the latch; the flag stays off |
 
 `scope` is `global` (default), `vault:{id}` or `wallet:{address}`. `guardrails`
 accepts `max_error_rate` (0–1, default `0.05`), `min_samples` (default `20`) and
@@ -300,7 +302,7 @@ reports `rollback_unverified`. The app re-verifies on its own one TTL later
 | Two replicas breach at once | The row lock (`SELECT … FOR UPDATE`) serialises them; the second sees `rolling_back` and writes nothing. |
 | Low traffic | No decision until `min_samples` outcomes arrive in the window. Lower `min_samples` for rare operations, or watch the rollout manually. |
 | Multiple replicas | Each replica judges its own window (no shared counters). A breach on **any** replica rolls back globally. |
-| Rolling back a `completed` rollout | Refused (`409`). Treat it as a normal flag change via `FeatureFlagService.setFlag`. |
+| Rolling back a `completed` rollout | Refused (`409`). Use `POST …/emergency-disable` instead. |
 | Vault-scoped rollout while the global row is on | `isEnabled({ vault })` reads only the vault row, so the rollout and rollback affect only callers that pass the vault scope. |
 | Someone edits the flag with SQL during a rollout | Rollback re-asserts the stored pre-rollout value and writes an audit row saying so. |
 
@@ -315,11 +317,82 @@ WHERE key = 'withdrawal-submission-enabled' AND scope = 'global';
 
 Once the API is back, run `/verify`; the guard picks up the `rolling_back` record.
 
+## Emergency disablement
+
+A rollout rollback only works while the rollout is open. For a flag that is on
+for any other reason (a `completed` rollout, a direct change, SQL), use the kill
+switch. It works on every flag in every state:
+
+```bash
+POST /admin/feature-flags/withdrawal-submission-enabled/emergency-disable
+{ "scope": "global", "reason": "withdrawals double-submitting, INC-42" }
+```
+
+What it does, in one row-locked transaction:
+
+1. Writes `enabled = false` and sets a latch in `feature_flags.metadata.emergency`
+   (`disabledAt`, `disabledBy`, `reason`, `previousEnabled`), plus one
+   `feature_flag_audits` row.
+2. Ends an `active` rollout in that scope as a rollback (`endReason: "emergency: …"`)
+   and runs the usual [verification](#what-verified-means), so the guard stops
+   watching it and you can `/verify` it later.
+
+While the latch is set:
+
+- `FeatureFlagService.isEnabled()` returns `false` for that scope **even if the
+  stored value is turned back on** (stale writer, manual SQL). The latch is
+  enforced on the read path, so no writer can bypass it.
+- `POST …/rollout` is refused with `409` (`EMERGENCY_DISABLED`).
+- `GET …/rollout?scope=` shows the latch under `emergency`.
+
+Release the latch once the fix is out:
+
+```bash
+POST /admin/feature-flags/withdrawal-submission-enabled/emergency-disable/release
+{ "scope": "global", "reason": "fix deployed in v1.4.2" }
+```
+
+Release writes the flag **off** and clears the latch. It does not restore the
+previous value: turning the feature back on is a new guarded rollout. Both
+endpoints need `admin.flags.write` (maintainers).
+
+### Edge cases
+
+| Situation | Behaviour |
+|---|---|
+| Called twice, or from several replicas at once | The row lock serialises the calls. The first one writes; the rest write nothing and return the same latch. Safe to retry after a timeout. |
+| Stored value flipped on while latched | Reads stay `false`. Calling emergency-disable again forces the stored value off and audits `re-asserting: …`. |
+| Release after the value was flipped on behind the latch | Release writes `false`, so the hidden value never goes live. |
+| Release when nothing is latched | No-op (nothing written); returns the current state. |
+| Database down | The call fails with no change. Retry it, or use the SQL fallback below. |
+| Other replicas | They serve the old value for up to one cache TTL (30 s), as with any flag change. |
+| Scope | The latch applies to one scope row, the same as rollouts and `isEnabled`. To stop a feature everywhere, disable each scope that is on: `SELECT scope FROM feature_flags WHERE key = '<flag>' AND enabled`. |
+
+No schema migration is needed: the latch lives in the existing `metadata`
+column, and rows without it behave exactly as before.
+
 ## Emergency Rollback Workflow
 
 If a flagged feature exhibits issues in production:
 
 ### Immediate: Disable the Flag
+
+Use `POST /admin/feature-flags/:key/emergency-disable` (see
+[Emergency disablement](#emergency-disablement)). If the API itself is
+unavailable, set the latch by hand; `isEnabled()` honours it as soon as the
+cache expires:
+
+```sql
+UPDATE feature_flags
+SET enabled = false,
+    metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{emergency}',
+      jsonb_build_object('disabledAt', now(), 'disabledBy', 'operator-123',
+        'reason', 'API down; manual kill switch', 'previousEnabled', enabled))
+WHERE key = 'prize-draw-execution' AND scope = 'global';
+```
+
+Without the latch, a plain update also works but nothing stops the flag being
+turned back on:
 
 ```sql
 UPDATE feature_flags 

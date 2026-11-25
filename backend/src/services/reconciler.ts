@@ -822,6 +822,11 @@ export async function sweepOrphans(
     const result = await prisma.actionLedger.updateMany({
       where: {
         id: { in: orphanableActionIds },
+  const orphanableActionIds = staleActions.map((a) => a.id).filter((id) => !heldActionIds.has(id));
+  if (expiredActions.length > 0) {
+    const result = await prisma.actionLedger.updateMany({
+      where: {
+        id: { in: expiredActions.map((action) => action.id) },
         status: "submitted"
       },
       data: {
@@ -838,6 +843,9 @@ export async function sweepOrphans(
     orphaned = result.count;
   }
 
+  const staleEvents = await prisma.pendingEvent.findMany({ where: { consumedAt: null, receivedAt: { lt: eventCutoff } }, select: { txHash: true } });
+  const heldEventIds = new Set<string>();
+  for (const event of staleEvents) if (await holds.isHeld("pending_event", event.txHash)) heldEventIds.add(event.txHash);
   const interruptedPending = await prisma.actionLedger.updateMany({
     where: {
       status: "pending",
@@ -918,6 +926,7 @@ async function pruneStalePendingEvents(
     }
   });
 }
+
 // ─── Manual repair command ────────────────────────────────────────────────────
 
 /**

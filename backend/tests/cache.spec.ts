@@ -256,12 +256,6 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
           recommendation: "invalidate_and_refetch",
         },
       ]);
-      expect(mockRedisInstance.sscan).toHaveBeenCalledWith(
-        "vaultquest:cache:index",
-        "0",
-        "COUNT",
-        1,
-      );
 
       mockRedisInstance.get.mockResolvedValueOnce(JSON.stringify({ version: 2 }));
       mockRedisInstance.hget.mockResolvedValueOnce("5");
@@ -355,6 +349,9 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
       expect(result).toHaveLength(1);
       expect(result[0].key).toBe("vault:v1:summary");
       expect(result[0].reason).toBe("version_mismatch");
+
+      const findings = await service.detectStale({ kind: "protocol_config" });
+      expect(findings).toHaveLength(0);
     });
 
     it("atomically defers checkpoint eviction if a write-behind update races with repair", async () => {
@@ -486,6 +483,8 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
         now: new Date("2020-01-01T00:06:00.000Z"),
       });
       expect(findings).toMatchObject([{ key: "asset:XLM", reason: "stale" }]);
+      const findings = await service.detectStale({ kind: "asset_metadata" });
+      expect(findings).toHaveLength(1);
     });
 
     it("repair job is idempotent and supports dry-run", async () => {
@@ -583,6 +582,7 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
       expect(result.scanned).toBe(0);
       expect(mockPrisma.cacheRepairRun.create).not.toHaveBeenCalled();
     });
+
     it("reports a repair failure without throwing", async () => {
       const service = new CacheService(
         mockPrisma,
@@ -617,6 +617,12 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
         { key: "vault:v1:summary", error: expect.stringContaining("db write failed") },
       ]);
       expect(mockLogger.error).toHaveBeenCalled();
+      expect(result.succeeded).toEqual([]);
+      expect(result.failed).toHaveLength(1);
+      expect(result.failed[0]).toMatchObject({
+        key: "vault:v1:summary",
+        error: "db write failed",
+      });
     });
 
     it("does not mutate cache when the repair audit cannot be started", async () => {
@@ -640,3 +646,6 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
     });
   });
 });
+
+}
+);

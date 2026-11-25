@@ -19,6 +19,18 @@ const PAGE_SIZE = 500;
 export const EXPORT_SECTIONS = ["actions", "saved_pools"] as const;
 export type ExportSection = (typeof EXPORT_SECTIONS)[number];
 
+export const EXPORT_ACTION_FIELDS = [
+  "id", "date", "action_type", "pool_id", "asset", "amount", "status",
+  "tx_hash", "error_code", "submitted_at", "confirmed_at",
+] as const;
+export const EXPORT_SAVED_POOL_FIELDS = [
+  "pool_id", "pool_name", "status", "tvl", "asset", "participant_count",
+  "expected_yield", "prize", "opens_at", "locks_at", "draws_at", "provenance",
+] as const;
+export type ExportField =
+  | (typeof EXPORT_ACTION_FIELDS)[number]
+  | (typeof EXPORT_SAVED_POOL_FIELDS)[number];
+
 type Page<T> = { items: T[]; nextCursor: string | null };
 
 /** Narrow read port so the service is testable without a database. */
@@ -32,6 +44,10 @@ export type ExportRequest = {
   /** Wallet to export; defaults to the caller's own wallet. */
   wallet?: string;
   sections?: readonly ExportSection[];
+  /** Optional field allowlist. Unknown or unauthorized fields fail closed. */
+  fields?: readonly ExportField[];
+  /** Backward-compatible spelling for field-level API consumers. */
+  fieldNames?: readonly ExportField[];
   now?: Date;
   maxRecords?: number;
   exportId?: string;
@@ -60,9 +76,9 @@ export type ExportBundle = {
  * identifiers (idempotency keys, correlation ids, worker ids), free-form
  * payloads and error details are intentionally left out.
  */
-function projectAction(r: ActionRecord) {
+function projectAction(r: ActionRecord, fields?: readonly ExportField[]) {
   const payload = (r.actionPayload as Record<string, unknown> | null) ?? {};
-  return {
+  const projected = {
     id: r.id,
     date: r.createdAt.toISOString(),
     action_type: r.actionType,
@@ -75,10 +91,13 @@ function projectAction(r: ActionRecord) {
     submitted_at: r.submittedAt?.toISOString() ?? "",
     confirmed_at: r.confirmedAt?.toISOString() ?? "",
   };
+  return fields
+    ? Object.fromEntries(Object.entries(projected).filter(([key]) => fields.includes(key as ExportField)))
+    : projected;
 }
 
-function projectSavedPool(r: SavedPoolRecord) {
-  return {
+function projectSavedPool(r: SavedPoolRecord, fields?: readonly ExportField[]) {
+  const projected = {
     pool_id: r.poolId,
     pool_name: r.poolName,
     status: r.status,
@@ -92,6 +111,9 @@ function projectSavedPool(r: SavedPoolRecord) {
     draws_at: r.drawsAt?.toISOString() ?? null,
     ...(r.provenance ? { provenance: structuredClone(r.provenance) } : {}),
   };
+  return fields
+    ? Object.fromEntries(Object.entries(projected).filter(([key]) => fields.includes(key as ExportField)))
+    : projected;
 }
 
 async function collect<T, U>(
@@ -150,12 +172,31 @@ export class DataExportService {
     throw AppError.forbidden("cannot export data outside your authorization scope");
   }
 
+  private authorizeFields(principal: Principal, wallet: string, fields: readonly ExportField[] | undefined): void {
+    if (!fields?.length) return;
+    const allowed = new Set<ExportField>([
+      ...EXPORT_ACTION_FIELDS,
+      ...EXPORT_SAVED_POOL_FIELDS,
+    ]);
+    const unknown = fields.filter((field) => !allowed.has(field));
+    if (unknown.length > 0) {
+      throw AppError.forbidden("requested export fields are outside the privacy-safe field allowlist");
+    }
+    const ownWallet = principal.walletAddress && principal.walletAddress === wallet;
+    const maintainer = hasPermission([principal.role], "admin.export.any");
+    if (!ownWallet && !maintainer) {
+      throw AppError.forbidden("cannot export fields outside your authorization scope");
+    }
+  }
+
   async build(req: ExportRequest): Promise<ExportBundle> {
     const wallet = req.wallet ?? req.principal.walletAddress;
     if (!wallet) throw AppError.validation("wallet is required");
     this.authorize(req.principal, wallet);
 
     const sections = [...new Set(req.sections?.length ? req.sections : EXPORT_SECTIONS)];
+    const fields = req.fields ?? req.fieldNames;
+    this.authorizeFields(req.principal, wallet, fields);
     const max = req.maxRecords ?? EXPORT_MAX_RECORDS;
     const now = req.now ?? new Date();
     const data: ExportBundle["data"] = {};
@@ -164,7 +205,7 @@ export class DataExportService {
     if (sections.includes("actions")) {
       const r = await collect(
         (cursor, limit) => this.source.listActions( { walletAddress: wallet, cursor, limit }),
-        projectAction,
+        (row) => projectAction(row, fields),
         (row) => row.redactedAt === null || row.redactedAt === undefined, // scrubbed rows are never exported
         max,
         req.signal,
@@ -175,7 +216,7 @@ export class DataExportService {
     if (sections.includes("saved_pools")) {
       const r = await collect(
         (cursor, limit) => this.source.listSavedPools(wallet, cursor, limit),
-        projectSavedPool,
+        (row) => projectSavedPool(row, fields),
         () => true,
         max,
         req.signal,

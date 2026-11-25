@@ -1,6 +1,11 @@
 import type { FastifyPluginAsync, preHandlerHookHandler } from "fastify";
 import { z } from "zod";
-import { EXPORT_SECTIONS, type DataExportService } from "../services/dataExport.js";
+import {
+  EXPORT_ACTION_FIELDS,
+  EXPORT_SAVED_POOL_FIELDS,
+  EXPORT_SECTIONS,
+  type DataExportService,
+} from "../services/dataExport.js";
 import { validateFileType, validateDestination } from "../services/strictAllowlistService.js";
 import { AppError } from "../errors.js";
 import { ok } from "../responses.js";
@@ -20,6 +25,11 @@ const exportQuery = z.object({
     .optional()
     .transform((v) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : []))
     .pipe(z.array(z.enum(EXPORT_SECTIONS))),
+  fields: z
+    .string()
+    .optional()
+    .transform((v) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : []))
+    .pipe(z.array(z.enum([...EXPORT_ACTION_FIELDS, ...EXPORT_SAVED_POOL_FIELDS]))),
 });
 
 const cancelExportParams = z.object({
@@ -60,7 +70,12 @@ export const exportsRoutes = (svc: DataExportService, guard: preHandlerHookHandl
         customFilename = fileCheck.filename;
       }
 
-      const bundle = await svc.build({ principal: req.principal!, wallet: q.wallet, sections: q.sections });
+      const bundle = await svc.build({
+        principal: req.principal!,
+        wallet: q.wallet,
+        sections: q.sections,
+        fields: q.fields,
+      });
 
       const generatedAt = new Date(bundle.metadata.generated_at);
       const expiresAt = new Date(generatedAt.getTime() + EXPORT_TTL_MS);

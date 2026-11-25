@@ -1,5 +1,6 @@
 import { SearchIndexService } from "./services/search/searchIndexService.js";
 import { SearchIndexRepairService } from "./services/search/searchIndexRepairService.js";
+import { permissionMatrixPreviewRoutes } from "./routes/permissionMatrixPreview.js";
 import { searchRoutes } from "./routes/search.js";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import type { PrismaClient } from "@prisma/client";
@@ -762,6 +763,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       },
     ),
   );
+
+  app.register(permissionMatrixPreviewRoutes(requirePermission("admin.permissions.preview", [walletPrincipal])));
 
   // Central Error Handler Middleware
   app.setErrorHandler(errorHandler);

@@ -125,3 +125,27 @@ The action ledger and reconciliation pipelines are designed to maintain byte-for
 
 Automated test verification is implemented in `backend/tests/deterministic-replay-concurrency.spec.ts`.
 
+---
+
+## Versioned Event Replay for Derived Projections (#1113)
+
+The versioned projection replay engine (`lib/event-replay-projections.ts`) rebuilds derived financial projections (vault totals, participant counts, yield allocations, user positions) deterministically from an append-only event stream:
+
+### 1. Architectural Guarantees
+
+- **Deterministic Hash Digest**: Every replayed state computes a canonical SHA-256 digest (`computeStateChecksum`) across sorted vault and user state. Replaying identical events yields bit-for-bit identical state digests.
+- **Forward & Backward Version Fencing**: Events bearing schema versions beyond the target projection version are quarantined with `FORWARD_VERSION_UNSUPPORTED` rather than silently misinterpreting fields. Downgrading projections to an older version requires explicit `allowDowngrade: true` signed by a maintainer.
+- **Sequence Gap Detection**: Missing intermediate events immediately trigger `SEQUENCE_GAP` halts to prevent corrupting state with partial ledger spans.
+- **Poison Event Quarantine**: Payload violations (such as overdraft withdrawals or malformed numeric inputs) halt processing at the offending event, persist last known good checkpoint sequence, and isolate the event until operator review (`resolveQuarantinedEvent`).
+
+### 2. Execution Paths
+
+| Path | Behavior | Error / Code |
+| :--- | :--- | :--- |
+| **Normal** | Sequential log playback updating vaults and positions; advances checkpoint | Status `completed`, deterministic checksum |
+| **Failure** | Sequence gap, poison payload, or unsupported forward schema | `SEQUENCE_GAP`, `INVARIANT_VIOLATION`, `FORWARD_VERSION_UNSUPPORTED` |
+| **Retry** | Resumes from committed checkpoint sequence without resetting or duplicating state; backoff on transient I/O | `TRANSIENT_IO_ERROR` (503, retryable) |
+| **Authorization** | Restricted to `maintainer` or `admin` roles with mandatory audited reason ($\ge 3$ chars) | 401 `UNAUTHORIZED`, 403 `FORBIDDEN` |
+
+Verified by automated test suite `tests/event-replay-projections.test.ts`.
+

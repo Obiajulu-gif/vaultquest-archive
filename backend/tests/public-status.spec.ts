@@ -216,6 +216,14 @@ describe("PublicStatusService", () => {
       const snapshot = status.getPublicStatus();
       expect(snapshot.status).toBe("healthy");
     });
+
+    it("rejects invalid maintenance ranges", () => {
+      expect(() => status.scheduleMaintenanceWindow({
+        startsAt: new Date("2026-10-20T12:00:00Z"),
+        endsAt: new Date("2026-10-20T11:00:00Z"),
+        reason: "Invalid range",
+      })).toThrow(RangeError);
+    });
   });
 
   // ── Explicit Pause State ─────────────────────────────────────────────────
@@ -277,6 +285,7 @@ describe("PublicStatusService", () => {
 
       const after = status.getPublicStatus();
       expect(after.status).toBe("healthy");
+      expect(status.getRecoveryEta()).toBeNull();
     });
   });
 

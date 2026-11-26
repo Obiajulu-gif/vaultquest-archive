@@ -15,7 +15,6 @@ import { ensureVaultCacheSync } from "@vaultquest/stellar-wallet-connect/src/vau
 
 import { ToastProvider } from "@/components/providers/ToastProvider";
 
-export default function Providers({ children }) {
 function ProvidersInner({ children }) {
   const { i18n } = useTranslation("common");
   const [queryClient] = useState(

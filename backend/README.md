@@ -60,6 +60,12 @@ Exit code is `0` when every check passes and non-zero when any check fails, so i
 | Method | Path | Purpose |
 |---|---|---|
 | GET  | /health | Liveness probe |
+| GET  | /status | Public, user-safe service status |
+| GET  | /status/can-mutate | Authenticated mutation availability |
+| POST | /status/pause, /status/resume | Maintainer incident controls |
+| POST | /status/maintenance, /status/maintenance/clear | Maintainer maintenance controls |
+| GET  | /admin/partial-failures, /admin/partial-failures/summary | Maintainer unresolved-failure dashboard |
+| POST | /admin/partial-failures/:id/retry, /resolve, /ignore | Audited maintainer recovery actions |
 | POST | /actions | Create intent (requires `Idempotency-Key: <uuid>`) |
 | PATCH | /actions/:id/submitted | Attach `tx_hash` after wallet broadcasts |
 | POST | /actions/:id/cancel | Mark a pending intent failed |
@@ -79,6 +85,13 @@ Exit code is `0` when every check passes and non-zero when any check fails, so i
 For the manual repair command contract, see [`docs/RECONCILIATION.md`](../docs/RECONCILIATION.md). See `docs/superpowers/specs/2026-04-23-action-ledger-design.md` for the full contract, and [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) for the service layout, schema, worker runtime, and migration strategy. For background drift detection, automated repair pipelines, and quarantine incident response, see [`docs/RECONCILIATION.md`](../docs/RECONCILIATION.md). For response envelopes, errors, and pagination, see [`docs/API_RESPONSES.md`](docs/API_RESPONSES.md). For how the frontend should submit, poll, and **retry** these endpoints safely, see [`docs/transaction-status-api.md`](docs/transaction-status-api.md). Indexer contributors should also follow the contract [`event schema`](../contracts/docs/EVENT_SCHEMA.md) and [`pause/recovery model`](../contracts/docs/PAUSE_RECOVERY.md). For how confirmations become quest completions and reward grants (idempotency, reorg correction, and the current payout state), see [`docs/QUEST_REWARDS.md`](../docs/QUEST_REWARDS.md).
 
 Maintainers can preview bounded stale-index findings with `GET /api/search/repair/preview?type=vault&limit=100`; see [`SEARCH_INDEXING_AND_REPAIR.md`](../docs/SEARCH_INDEXING_AND_REPAIR.md) for recommendations, failure modes, and recovery guidance.
+
+For degraded-dependency status, authorization, and restart/recovery behavior,
+see [`PUBLIC_STATUS_OPERATIONS.md`](docs/PUBLIC_STATUS_OPERATIONS.md). For
+operator-driven partial-failure retries and duplicate detection, see
+[`PARTIAL_FAILURE_OPERATIONS.md`](docs/PARTIAL_FAILURE_OPERATIONS.md). For
+migration readiness and rollback verification, see
+[`RELEASE_READINESS.md`](docs/RELEASE_READINESS.md).
 
 ## Environment
 

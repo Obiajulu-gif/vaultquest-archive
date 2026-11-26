@@ -108,6 +108,33 @@ describe("configured failure escalations (#842)", () => {
   });
 });
 
+describe("partial failure records", () => {
+  it("deduplicates concurrent detection and redacts secret metadata", async () => {
+    const operationId = crypto.randomUUID();
+    const input = {
+      operationType: "wallet_flow" as const,
+      operationId,
+      description: "Receipt has not been issued",
+      metadata: { access_token: "sensitive-value", source: "receipt-worker" },
+    };
+
+    const [first, second] = await Promise.all([
+      failures.record(input),
+      failures.record(input),
+    ]);
+
+    expect(second.id).toBe(first.id);
+    expect(await db.prisma.partialFailure.count({ where: { operationId } })).toBe(1);
+    expect(first.metadata).toEqual({
+      access_token: "[REDACTED]",
+      source: "receipt-worker",
+    });
+    const summary = await failures.summary();
+    expect(summary.total).toBeGreaterThan(0);
+    expect(summary.by_operation_type.wallet_flow).toBeGreaterThan(0);
+  });
+});
+
 describe("maintainer operations authorization", () => {
   it("guards every note and escalation endpoint with real RBAC", async () => {
     const app = Fastify();

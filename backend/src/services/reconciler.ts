@@ -810,11 +810,18 @@ export async function sweepOrphans(
   const activelyLeasedIds = new Set(activeLeases.map((lease) => lease.actionId));
   const expiredActions = staleActions.filter((action) => !activelyLeasedIds.has(action.id));
 
-  let orphaned = 0;
-  const heldActionIds = new Set<string>();
-  for (const action of staleActions) {
-    if (await holds.isHeld("action_ledger", action.id)) heldActionIds.add(action.id);
+  const orphanableActionIds: string[] = [];
+  for (const action of expiredActions) {
+    if (!(await holds.isHeld("action_ledger", action.id))) {
+      orphanableActionIds.push(action.id);
+    }
   }
+
+  let orphaned = 0;
+  if (orphanableActionIds.length > 0) {
+    const result = await prisma.actionLedger.updateMany({
+      where: {
+        id: { in: orphanableActionIds },
   const orphanableActionIds = staleActions.map((a) => a.id).filter((id) => !heldActionIds.has(id));
   if (expiredActions.length > 0) {
     const result = await prisma.actionLedger.updateMany({
@@ -855,7 +862,7 @@ export async function sweepOrphans(
     }
   });
 
-  const pruned = await pruneStalePendingEvents(prisma, eventCutoff);
+  const pruned = await pruneStalePendingEvents(prisma, eventCutoff, holds);
 
   return { orphaned, recoveryRequired: interruptedPending.count, prunedEvents: pruned.count };
 }
@@ -876,23 +883,46 @@ export async function recoverStuckActions(
   return { recovered: result.recovered, prunedEvents: pruned.count };
 }
 
-async function pruneStalePendingEvents(prisma: PrismaClient, cutoff: Date) {
-  const unresolvedActions = await prisma.actionLedger.findMany({
-    where: {
-      status: { in: ["submitted", "orphaned"] },
-      txHash: { not: null }
-    },
-    select: { txHash: true }
-  });
-  const unresolvedHashes = unresolvedActions
-    .map((action) => action.txHash)
-    .filter((txHash): txHash is string => txHash !== null);
+async function pruneStalePendingEvents(
+  prisma: PrismaClient,
+  cutoff: Date,
+  holds = new RetentionHoldService(prisma)
+) {
+  const [unresolvedActions, staleEvents] = await Promise.all([
+    prisma.actionLedger.findMany({
+      where: {
+        status: { in: ["submitted", "orphaned"] },
+        txHash: { not: null }
+      },
+      select: { txHash: true }
+    }),
+    prisma.pendingEvent.findMany({
+      where: { consumedAt: null, receivedAt: { lt: cutoff } },
+      select: { txHash: true }
+    })
+  ]);
+  const unresolvedHashes = new Set(
+    unresolvedActions
+      .map((action) => action.txHash)
+      .filter((txHash): txHash is string => txHash !== null)
+  );
+  const deletableHashes = new Set<string>();
+  for (const event of staleEvents) {
+    if (
+      !unresolvedHashes.has(event.txHash) &&
+      !(await holds.isHeld("pending_event", event.txHash))
+    ) {
+      deletableHashes.add(event.txHash);
+    }
+  }
+
+  if (deletableHashes.size === 0) return { count: 0 };
 
   return prisma.pendingEvent.deleteMany({
     where: {
       consumedAt: null,
       receivedAt: { lt: cutoff },
-      ...(unresolvedHashes.length > 0 && { txHash: { notIn: unresolvedHashes } })
+      txHash: { in: [...deletableHashes] }
     }
   });
 }

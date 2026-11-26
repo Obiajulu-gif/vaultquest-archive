@@ -1,8 +1,8 @@
 import "@/styles/globals.css";
 import Providers from "@/components/providers/Providers";
-import { Toaster } from "sonner";
+import { Toaster as SonnerToaster } from "sonner";
 import AttestationProvider from "@/components/AttestationProvider";
-import { Toaster } from "react-hot-toast";
+import { Toaster as HotToastToaster } from "react-hot-toast";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
 import { readFileSync } from "fs";
 import { resolve } from "path";
@@ -44,13 +44,12 @@ export default function RootLayout({ children }) {
       <body>
         {/* #791: Impersonation session banner — always visible when active */}
         <ImpersonationBanner />
-        <Providers>{children}</Providers>
-        {/* Global toast container */}
-        <Toaster position="top-right" richColors />
         <AttestationProvider>
           <Providers>{children}</Providers>
         </AttestationProvider>
-        <Toaster position="bottom-right" />
+        {/* Global toast containers */}
+        <SonnerToaster position="top-right" richColors />
+        <HotToastToaster position="bottom-right" />
       </body>
     </html>
   );

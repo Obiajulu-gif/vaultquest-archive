@@ -20,7 +20,6 @@ import {
   NotificationProvider,
   useNotificationCenter,
 } from "@/src/providers/NotificationProvider";
-import type { NotificationScope, NotificationType } from "@/lib/notification-dedup";
 
 /**
  * Demo/seed alerts for the notification center (#652, #776).
@@ -33,8 +32,8 @@ import type { NotificationScope, NotificationType } from "@/lib/notification-ded
  */
 const SEED_ALERTS = [
   {
-    type: "apy_change" as NotificationType,
-    scope: "vault" as NotificationScope,
+    type: "apy_change",
+    scope: "vault",
     subject: "XLM Drip Vault",
     title: "Vault APY updated",
     message: "Projected APY changed to 4.1% after strategy rebalance.",
@@ -42,8 +41,8 @@ const SEED_ALERTS = [
     expiresAt: "2026-07-05T00:00:00.000Z",
   },
   {
-    type: "apy_change" as NotificationType,
-    scope: "vault" as NotificationScope,
+    type: "apy_change",
+    scope: "vault",
     subject: "XLM Drip Vault",
     title: "Vault APY updated",
     message: "Projected APY changed to 4.6% after the latest strategy rebalance.",
@@ -51,16 +50,16 @@ const SEED_ALERTS = [
     expiresAt: "2026-07-05T00:00:00.000Z",
   },
   {
-    type: "vault_pause" as NotificationType,
-    scope: "global" as NotificationScope,
+    type: "vault_pause",
+    scope: "global",
     title: "Protocol pause lifted",
     message: "Settlement resumed across all vaults and reward drafting.",
     date: "2026-06-20T12:00:00.000Z",
     expiresAt: "2026-07-01T00:00:00.000Z",
   },
   {
-    type: "vault_pause" as NotificationType,
-    scope: "vault" as NotificationScope,
+    type: "vault_pause",
+    scope: "vault",
     subject: "USDC Stable Pool",
     title: "Vault pause lifted",
     message: "Deposits reopened for the USDC Stable Pool after review.",
@@ -68,32 +67,32 @@ const SEED_ALERTS = [
     expiresAt: "2026-07-01T00:00:00.000Z",
   },
   {
-    type: "reward_event" as NotificationType,
-    scope: "wallet" as NotificationScope,
+    type: "reward_event",
+    scope: "wallet",
     subject: "GBBD...FLA5",
     title: "Weekly draw completed",
     message: "Prize winners were selected and the next round is now open.",
     date: "2026-06-24T18:30:00.000Z",
   },
   {
-    type: "deposit" as NotificationType,
-    scope: "wallet" as NotificationScope,
+    type: "deposit",
+    scope: "wallet",
     subject: "GBBD...FLA5",
     title: "Deposit confirmed",
     message: "Your 0.42 ETH deposit was confirmed and tickets were updated.",
     date: "2026-06-24T15:10:00.000Z",
   },
   {
-    type: "pending_transaction" as NotificationType,
-    scope: "vault" as NotificationScope,
+    type: "pending_transaction",
+    scope: "vault",
     subject: "BTC Reserve",
     title: "Withdrawal window opened",
     message: "Your lockup period ended and principal is available to withdraw.",
     date: "2026-06-18T12:00:00.000Z",
   },
   {
-    type: "round_update" as NotificationType,
-    scope: "global" as NotificationScope,
+    type: "round_update",
+    scope: "global",
     title: "Round cadence updated",
     message: "The protocol round cadence changed to a weekly draw.",
     date: "2026-06-25T08:00:00.000Z",
@@ -101,8 +100,8 @@ const SEED_ALERTS = [
   },
   // Expired alert — pruned on load by the provider.
   {
-    type: "protocol_alert" as NotificationType,
-    scope: "global" as NotificationScope,
+    type: "protocol_alert",
+    scope: "global",
     title: "Indexer lag spike",
     message: "Indexer temporarily lagged 12 ledgers.",
     date: "2026-06-01T04:00:00.000Z",

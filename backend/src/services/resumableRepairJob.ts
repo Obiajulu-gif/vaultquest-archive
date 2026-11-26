@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { PrismaClient } from "@prisma/client";
 import { createLogger } from "../logger.js";
 import { AppError } from "../errors.js";
@@ -311,6 +313,62 @@ export class InMemoryRepairCheckpointStore implements RepairCheckpointStore {
     }
     const limit = options?.limit ?? 50;
     return list.slice(0, limit);
+  }
+}
+
+/**
+ * Durable checkpoint store backed by one JSON file per job.
+ *
+ * Writes are atomic (temp file + rename) so an interrupted process cannot leave
+ * a half-written checkpoint behind. The job id is restricted to a safe filename
+ * character set to prevent path traversal from CLI input.
+ */
+export class FileRepairCheckpointStore implements RepairCheckpointStore {
+  constructor(private readonly directory: string) {}
+
+  private filePath(jobId: string): string {
+    if (!/^[A-Za-z0-9._-]+$/.test(jobId)) {
+      throw AppError.validation(`Invalid repair job id '${jobId}'`);
+    }
+    return join(this.directory, `${jobId}.json`);
+  }
+
+  async save(checkpoint: RepairCheckpoint): Promise<void> {
+    const target = this.filePath(checkpoint.jobId);
+    await mkdir(this.directory, { recursive: true });
+    const temporary = `${target}.${process.pid}.tmp`;
+    const payload = JSON.stringify(
+      { ...checkpoint, updatedAt: new Date().toISOString() },
+      null,
+      2
+    );
+    await writeFile(temporary, payload, "utf8");
+    await rename(temporary, target);
+  }
+
+  async get(jobId: string): Promise<RepairCheckpoint | null> {
+    try {
+      const raw = await readFile(this.filePath(jobId), "utf8");
+      return JSON.parse(raw) as RepairCheckpoint;
+    } catch (err: any) {
+      if (err?.code === "ENOENT") return null;
+      throw err;
+    }
+  }
+
+  async list(options?: { status?: RepairJobStatus; limit?: number }): Promise<RepairCheckpoint[]> {
+    await mkdir(this.directory, { recursive: true });
+    const files = (await readdir(this.directory)).filter((file) => file.endsWith(".json"));
+    const checkpoints: RepairCheckpoint[] = [];
+    for (const file of files) {
+      const raw = await readFile(join(this.directory, file), "utf8");
+      checkpoints.push(JSON.parse(raw) as RepairCheckpoint);
+    }
+    checkpoints.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const filtered = options?.status
+      ? checkpoints.filter((checkpoint) => checkpoint.status === options.status)
+      : checkpoints;
+    return filtered.slice(0, options?.limit ?? 50);
   }
 }
 

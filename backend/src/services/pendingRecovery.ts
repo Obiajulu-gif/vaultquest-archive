@@ -33,6 +33,7 @@
  */
 
 import type { AuditActor, AuditRecorder } from "./auditTrail.js";
+import { assessManualFailureRisk, type ActionRiskAssessment } from "./actionRiskScoring.js";
 
 export const RECOVERY_STATES = ["pending", "retryable", "failed", "manual_review", "resolved"] as const;
 export type RecoveryState = (typeof RECOVERY_STATES)[number];
@@ -174,12 +175,20 @@ export class InMemoryRecoveryCaseStore implements RecoveryCaseStore {
   }
 }
 
-export type RecoveryErrorCode = "NOT_FOUND" | "ILLEGAL_TRANSITION" | "FORBIDDEN" | "CONFLICT" | "INVALID_REQUEST";
+export type RecoveryErrorCode =
+  | "NOT_FOUND"
+  | "ILLEGAL_TRANSITION"
+  | "FORBIDDEN"
+  | "CONFLICT"
+  | "INVALID_REQUEST"
+  | "RISK_ACKNOWLEDGEMENT_REQUIRED";
 
 export class RecoveryError extends Error {
   constructor(
     readonly code: RecoveryErrorCode,
     message: string,
+    /** Set with RISK_ACKNOWLEDGEMENT_REQUIRED: what made the request high risk. */
+    readonly risk?: ActionRiskAssessment,
   ) {
     super(message);
     this.name = "RecoveryError";
@@ -352,10 +361,17 @@ export class PendingRecoveryService {
     return this.transition(current, { ...current, state: "manual_review" }, actor, "recovery.escalate", reason);
   }
 
+  /**
+   * Closes a case by hand. Failing an in-flight action is scored with
+   * assessManualFailureRisk(); when the score requires review the caller must
+   * echo it back as `acknowledgedRiskScore`, otherwise nothing changes and a
+   * RISK_ACKNOWLEDGEMENT_REQUIRED error carries the explanation. A stale
+   * acknowledgement (the score moved since) is refused the same way.
+   */
   async resolve(
     caseId: string,
     actor: AuditActor,
-    input: { outcome: ManualOutcome; reason: string },
+    input: { outcome: ManualOutcome; reason: string; acknowledgedRiskScore?: number },
   ): Promise<RecoveryCase> {
     if (!input.reason?.trim()) throw new RecoveryError("INVALID_REQUEST", "a reason is required to resolve");
     if (input.outcome !== "failed" && input.outcome !== "dismissed") {
@@ -369,10 +385,19 @@ export class PendingRecoveryService {
     // Fail the ledger action *before* closing the case: if the ledger update
     // throws, nothing has changed and the maintainer can simply retry. The
     // reverse order could leave a resolved case over a still-stuck action.
+    let risk: ActionRiskAssessment | null = null;
     if (input.outcome === "failed") {
       const action = await this.options.actions.getAction(current.actionId);
       if (action && IN_FLIGHT_STATUSES.includes(action.status)) {
         if (!this.options.ledger) throw new RecoveryError("INVALID_REQUEST", "ledger updates are not configured");
+        risk = assessManualFailureRisk(action);
+        if (risk.requiresReview && input.acknowledgedRiskScore !== risk.score) {
+          throw new RecoveryError(
+            "RISK_ACKNOWLEDGEMENT_REQUIRED",
+            `failing this ${action.actionType} is ${risk.level} risk (score ${risk.score}); review the factors and resend with the score acknowledged`,
+            risk,
+          );
+        }
         await this.options.ledger.markFailed(current.actionId, "RECOVERY_MANUAL_FAILED", input.reason.trim());
       }
     }
@@ -384,6 +409,9 @@ export class PendingRecoveryService {
     };
     return this.transition(current, next, actor, "recovery.resolve", input.reason, {
       outcome: input.outcome,
+      ...(risk
+        ? { risk: { score: risk.score, level: risk.level, factors: risk.factors.map((f) => f.code), acknowledged: risk.requiresReview } }
+        : {}),
     });
   }
 

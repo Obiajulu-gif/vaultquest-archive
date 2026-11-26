@@ -131,6 +131,43 @@ describe("checkDependencies — Issue #992 dependency-aware status", () => {
     ...overrides,
   });
 
+  it("retries a transient database failure and succeeds without changing the public contract", async () => {
+    const query = vi.fn().mockRejectedValueOnce(new Error("temporary outage")).mockResolvedValue([{ "?column?": 1 }]);
+    const report = await checkDependencies(makeDeps({
+      prisma: { $queryRaw: query },
+      retries: 1,
+      retryDelayMs: 0,
+      sleep: async () => undefined,
+    }));
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(report.status).toBe("healthy");
+  });
+
+  it("stops after the bounded retry budget and keeps failure details private", async () => {
+    const query = vi.fn().mockRejectedValue(new Error("postgres://user:secret@private-host/db"));
+    const report = await checkDependencies(makeDeps({
+      prisma: { $queryRaw: query },
+      retries: 2,
+      retryDelayMs: 0,
+      sleep: async () => undefined,
+    }));
+    expect(query).toHaveBeenCalledTimes(3);
+    expect(report.status).toBe("unavailable");
+    expect(JSON.stringify(report)).not.toMatch(/secret|private-host/);
+  });
+
+  it("does not retry deterministic invalid RPC configuration", async () => {
+    const sleep = vi.fn(async () => undefined);
+    const report = await checkDependencies(makeDeps({
+      rpcUrls: "not-a-valid-url",
+      retries: 3,
+      retryDelayMs: 0,
+      sleep,
+    }));
+    expect(report.status).toBe("unavailable");
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
   it("returns healthy when all three dependencies respond positively", async () => {
     const report = await checkDependencies(makeDeps());
     expect(report.status).toBe("healthy");

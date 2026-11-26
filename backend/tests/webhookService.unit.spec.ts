@@ -429,6 +429,47 @@ describe("WebhookService Unit Tests (#799)", () => {
       expect(sideEffectCount).toBe(1);
     });
 
+    it("rejects reuse of a processed event ID with a different signed payload", async () => {
+      const { service } = createService();
+      const original = generateWebhookSignature({
+        provider: "internal",
+        secret: INTERNAL_SECRET,
+        payload: { id: "evt_payload_conflict", event: "vault.deposit_confirmed", amount: 10 },
+        timestamp: FIXED_NOW.getTime(),
+      });
+      const changed = generateWebhookSignature({
+        provider: "internal",
+        secret: INTERNAL_SECRET,
+        payload: { id: "evt_payload_conflict", event: "vault.deposit_confirmed", amount: 1000 },
+        timestamp: FIXED_NOW.getTime(),
+      });
+      const verifiedOriginal = service.verifyAndParse({
+        provider: "internal",
+        rawBody: original.rawBody,
+        headers: original.headers,
+      });
+      const verifiedChanged = service.verifyAndParse({
+        provider: "internal",
+        rawBody: changed.rawBody,
+        headers: changed.headers,
+      });
+      let sideEffectCount = 0;
+
+      await service.processEvent(verifiedOriginal, async () => {
+        sideEffectCount += 1;
+        return { accepted: true };
+      });
+
+      await expect(service.processEvent(verifiedChanged, async () => {
+        sideEffectCount += 1;
+        return { accepted: true };
+      })).rejects.toMatchObject({
+        code: ERROR_CODES.IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD,
+        statusCode: 409,
+      });
+      expect(sideEffectCount).toBe(1);
+    });
+
     it("marks event failed if handler throws and allows retry", async () => {
       const { service, store } = createService();
       const payload = { id: "evt_fail_retry", event: "vault.deposit_confirmed" };

@@ -1,4 +1,4 @@
-# Policy simulation preview
+# Policy simulation preview (#1167)
 
 `lib/policy-simulation.ts` lets maintainers preview a governance/policy change
 — affected records and users, expected side effects, risk, and rollback
@@ -64,6 +64,10 @@ The engine blocks a change when it is unknown, stale, out of bounds,
 wrong-typed, or when its impact could not be measured. Blocked changes are
 still rendered in the preview with the reasons attached, so a rejected request
 is visible rather than silently dropped.
+
+Each `policyId` may appear only once per preview. Duplicate entries are all
+blocked before impact measurement, so the preview cannot double-count affected
+records or imply that conflicting final values can be applied together.
 
 ## Risk and confirmation
 

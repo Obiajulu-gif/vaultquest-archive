@@ -142,6 +142,9 @@ describe("Data retention enforcement and deletion verification (#1118)", () => {
       ),
     ).toBe(RETENTION_REASONS.RESIDUAL_DATA_DETECTED);
 
+    engine.registerRecord({ id: "cache-2", category: "cache", createdAt: T0, payload: { key: "k2" } });
+    engine.quarantineExpired("system", tQuarantine);
+
     // Retry with secondary eviction enabled -> cleans index and issues verified certificate!
     const recoveredCert = engine.purgeAndVerify({
       runId: "run-leak",
@@ -151,6 +154,24 @@ describe("Data retention enforcement and deletion verification (#1118)", () => {
     });
     expect(recoveredCert.verified).toBe(true);
     expect(recoveredCert.verifiedAbsentIds).toEqual(["cache-1"]);
+    expect(recoveredCert.purgedIds).toEqual(["cache-1"]);
+  });
+
+  it("keeps deletion certificates scoped to the records purged by each run", () => {
+    const engine = new RetentionEnforcementEngine();
+    engine.registerRecord({ id: "old-run-record", category: "temp", createdAt: T0, payload: { v: 1 } });
+    const afterTtl = T0 + DEFAULT_RETENTION_RULES.temp.retentionMs + 100;
+    const afterGrace = afterTtl + DEFAULT_RETENTION_RULES.temp.quarantineGraceMs + 100;
+    engine.quarantineExpired("retention_worker", afterTtl);
+    const first = engine.purgeAndVerify({ runId: "run-old", actor: "retention_worker", now: afterGrace });
+    expect(first.purgedIds).toEqual(["old-run-record"]);
+
+    engine.registerRecord({ id: "new-run-record", category: "temp", createdAt: T0, payload: { v: 2 } });
+    engine.quarantineExpired("retention_worker", afterTtl);
+    const second = engine.purgeAndVerify({ runId: "run-new", actor: "retention_worker", now: afterGrace });
+
+    expect(second.purgedIds).toEqual(["new-run-record"]);
+    expect(second.verifiedAbsentIds).toEqual(["new-run-record"]);
   });
 
   it("rejects unauthorized actors across quarantine, purge, restore, and legal-hold operations", () => {

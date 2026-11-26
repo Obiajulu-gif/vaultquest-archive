@@ -18,7 +18,9 @@ import { RecoveryError, type PendingRecoveryService, type RecoveryCase } from ".
  *   POST /admin/recovery/scan              open cases for stale actions
  *   POST /admin/recovery/cases/:id/retry
  *   POST /admin/recovery/cases/:id/escalate   { reason }
- *   POST /admin/recovery/cases/:id/resolve    { outcome: failed|dismissed, reason }
+ *   POST /admin/recovery/cases/:id/resolve    { outcome: failed|dismissed, reason, acknowledged_risk_score? }
+ *        409 RISK_ACKNOWLEDGEMENT_REQUIRED carries `error.issues.risk_assessment`;
+ *        resend with acknowledged_risk_score = its score to proceed.
  * Every transition is audited (category "recovery").
  */
 export type RecoveryGuards = {
@@ -44,6 +46,7 @@ const reasonBody = z.object({ reason: z.string().trim().min(3).max(500) });
 const resolveBody = z.object({
   outcome: z.enum(["failed", "dismissed"]),
   reason: z.string().trim().min(3).max(500),
+  acknowledged_risk_score: z.number().int().min(0).max(100).optional(),
 });
 
 function actorOf(req: FastifyRequest): AuditActor {
@@ -69,6 +72,13 @@ function rethrow(err: unknown): never {
         throw AppError.conflict(ERROR_CODES.ILLEGAL_TRANSITION, err.message);
       case "CONFLICT":
         throw AppError.conflict(ERROR_CODES.CONFLICT, err.message);
+      case "RISK_ACKNOWLEDGEMENT_REQUIRED": {
+        const r = err.risk!;
+        // `issues` is the error channel clients already read structured data from.
+        throw new AppError(ERROR_CODES.CONFLICT, 409, err.message, undefined, {
+          risk_assessment: { score: r.score, level: r.level, requires_review: r.requiresReview, factors: r.factors },
+        });
+      }
       default:
         throw AppError.validation(err.message);
     }
@@ -154,6 +164,7 @@ export const recoveryRoutes = (svc: PendingRecoveryService, guards: RecoveryGuar
     app.post("/admin/recovery/cases/:id/resolve", { preHandler: [guards.adminWrite] }, async (req) => {
       const { id } = idParams.parse(req.params);
       const body = resolveBody.parse(req.body);
-      return ok(serializeCase(await svc.resolve(id, actorOf(req), body).catch(rethrow)));
+      const input = { outcome: body.outcome, reason: body.reason, acknowledgedRiskScore: body.acknowledged_risk_score };
+      return ok(serializeCase(await svc.resolve(id, actorOf(req), input).catch(rethrow)));
     });
   };

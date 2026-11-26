@@ -50,12 +50,26 @@ import {
 
 const logger = createLogger(process.env.LOG_LEVEL ?? "info");
 
-export const ROLLOUT_STATES = ["active", "rolling_back", "rolled_back", "rollback_unverified", "completed"] as const;
+export const ROLLOUT_STATES = [
+  "active",
+  "rolling_back",
+  "rolled_back",
+  "rollback_unverified",
+  "completed",
+] as const;
 export type RolloutState = (typeof ROLLOUT_STATES)[number];
 
 /** States that still need operator attention; a new rollout of the same flag + scope is refused. */
-const OPEN_STATES: ReadonlySet<RolloutState> = new Set(["active", "rolling_back", "rollback_unverified"]);
-const ROLLED_BACK_STATES: ReadonlySet<RolloutState> = new Set(["rolling_back", "rolled_back", "rollback_unverified"]);
+const OPEN_STATES: ReadonlySet<RolloutState> = new Set([
+  "active",
+  "rolling_back",
+  "rollback_unverified",
+]);
+const ROLLED_BACK_STATES: ReadonlySet<RolloutState> = new Set([
+  "rolling_back",
+  "rolled_back",
+  "rollback_unverified",
+]);
 
 export interface RolloutGuardrails {
   /** Failure ratio (0–1) above which the rollout is rolled back automatically. */
@@ -147,12 +161,18 @@ export interface FlagRolloutStore {
    * locked; returning null writes nothing, throwing aborts with no changes.
    * Resolves to the row as it stands afterwards.
    */
-  mutate(flag: FeatureFlagKey, scope: string, decide: (current: FlagRow | null) => FlagWrite | null): Promise<FlagRow | null>;
+  mutate(
+    flag: FeatureFlagKey,
+    scope: string,
+    decide: (current: FlagRow | null) => FlagWrite | null,
+  ): Promise<FlagRow | null>;
 }
 
 function rolloutOf(row: FlagRow | null): RolloutRecord | null {
   const r = row?.metadata.rollout as RolloutRecord | undefined;
-  return r && typeof r === "object" && ROLLOUT_STATES.includes(r.state) ? r : null;
+  return r && typeof r === "object" && ROLLOUT_STATES.includes(r.state)
+    ? r
+    : null;
 }
 
 function auditReason(rollout: RolloutRecord, reason: string): string {
@@ -161,14 +181,24 @@ function auditReason(rollout: RolloutRecord, reason: string): string {
 
 export class InMemoryFlagRolloutStore implements FlagRolloutStore {
   readonly rows = new Map<string, FlagRow>();
-  readonly audits: Array<{ flagKey: string; previousValue: boolean; newValue: boolean; actor: string; reason: string }> = [];
+  readonly audits: Array<{
+    flagKey: string;
+    previousValue: boolean;
+    newValue: boolean;
+    actor: string;
+    reason: string;
+  }> = [];
 
   async read(flag: FeatureFlagKey, scope: string): Promise<FlagRow | null> {
     const row = this.rows.get(`${flag}:${scope}`);
     return row ? structuredClone(row) : null;
   }
 
-  async mutate(flag: FeatureFlagKey, scope: string, decide: (current: FlagRow | null) => FlagWrite | null) {
+  async mutate(
+    flag: FeatureFlagKey,
+    scope: string,
+    decide: (current: FlagRow | null) => FlagWrite | null,
+  ) {
     const key = `${flag}:${scope}`;
     const current = this.rows.get(key) ?? null;
     // `decide` is synchronous, so nothing can interleave between read and write.
@@ -177,16 +207,24 @@ export class InMemoryFlagRolloutStore implements FlagRolloutStore {
     const row: FlagRow = { enabled: next.enabled, metadata: { ...(current?.metadata ?? {}), ...metadataPatch(next) } };
     this.rows.set(key, row);
     if (next.audit) {
-      this.audits.push({ flagKey: flag, previousValue: current?.enabled ?? false, newValue: next.enabled, ...next.audit });
+      this.audits.push({
+        flagKey: flag,
+        previousValue: current?.enabled ?? false,
+        newValue: next.enabled,
+        ...next.audit,
+      });
     }
     return structuredClone(row);
   }
 }
 
 function toFlagRow(raw: { enabled: boolean; metadata: unknown }): FlagRow {
-  const metadata = raw.metadata && typeof raw.metadata === "object" && !Array.isArray(raw.metadata)
-    ? (raw.metadata as Record<string, unknown>)
-    : {};
+  const metadata =
+    raw.metadata &&
+    typeof raw.metadata === "object" &&
+    !Array.isArray(raw.metadata)
+      ? (raw.metadata as Record<string, unknown>)
+      : {};
   return { enabled: raw.enabled, metadata };
 }
 
@@ -194,26 +232,41 @@ export class PrismaFlagRolloutStore implements FlagRolloutStore {
   constructor(private readonly prisma: PrismaClient) {}
 
   async read(flag: FeatureFlagKey, scope: string): Promise<FlagRow | null> {
-    const row = await this.prisma.featureFlag.findUnique({ where: { key_scope: { key: flag, scope } } });
+    const row = await this.prisma.featureFlag.findUnique({
+      where: { key_scope: { key: flag, scope } },
+    });
     return row ? toFlagRow(row) : null;
   }
 
-  async mutate(flag: FeatureFlagKey, scope: string, decide: (current: FlagRow | null) => FlagWrite | null) {
+  async mutate(
+    flag: FeatureFlagKey,
+    scope: string,
+    decide: (current: FlagRow | null) => FlagWrite | null,
+  ) {
     try {
       return await this.attempt(flag, scope, decide);
     } catch (err) {
       // Two replicas raced to create the same missing row: the loser retries
       // once and now sees (and locks) the winner's row.
-      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === "P2002"
+      ) {
         return this.attempt(flag, scope, decide);
       }
       throw err;
     }
   }
 
-  private attempt(flag: FeatureFlagKey, scope: string, decide: (current: FlagRow | null) => FlagWrite | null) {
+  private attempt(
+    flag: FeatureFlagKey,
+    scope: string,
+    decide: (current: FlagRow | null) => FlagWrite | null,
+  ) {
     return this.prisma.$transaction(async (tx) => {
-      const locked = await tx.$queryRaw<Array<{ enabled: boolean; metadata: unknown }>>`
+      const locked = await tx.$queryRaw<
+        Array<{ enabled: boolean; metadata: unknown }>
+      >`
         SELECT enabled, metadata FROM feature_flags WHERE key = ${flag} AND scope = ${scope} FOR UPDATE`;
       const current = locked[0] ? toFlagRow(locked[0]) : null;
       const next = decide(current);
@@ -221,7 +274,10 @@ export class PrismaFlagRolloutStore implements FlagRolloutStore {
       const metadata = { ...(current?.metadata ?? {}), ...metadataPatch(next) };
       const data = { enabled: next.enabled, metadata: metadata as Prisma.InputJsonValue };
       if (current) {
-        await tx.featureFlag.update({ where: { key_scope: { key: flag, scope } }, data });
+        await tx.featureFlag.update({
+          where: { key_scope: { key: flag, scope } },
+          data,
+        });
       } else {
         await tx.featureFlag.create({ data: { key: flag, scope, ...data } });
       }
@@ -255,7 +311,9 @@ export interface RollbackCheckContext {
 /** A domain invariant that must hold once a rollback has taken effect. */
 export interface RollbackCheck {
   name: string;
-  run(ctx: RollbackCheckContext): Promise<{ status: CheckStatus; detail: string }>;
+  run(
+    ctx: RollbackCheckContext,
+  ): Promise<{ status: CheckStatus; detail: string }>;
 }
 
 /**
@@ -271,15 +329,28 @@ export function withdrawalSubmissionsHaltedCheck(
     async run({ scope, now, propagatedAt }) {
       const parsed = parseScopeString(scope);
       if (parsed?.vault) {
-        return { status: "skipped", detail: "withdrawals are not attributable to a vault in the action ledger" };
+        return {
+          status: "skipped",
+          detail:
+            "withdrawals are not attributable to a vault in the action ledger",
+        };
       }
       if (now < propagatedAt) {
-        return { status: "pending", detail: `re-verify after ${propagatedAt.toISOString()}` };
+        return {
+          status: "pending",
+          detail: `re-verify after ${propagatedAt.toISOString()}`,
+        };
       }
       const count = await countSubmittedSince(propagatedAt, parsed?.wallet);
       return count === 0
-        ? { status: "pass", detail: "no withdrawals submitted since the rollback propagated" }
-        : { status: "fail", detail: `${count} withdrawal(s) submitted after the rollback propagated; a code path is bypassing the flag` };
+        ? {
+            status: "pass",
+            detail: "no withdrawals submitted since the rollback propagated",
+          }
+        : {
+            status: "fail",
+            detail: `${count} withdrawal(s) submitted after the rollback propagated; a code path is bypassing the flag`,
+          };
     },
   };
 }
@@ -304,13 +375,19 @@ export interface EmergencyState {
 }
 
 export class RolloutError extends Error {
-  constructor(readonly code: RolloutErrorCode, message: string) {
+  constructor(
+    readonly code: RolloutErrorCode,
+    message: string,
+  ) {
     super(message);
     this.name = "RolloutError";
   }
 }
 
-type FlagReader = Pick<FeatureFlagService, "isEnabled" | "invalidate" | "cacheTtlMs">;
+type FlagReader = Pick<
+  FeatureFlagService,
+  "isEnabled" | "invalidate" | "cacheTtlMs"
+>;
 
 export interface FeatureFlagRolloutGuardOptions {
   store: FlagRolloutStore;
@@ -330,8 +407,14 @@ export const SYSTEM_ACTOR = "system:rollout-guard";
 
 export class FeatureFlagRolloutGuard {
   private readonly now: () => number;
-  private readonly windows = new Map<string, Array<{ at: number; ok: boolean }>>();
-  private readonly known = new Map<string, { rollout: RolloutRecord | null; fetchedAt: number }>();
+  private readonly windows = new Map<
+    string,
+    Array<{ at: number; ok: boolean }>
+  >();
+  private readonly known = new Map<
+    string,
+    { rollout: RolloutRecord | null; fetchedAt: number }
+  >();
   private readonly inflight = new Map<string, Promise<RolloutRecord>>();
   private readonly timers = new Set<NodeJS.Timeout>();
 
@@ -354,9 +437,14 @@ export class FeatureFlagRolloutGuard {
   async start(
     flag: FeatureFlagKey,
     scope: string,
-    input: { actor: string; reason: string; guardrails?: Partial<RolloutGuardrails> },
+    input: {
+      actor: string;
+      reason: string;
+      guardrails?: Partial<RolloutGuardrails>;
+    },
   ): Promise<RolloutRecord> {
-    if (!parseScopeString(scope)) throw new RolloutError("INVALID_SCOPE", `invalid scope "${scope}"`);
+    if (!parseScopeString(scope))
+      throw new RolloutError("INVALID_SCOPE", `invalid scope "${scope}"`);
     const guardrails = { ...DEFAULT_GUARDRAILS, ...input.guardrails };
     let started: RolloutRecord | undefined;
     await this.options.store.mutate(flag, scope, (current) => {
@@ -365,10 +453,16 @@ export class FeatureFlagRolloutGuard {
       }
       const existing = rolloutOf(current);
       if (existing && OPEN_STATES.has(existing.state)) {
-        throw new RolloutError("IN_PROGRESS", `rollout ${existing.id} is ${existing.state}; finish or verify it first`);
+        throw new RolloutError(
+          "IN_PROGRESS",
+          `rollout ${existing.id} is ${existing.state}; finish or verify it first`,
+        );
       }
       if (current?.enabled) {
-        throw new RolloutError("ALREADY_ENABLED", `${flag} is already enabled for ${scope}; there is nothing to guard`);
+        throw new RolloutError(
+          "ALREADY_ENABLED",
+          `${flag} is already enabled for ${scope}; there is nothing to guard`,
+        );
       }
       started = {
         id: randomUUID(),
@@ -381,11 +475,21 @@ export class FeatureFlagRolloutGuard {
         startedBy: input.actor,
         reason: input.reason,
       };
-      return { enabled: true, rollout: started, audit: { actor: input.actor, reason: auditReason(started, input.reason) } };
+      return {
+        enabled: true,
+        rollout: started,
+        audit: {
+          actor: input.actor,
+          reason: auditReason(started, input.reason),
+        },
+      };
     });
     this.options.flags.invalidate(flag, scope);
     this.remember(flag, scope, started!);
-    logger.info({ flag, scope, rolloutId: started!.id, guardrails }, "guarded rollout started");
+    logger.info(
+      { flag, scope, rolloutId: started!.id, guardrails },
+      "guarded rollout started",
+    );
     return started!;
   }
 
@@ -397,7 +501,11 @@ export class FeatureFlagRolloutGuard {
    * outcome; if it restored the flag but verification errored, the rollout
    * stays `rolling_back` (flag off, safe) until verify() is run.
    */
-  async record(flag: FeatureFlagKey, scope: string, outcome: "success" | "failure"): Promise<RolloutRecord | null> {
+  async record(
+    flag: FeatureFlagKey,
+    scope: string,
+    outcome: "success" | "failure",
+  ): Promise<RolloutRecord | null> {
     try {
       const rollout = await this.activeRollout(flag, scope);
       if (!rollout) return null;
@@ -408,7 +516,10 @@ export class FeatureFlagRolloutGuard {
       const health = this.health(rollout);
       if (!health.breached) return null;
       const pct = (health.errorRate * 100).toFixed(1);
-      logger.warn({ flag, scope, rolloutId: rollout.id, health }, "rollout guardrail breached; rolling back");
+      logger.warn(
+        { flag, scope, rolloutId: rollout.id, health },
+        "rollout guardrail breached; rolling back",
+      );
       return await this.rollback(flag, scope, {
         actor: SYSTEM_ACTOR,
         reason: `automatic: ${health.failures}/${health.samples} failures (${pct}%) exceeded ${rollout.guardrails.maxErrorRate * 100}%`,
@@ -416,7 +527,10 @@ export class FeatureFlagRolloutGuard {
         trigger: health,
       });
     } catch (err) {
-      logger.error({ err, flag, scope }, "rollout guard could not evaluate or roll back; will retry on next outcome");
+      logger.error(
+        { err, flag, scope },
+        "rollout guard could not evaluate or roll back; will retry on next outcome",
+      );
       this.known.delete(`${flag}:${scope}`);
       return null;
     }
@@ -429,7 +543,9 @@ export class FeatureFlagRolloutGuard {
     const samples = window.length;
     const failures = window.filter((o) => !o.ok).length;
     const errorRate = samples ? failures / samples : 0;
-    const breached = samples >= rollout.guardrails.minSamples && errorRate > rollout.guardrails.maxErrorRate;
+    const breached =
+      samples >= rollout.guardrails.minSamples &&
+      errorRate > rollout.guardrails.maxErrorRate;
     return { samples, failures, errorRate, breached };
   }
 
@@ -442,12 +558,19 @@ export class FeatureFlagRolloutGuard {
   rollback(
     flag: FeatureFlagKey,
     scope: string,
-    input: { actor: string; reason: string; automatic?: boolean; trigger?: RolloutHealth },
+    input: {
+      actor: string;
+      reason: string;
+      automatic?: boolean;
+      trigger?: RolloutHealth;
+    },
   ): Promise<RolloutRecord> {
     const key = `${flag}:${scope}`;
     const pending = this.inflight.get(key);
     if (pending) return pending;
-    const attempt = this.doRollback(flag, scope, input).finally(() => this.inflight.delete(key));
+    const attempt = this.doRollback(flag, scope, input).finally(() =>
+      this.inflight.delete(key),
+    );
     this.inflight.set(key, attempt);
     return attempt;
   }
@@ -455,13 +578,25 @@ export class FeatureFlagRolloutGuard {
   private async doRollback(
     flag: FeatureFlagKey,
     scope: string,
-    input: { actor: string; reason: string; automatic?: boolean; trigger?: RolloutHealth },
+    input: {
+      actor: string;
+      reason: string;
+      automatic?: boolean;
+      trigger?: RolloutHealth;
+    },
   ): Promise<RolloutRecord> {
     const after = await this.options.store.mutate(flag, scope, (current) => {
       const r = rolloutOf(current);
-      if (!r) throw new RolloutError("NOT_FOUND", `no rollout recorded for ${flag} in ${scope}`);
+      if (!r)
+        throw new RolloutError(
+          "NOT_FOUND",
+          `no rollout recorded for ${flag} in ${scope}`,
+        );
       if (r.state === "completed") {
-        throw new RolloutError("INVALID_STATE", `rollout ${r.id} was completed; change the flag directly instead`);
+        throw new RolloutError(
+          "INVALID_STATE",
+          `rollout ${r.id} was completed; change the flag directly instead`,
+        );
       }
       if (r.state === "rolled_back") return null;
       if (r.state === "active") {
@@ -474,7 +609,11 @@ export class FeatureFlagRolloutGuard {
           automatic: input.automatic ?? false,
           ...(input.trigger ? { trigger: input.trigger } : {}),
         };
-        return { enabled: r.previousEnabled, rollout: next, audit: { actor: input.actor, reason: auditReason(r, input.reason) } };
+        return {
+          enabled: r.previousEnabled,
+          rollout: next,
+          audit: { actor: input.actor, reason: auditReason(r, input.reason) },
+        };
       }
       // rolling_back / rollback_unverified: something may have re-enabled the
       // flag since (manual SQL, a stale writer); put the restored value back.
@@ -482,7 +621,10 @@ export class FeatureFlagRolloutGuard {
         return {
           enabled: r.previousEnabled,
           rollout: r,
-          audit: { actor: input.actor, reason: auditReason(r, `re-asserting rollback: ${input.reason}`) },
+          audit: {
+            actor: input.actor,
+            reason: auditReason(r, `re-asserting rollback: ${input.reason}`),
+          },
         };
       }
       return null;
@@ -492,7 +634,10 @@ export class FeatureFlagRolloutGuard {
     this.remember(flag, scope, rolled);
     this.windows.delete(rolled.id);
     if (rolled.state === "rolled_back") return rolled;
-    logger.warn({ flag, scope, rolloutId: rolled.id, automatic: rolled.automatic }, "rollout rolled back; verifying");
+    logger.warn(
+      { flag, scope, rolloutId: rolled.id, automatic: rolled.automatic },
+      "rollout rolled back; verifying",
+    );
     return this.verify(flag, scope);
   }
 
@@ -500,19 +645,37 @@ export class FeatureFlagRolloutGuard {
   async verify(flag: FeatureFlagKey, scope: string): Promise<RolloutRecord> {
     const row = await this.options.store.read(flag, scope);
     const rollout = rolloutOf(row);
-    if (!rollout) throw new RolloutError("NOT_FOUND", `no rollout recorded for ${flag} in ${scope}`);
+    if (!rollout)
+      throw new RolloutError(
+        "NOT_FOUND",
+        `no rollout recorded for ${flag} in ${scope}`,
+      );
     if (!ROLLED_BACK_STATES.has(rollout.state)) {
-      throw new RolloutError("INVALID_STATE", `rollout ${rollout.id} is ${rollout.state}; only rollbacks are verified`);
+      throw new RolloutError(
+        "INVALID_STATE",
+        `rollout ${rollout.id} is ${rollout.state}; only rollbacks are verified`,
+      );
     }
 
     const now = new Date(this.now());
-    const propagatedAt = new Date(Date.parse(rollout.endedAt ?? now.toISOString()) + this.options.flags.cacheTtlMs);
+    const propagatedAt = new Date(
+      Date.parse(rollout.endedAt ?? now.toISOString()) +
+        this.options.flags.cacheTtlMs,
+    );
     const checks: VerificationCheckResult[] = [];
 
     checks.push(
       row!.enabled === rollout.previousEnabled
-        ? { name: "stored_value_restored", status: "pass", detail: `stored value is ${row!.enabled}` }
-        : { name: "stored_value_restored", status: "fail", detail: `stored value is ${row!.enabled}, expected ${rollout.previousEnabled}; run rollback again` },
+        ? {
+            name: "stored_value_restored",
+            status: "pass",
+            detail: `stored value is ${row!.enabled}`,
+          }
+        : {
+            name: "stored_value_restored",
+            status: "fail",
+            detail: `stored value is ${row!.enabled}, expected ${rollout.previousEnabled}; run rollback again`,
+          },
     );
 
     this.options.flags.invalidate(flag, scope);
@@ -520,26 +683,54 @@ export class FeatureFlagRolloutGuard {
     const served = await this.options.flags.isEnabled(flag, parsed);
     checks.push(
       served === rollout.previousEnabled
-        ? { name: "local_cache_consistent", status: "pass", detail: `this process now serves ${served}` }
-        : { name: "local_cache_consistent", status: "fail", detail: `this process serves ${served}, expected ${rollout.previousEnabled}` },
+        ? {
+            name: "local_cache_consistent",
+            status: "pass",
+            detail: `this process now serves ${served}`,
+          }
+        : {
+            name: "local_cache_consistent",
+            status: "fail",
+            detail: `this process serves ${served}, expected ${rollout.previousEnabled}`,
+          },
     );
 
     checks.push(
       now >= propagatedAt
-        ? { name: "replica_caches_expired", status: "pass", detail: "every replica's cached value has expired" }
-        : { name: "replica_caches_expired", status: "pending", detail: `other replicas may serve the old value until ${propagatedAt.toISOString()}` },
+        ? {
+            name: "replica_caches_expired",
+            status: "pass",
+            detail: "every replica's cached value has expired",
+          }
+        : {
+            name: "replica_caches_expired",
+            status: "pending",
+            detail: `other replicas may serve the old value until ${propagatedAt.toISOString()}`,
+          },
     );
 
     for (const check of this.options.checks?.[flag] ?? []) {
       try {
-        const result = await check.run({ flag, scope, rollout, now, propagatedAt });
+        const result = await check.run({
+          flag,
+          scope,
+          rollout,
+          now,
+          propagatedAt,
+        });
         checks.push({ name: check.name, ...result });
       } catch (err) {
-        checks.push({ name: check.name, status: "fail", detail: `check errored: ${(err as Error).message}` });
+        checks.push({
+          name: check.name,
+          status: "fail",
+          detail: `check errored: ${(err as Error).message}`,
+        });
       }
     }
 
-    const verified = checks.every((c) => c.status === "pass" || c.status === "skipped");
+    const verified = checks.every(
+      (c) => c.status === "pass" || c.status === "skipped",
+    );
     const report: VerificationReport = {
       verifiedAt: now.toISOString(),
       status: verified ? "verified" : "unverified",
@@ -550,10 +741,15 @@ export class FeatureFlagRolloutGuard {
     const after = await this.options.store.mutate(flag, scope, (current) => {
       const r = rolloutOf(current);
       // A newer rollout replaced this one while we were checking; keep it.
-      if (!r || r.id !== rollout.id || !ROLLED_BACK_STATES.has(r.state)) return null;
+      if (!r || r.id !== rollout.id || !ROLLED_BACK_STATES.has(r.state))
+        return null;
       return {
         enabled: current!.enabled,
-        rollout: { ...r, state: verified ? "rolled_back" : "rollback_unverified", verification: report },
+        rollout: {
+          ...r,
+          state: verified ? "rolled_back" : "rollback_unverified",
+          verification: report,
+        },
       };
     });
     const result = rolloutOf(after) ?? rollout;
@@ -563,18 +759,34 @@ export class FeatureFlagRolloutGuard {
       logger.info({ flag, scope, rolloutId: rollout.id }, "rollback verified");
     } else {
       const failing = checks.filter((c) => c.status === "fail");
-      logger[failing.length ? "error" : "warn"]({ flag, scope, rolloutId: rollout.id, checks }, "rollback not yet verified");
-      if (!failing.length && this.options.autoReverify) this.scheduleReverify(flag, scope, propagatedAt);
+      logger[failing.length ? "error" : "warn"](
+        { flag, scope, rolloutId: rollout.id, checks },
+        "rollback not yet verified",
+      );
+      if (!failing.length && this.options.autoReverify)
+        this.scheduleReverify(flag, scope, propagatedAt);
     }
     return result;
   }
 
   /** Promote an active rollout: the flag stays enabled and the guard stops watching it. */
-  async complete(flag: FeatureFlagKey, scope: string, input: { actor: string; reason: string }): Promise<RolloutRecord> {
+  async complete(
+    flag: FeatureFlagKey,
+    scope: string,
+    input: { actor: string; reason: string },
+  ): Promise<RolloutRecord> {
     const after = await this.options.store.mutate(flag, scope, (current) => {
       const r = rolloutOf(current);
-      if (!r) throw new RolloutError("NOT_FOUND", `no rollout recorded for ${flag} in ${scope}`);
-      if (r.state !== "active") throw new RolloutError("INVALID_STATE", `rollout ${r.id} is ${r.state}, not active`);
+      if (!r)
+        throw new RolloutError(
+          "NOT_FOUND",
+          `no rollout recorded for ${flag} in ${scope}`,
+        );
+      if (r.state !== "active")
+        throw new RolloutError(
+          "INVALID_STATE",
+          `rollout ${r.id} is ${r.state}, not active`,
+        );
       const next: RolloutRecord = {
         ...r,
         state: "completed",
@@ -582,7 +794,14 @@ export class FeatureFlagRolloutGuard {
         endedBy: input.actor,
         endReason: input.reason,
       };
-      return { enabled: current!.enabled, rollout: next, audit: { actor: input.actor, reason: auditReason(r, `completed: ${input.reason}`) } };
+      return {
+        enabled: current!.enabled,
+        rollout: next,
+        audit: {
+          actor: input.actor,
+          reason: auditReason(r, `completed: ${input.reason}`),
+        },
+      };
     });
     const done = rolloutOf(after)!;
     this.remember(flag, scope, done);
@@ -652,11 +871,23 @@ export class FeatureFlagRolloutGuard {
     this.timers.clear();
   }
 
-  private scheduleReverify(flag: FeatureFlagKey, scope: string, at: Date): void {
-    const timer = setTimeout(() => {
-      this.timers.delete(timer);
-      this.verify(flag, scope).catch((err) => logger.error({ err, flag, scope }, "scheduled rollback re-verification failed"));
-    }, Math.max(0, at.getTime() - this.now()) + 1_000);
+  private scheduleReverify(
+    flag: FeatureFlagKey,
+    scope: string,
+    at: Date,
+  ): void {
+    const timer = setTimeout(
+      () => {
+        this.timers.delete(timer);
+        this.verify(flag, scope).catch((err) =>
+          logger.error(
+            { err, flag, scope },
+            "scheduled rollback re-verification failed",
+          ),
+        );
+      },
+      Math.max(0, at.getTime() - this.now()) + 1_000,
+    );
     timer.unref?.();
     this.timers.add(timer);
   }
@@ -667,16 +898,26 @@ export class FeatureFlagRolloutGuard {
     return window;
   }
 
-  private remember(flag: FeatureFlagKey, scope: string, rollout: RolloutRecord | null) {
+  private remember(
+    flag: FeatureFlagKey,
+    scope: string,
+    rollout: RolloutRecord | null,
+  ) {
     this.known.set(`${flag}:${scope}`, { rollout, fetchedAt: this.now() });
   }
 
   /** The active rollout for a flag + scope, re-read at most once per flag-cache TTL. */
-  private async activeRollout(flag: FeatureFlagKey, scope: string): Promise<RolloutRecord | null> {
+  private async activeRollout(
+    flag: FeatureFlagKey,
+    scope: string,
+  ): Promise<RolloutRecord | null> {
     const key = `${flag}:${scope}`;
     const cached = this.known.get(key);
     let rollout = cached?.rollout ?? null;
-    if (!cached || this.now() - cached.fetchedAt >= this.options.flags.cacheTtlMs) {
+    if (
+      !cached ||
+      this.now() - cached.fetchedAt >= this.options.flags.cacheTtlMs
+    ) {
       rollout = rolloutOf(await this.options.store.read(flag, scope));
       this.remember(flag, scope, rollout);
     }
@@ -684,4 +925,7 @@ export class FeatureFlagRolloutGuard {
   }
 }
 
-export const ROLLOUT_FLAG_KEYS = Object.values(FEATURE_FLAGS) as [FeatureFlagKey, ...FeatureFlagKey[]];
+export const ROLLOUT_FLAG_KEYS = Object.values(FEATURE_FLAGS) as [
+  FeatureFlagKey,
+  ...FeatureFlagKey[],
+];

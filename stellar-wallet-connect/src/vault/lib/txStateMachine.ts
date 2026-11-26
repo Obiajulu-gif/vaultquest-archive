@@ -11,6 +11,7 @@ import type { TimelineStage } from "../../components/TransactionTimeline";
 import { ContractInterfaceError, type PoolActionInput, type PoolActionType, type VaultContractClient } from "../contract/types";
 import { assertNetworkMatchesBeforeSigning, assertNotMultisigBeforeSigning } from "../../core/walletService.js";
 import { assertSessionAliveBeforeSigning } from "../../core/sessionLiveness.js";
+import { BusinessPolicyEngine, DEFAULT_BUSINESS_POLICY_ENGINE } from "../../../../lib/business-policy";
 import { mapWalletErrorToRejection, getRejectionExplanation } from "../../../../lib/rejectionReasons.js";
 
 export type ActiveTxStage = Exclude<TimelineStage, "success" | "failed">;
@@ -342,6 +343,19 @@ export function usePersistentTxFlow({ scopeKey }: PersistentTxFlowOptions): Pers
   return { ...flow, recovered };
 }
 
+/**
+ * Actions in flight across every `useTxFlow` instance in this tab (#1130),
+ * keyed by action, pool and wallet. `inFlightRef` only guards one hook, so
+ * two mounted views (e.g. PoolDetail and RewardHistory) could otherwise prompt
+ * the same wallet twice for the same action. Other tabs and devices rely on
+ * the backend idempotency keys (docs/IDEMPOTENCY.md).
+ */
+const inFlightActions = new Set<string>();
+
+function actionKey(type: PoolActionType, input: PoolActionInput): string {
+  return JSON.stringify([type, input.poolId, input.walletAddress]);
+}
+
 export function useTxFlow(): TxFlowResult {
   const [state, setState] = useState<TxFlowState>(INITIAL_STATE);
   const stateRef = useRef<TxFlowState>(INITIAL_STATE);
@@ -372,10 +386,16 @@ export function useTxFlow(): TxFlowResult {
       // A synchronous ref guard prevents two clicks/render cycles from creating
       // duplicate local action records or wallet submissions.
       if (inFlightRef.current) return;
+      // The same action for the same wallet and pool may already be running in
+      // another hook instance; leave this one idle rather than prompt twice.
+      // No wallet means nothing to prompt (usePersistentTxFlow's recovery replay).
+      const key = input.walletAddress ? actionKey(type, input) : null;
+      if (key && inFlightActions.has(key)) return;
 
       const started = transition({ type: "START" });
       if (started.stage !== "preparing") return;
       inFlightRef.current = true;
+      if (key) inFlightActions.add(key);
 
       const {
         onConfirmed,
@@ -442,6 +462,7 @@ export function useTxFlow(): TxFlowResult {
         transition({ type: "FAILED", failedAt, message });
       } finally {
         inFlightRef.current = false;
+        if (key) inFlightActions.delete(key);
       }
     },
     [transition],

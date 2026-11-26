@@ -220,6 +220,56 @@ describe("DataExportService", () => {
   });
 });
 
+describe("DataExportService field-level authorization", () => {
+  const NOW = new Date("2026-03-01T12:00:00Z");
+
+  it("gives the owner every field and reports nothing redacted", async () => {
+    const { data, metadata } = await new DataExportService(source([action(1)], [])).build({ principal: alice, sections: ["actions"] });
+    expect(data.actions![0]).toMatchObject({ pool_id: "v1", asset: "USDC", amount: "10" });
+    expect(metadata.redacted_fields).toEqual([]);
+  });
+
+  it("withholds payload-derived fields from a cross-wallet export, names them, and logs only what was read", async () => {
+    const accessLogger = { logAccess: vi.fn() };
+    const svc = new DataExportService(source([action(1)], [pool("p1")]), accessLogger as any);
+    const { data, metadata } = await svc.build({ principal: maintainer, wallet: ALICE });
+
+    const row = data.actions![0] as Record<string, unknown>;
+    for (const field of ["pool_id", "asset", "amount"]) expect(row).not.toHaveProperty(field);
+    expect(row).toMatchObject({ id: "a1", action_type: "deposit", status: "confirmed", tx_hash: "tx1" });
+    expect(data.saved_pools).toHaveLength(1);
+    expect(metadata.redacted_fields).toEqual(["actions.pool_id", "actions.asset", "actions.amount"]);
+    expect(accessLogger.logAccess).toHaveBeenCalledTimes(1);
+    expect(accessLogger.logAccess).toHaveBeenCalledWith(expect.objectContaining({ authorized: true, fieldNames: ["wallet_address"] }));
+  });
+
+  it("treats a maintainer exporting their own wallet as the owner", async () => {
+    const { data, metadata } = await new DataExportService(source([action(1, { walletAddress: "GADMIN" })], []))
+      .build({ principal: maintainer, sections: ["actions"] });
+    expect(data.actions![0]).toMatchObject({ amount: "10" });
+    expect(metadata.redacted_fields).toEqual([]);
+  });
+
+  it("redacts the same way on every retry, so repeated exports have the same checksum", async () => {
+    const svc = new DataExportService(source([action(1), action(2)], [pool("p1")]));
+    const first = await svc.build({ principal: maintainer, wallet: ALICE, now: NOW });
+    const retry = await svc.build({ principal: maintainer, wallet: ALICE, now: NOW });
+    expect(retry.metadata.checksum).toBe(first.metadata.checksum);
+    expect(retry.metadata.redacted_fields).toEqual(first.metadata.redacted_fields);
+    expect((await svc.build({ principal: alice, now: NOW })).metadata.checksum).not.toBe(first.metadata.checksum);
+  });
+
+  it("fails as a whole, without logging a completed export, when the source errors mid-export", async () => {
+    const accessLogger = { logAccess: vi.fn() };
+    const src = source([action(1)], []);
+    src.listSavedPools = async () => {
+      throw new Error("db down");
+    };
+    await expect(new DataExportService(src, accessLogger as any).build({ principal: maintainer, wallet: ALICE })).rejects.toThrow("db down");
+    expect(accessLogger.logAccess).not.toHaveBeenCalled();
+  });
+});
+
 describe("GET /exports", () => {
   const sessions: Record<string, { id: string; walletAddress: string }> = {
     "alice-token": { id: "1", walletAddress: ALICE },
@@ -267,5 +317,15 @@ describe("GET /exports", () => {
     const app = build();
     expect((await get(app, `/exports?wallet=${BOB}`, "alice-token")).statusCode).toBe(403);
     expect((await get(app, `/exports?wallet=${ALICE}`, "admin-token")).statusCode).toBe(200);
+  });
+
+  it("serves the owner every field and a maintainer's cross-wallet export without owner-only fields", async () => {
+    const own = (await get(build(), "/exports", "alice-token")).json();
+    expect(own.data.actions[0].amount).toBe("10");
+    expect(own.metadata.redacted_fields).toEqual([]);
+
+    const other = (await get(build(), `/exports?wallet=${ALICE}`, "admin-token")).json();
+    expect(other.data.actions[0]).not.toHaveProperty("amount");
+    expect(other.metadata.redacted_fields).toEqual(["actions.pool_id", "actions.asset", "actions.amount"]);
   });
 });

@@ -28,8 +28,12 @@
  *    cache agrees, other replicas' caches have expired) plus any domain checks
  *    registered for the flag. Anything pending or failing leaves the rollout in
  *    `rollback_unverified`, which is re-checked with verify().
+ *  - emergencyDisable() is the kill switch for any enabled flag, however it was
+ *    turned on (stored as `metadata.emergency`). It turns the flag off, ends an
+ *    active rollout as a rollback, and latches the flag off until released.
  *
- * See docs/FEATURE_FLAGS.md ("Guarded rollouts") for the operator runbook.
+ * See docs/FEATURE_FLAGS.md ("Guarded rollouts", "Emergency disablement") for
+ * the operator runbook.
  */
 
 import { randomUUID } from "node:crypto";
@@ -37,7 +41,9 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { createLogger } from "../logger.js";
 import {
   FEATURE_FLAGS,
+  emergencyDisableOf,
   parseScopeString,
+  type EmergencyDisable,
   type FeatureFlagKey,
   type FeatureFlagService,
 } from "./featureFlagService.js";
@@ -133,9 +139,19 @@ export interface FlagRow {
 
 export interface FlagWrite {
   enabled: boolean;
-  rollout: RolloutRecord;
+  /** Replaces `metadata.rollout` when present. */
+  rollout?: RolloutRecord;
+  /** Replaces `metadata.emergency` when present; null clears the latch. */
+  emergency?: EmergencyDisable | null;
   /** Written to feature_flag_audits when present. */
   audit?: { actor: string; reason: string };
+}
+
+function metadataPatch(write: FlagWrite): Record<string, unknown> {
+  return {
+    ...(write.rollout ? { rollout: write.rollout } : {}),
+    ...(write.emergency !== undefined ? { emergency: write.emergency } : {}),
+  };
 }
 
 export interface FlagRolloutStore {
@@ -188,10 +204,7 @@ export class InMemoryFlagRolloutStore implements FlagRolloutStore {
     // `decide` is synchronous, so nothing can interleave between read and write.
     const next = decide(current ? structuredClone(current) : null);
     if (!next) return current ? structuredClone(current) : null;
-    const row: FlagRow = {
-      enabled: next.enabled,
-      metadata: { ...(current?.metadata ?? {}), rollout: next.rollout },
-    };
+    const row: FlagRow = { enabled: next.enabled, metadata: { ...(current?.metadata ?? {}), ...metadataPatch(next) } };
     this.rows.set(key, row);
     if (next.audit) {
       this.audits.push({
@@ -258,11 +271,8 @@ export class PrismaFlagRolloutStore implements FlagRolloutStore {
       const current = locked[0] ? toFlagRow(locked[0]) : null;
       const next = decide(current);
       if (!next) return current;
-      const metadata = { ...(current?.metadata ?? {}), rollout: next.rollout };
-      const data = {
-        enabled: next.enabled,
-        metadata: metadata as Prisma.InputJsonValue,
-      };
+      const metadata = { ...(current?.metadata ?? {}), ...metadataPatch(next) };
+      const data = { enabled: next.enabled, metadata: metadata as Prisma.InputJsonValue };
       if (current) {
         await tx.featureFlag.update({
           where: { key_scope: { key: flag, scope } },
@@ -352,7 +362,17 @@ export type RolloutErrorCode =
   | "IN_PROGRESS"
   | "ALREADY_ENABLED"
   | "INVALID_STATE"
-  | "INVALID_SCOPE";
+  | "INVALID_SCOPE"
+  | "EMERGENCY_DISABLED";
+
+export interface EmergencyState {
+  /** Stored value after the call (false after any disable or release that wrote). */
+  enabled: boolean;
+  /** The latch, or null once released. */
+  emergency: EmergencyDisable | null;
+  /** The scope's rollout record; an active one is ended as a verified rollback. */
+  rollout: RolloutRecord | null;
+}
 
 export class RolloutError extends Error {
   constructor(
@@ -402,18 +422,16 @@ export class FeatureFlagRolloutGuard {
     this.now = options.now ?? (() => Date.now());
   }
 
-  async get(
-    flag: FeatureFlagKey,
-    scope: string,
-  ): Promise<{
+  async get(flag: FeatureFlagKey, scope: string): Promise<{
     enabled: boolean;
     rollout: RolloutRecord | null;
     health: RolloutHealth | null;
+    emergency: EmergencyDisable | null;
   }> {
     const row = await this.options.store.read(flag, scope);
     const rollout = rolloutOf(row);
     const health = rollout?.state === "active" ? this.health(rollout) : null;
-    return { enabled: row?.enabled ?? false, rollout, health };
+    return { enabled: row?.enabled ?? false, rollout, health, emergency: emergencyDisableOf(row?.metadata) };
   }
 
   async start(
@@ -430,6 +448,9 @@ export class FeatureFlagRolloutGuard {
     const guardrails = { ...DEFAULT_GUARDRAILS, ...input.guardrails };
     let started: RolloutRecord | undefined;
     await this.options.store.mutate(flag, scope, (current) => {
+      if (emergencyDisableOf(current?.metadata)) {
+        throw new RolloutError("EMERGENCY_DISABLED", `${flag} is emergency-disabled for ${scope}; release it first`);
+      }
       const existing = rolloutOf(current);
       if (existing && OPEN_STATES.has(existing.state)) {
         throw new RolloutError(
@@ -789,32 +810,59 @@ export class FeatureFlagRolloutGuard {
   }
 
   /**
-   * Emergency disablement: immediately disable a flag in a scope without waiting for verification.
-   * Used for critical outages where rollback verification overhead is unacceptable.
-   * Returns the flag row (enabled=false). Idempotent: calling twice has the same effect.
-   * Note: Does not create a rollout record; suitable only for immediate off-switches.
+   * Kill switch: turn the flag off in `scope` however it was enabled (an active
+   * or completed rollout, a direct change, SQL) and latch it off. While latched,
+   * isEnabled() reads false even if the stored value is flipped back on, and
+   * start() is refused. An active rollout is ended as a rollback and verified.
+   * Idempotent: repeating it writes nothing unless the stored value was turned
+   * back on, in which case it is forced off again and audited.
    */
-  async emergencyDisable(
-    flag: FeatureFlagKey,
-    scope: string,
-    input: { actor: string; reason: string },
-  ): Promise<FlagRow> {
+  async emergencyDisable(flag: FeatureFlagKey, scope: string, input: { actor: string; reason: string }): Promise<EmergencyState> {
+    if (!parseScopeString(scope)) throw new RolloutError("INVALID_SCOPE", `invalid scope "${scope}"`);
+    const at = new Date(this.now()).toISOString();
+    // Assigned inside `decide`, which the Prisma store may run twice (P2002 retry).
+    let ended = null as RolloutRecord | null;
     const after = await this.options.store.mutate(flag, scope, (current) => {
-      if (!current?.enabled) {
-        // Already disabled; nothing to do.
-        return null;
+      ended = null;
+      const latch = emergencyDisableOf(current?.metadata);
+      if (latch && !current!.enabled) return null;
+      const r = rolloutOf(current);
+      if (r?.state === "active") {
+        ended = { ...r, state: "rolling_back", endedAt: at, endedBy: input.actor, endReason: `emergency: ${input.reason}`, automatic: false };
       }
       return {
         enabled: false,
-        rollout: current.metadata.rollout as RolloutRecord | undefined,
-        audit: { actor: input.actor, reason: `emergency: ${input.reason}` },
+        emergency: latch ?? { disabledAt: at, disabledBy: input.actor, reason: input.reason, previousEnabled: current?.enabled ?? false },
+        ...(ended ? { rollout: ended } : {}),
+        audit: { actor: input.actor, reason: `[emergency ${scope}] ${latch ? "re-asserting: " : ""}${input.reason}` },
       };
     });
     this.options.flags.invalidate(flag, scope);
-    this.known.delete(`${flag}:${scope}`);
-    this.windows.clear();
-    logger.warn({ flag, scope, actor: input.actor }, "flag emergency disabled");
-    return after!;
+    let rollout = rolloutOf(after);
+    this.remember(flag, scope, rollout);
+    if (ended) {
+      this.windows.delete(ended.id);
+      rollout = await this.verify(flag, scope);
+    }
+    logger.warn({ flag, scope, actor: input.actor, endedRollout: rollout?.id }, "feature flag emergency-disabled");
+    return { enabled: after!.enabled, emergency: emergencyDisableOf(after!.metadata), rollout };
+  }
+
+  /**
+   * Lift the latch. The flag is written off (not restored), so a value flipped
+   * on behind the latch does not go live; turning it back on is a new guarded
+   * rollout. Idempotent: nothing is written when no latch is set.
+   */
+  async releaseEmergency(flag: FeatureFlagKey, scope: string, input: { actor: string; reason: string }): Promise<EmergencyState> {
+    if (!parseScopeString(scope)) throw new RolloutError("INVALID_SCOPE", `invalid scope "${scope}"`);
+    const after = await this.options.store.mutate(flag, scope, (current) =>
+      emergencyDisableOf(current?.metadata)
+        ? { enabled: false, emergency: null, audit: { actor: input.actor, reason: `[emergency ${scope}] released: ${input.reason}` } }
+        : null,
+    );
+    this.options.flags.invalidate(flag, scope);
+    logger.info({ flag, scope, actor: input.actor }, "feature flag emergency latch released");
+    return { enabled: after?.enabled ?? false, emergency: emergencyDisableOf(after?.metadata), rollout: rolloutOf(after) };
   }
 
   /** Cancel pending re-verification timers (call on shutdown). */

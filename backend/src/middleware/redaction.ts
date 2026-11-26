@@ -34,7 +34,16 @@ function shouldRedact(key: string): boolean {
     "transactionId",
     "errorText",
     "errorDetail",
-    "poolAddress"
+    "poolAddress",
+    "correlationId",
+    "correlation_id",
+    "idempotencyKey",
+    "idempotency_key",
+    "workerId",
+    "worker_id",
+    "secret",
+    "accessToken",
+    "refreshToken"
   ];
   return redactKeys.includes(key);
 }
@@ -46,6 +55,9 @@ function redactValue(value: unknown): unknown {
     }
     if (/^[0-9a-f]{64}$/.test(value)) {
       return `[REDACTED_TX:${hashValue(value)}]`;
+    }
+    if (value === "SECRET" || value === "SECRET_KEY") {
+      return "[REDACTED]";
     }
   }
   return value;

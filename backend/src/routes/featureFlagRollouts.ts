@@ -21,9 +21,10 @@ import {
  *   POST /admin/feature-flags/:key/rollout/rollback           { scope, reason }
  *   POST /admin/feature-flags/:key/rollout/verify             { scope }
  *   POST /admin/feature-flags/:key/rollout/complete           { scope, reason }
- *   POST /admin/feature-flags/:key/rollout/emergency-disable  { scope, reason }
+ *   POST /admin/feature-flags/:key/emergency-disable          { scope, reason }   off now, latched off
+ *   POST /admin/feature-flags/:key/emergency-disable/release  { scope, reason }   lift latch; flag stays off
  *
- * See docs/FEATURE_FLAGS.md ("Guarded rollouts").
+ * See docs/FEATURE_FLAGS.md ("Guarded rollouts", "Emergency disablement").
  */
 export type FeatureFlagRolloutGuards = {
   /** `admin.flags.read` */
@@ -149,41 +150,33 @@ export const featureFlagRolloutRoutes =
       },
     );
 
-    app.post(
-      "/admin/feature-flags/:key/rollout/complete",
-      { preHandler: [guards.write] },
-      async (req) => {
-        const { key } = params.parse(req.params);
-        const body = endBody.parse(req.body);
-        try {
-          return ok(
-            await guard.complete(key, body.scope, {
-              actor: actorOf(req),
-              reason: body.reason,
-            }),
-          );
-        } catch (err) {
-          rethrow(err);
-        }
-      },
-    );
+    app.post("/admin/feature-flags/:key/rollout/complete", { preHandler: [guards.write] }, async (req) => {
+      const { key } = params.parse(req.params);
+      const body = endBody.parse(req.body);
+      try {
+        return ok(await guard.complete(key, body.scope, { actor: actorOf(req), reason: body.reason }));
+      } catch (err) {
+        rethrow(err);
+      }
+    });
 
-    app.post(
-      "/admin/feature-flags/:key/rollout/emergency-disable",
-      { preHandler: [guards.write] },
-      async (req) => {
-        const { key } = params.parse(req.params);
-        const body = endBody.parse(req.body);
-        try {
-          return ok(
-            await guard.emergencyDisable(key, body.scope, {
-              actor: actorOf(req),
-              reason: body.reason,
-            }),
-          );
-        } catch (err) {
-          rethrow(err);
-        }
-      },
-    );
+    app.post("/admin/feature-flags/:key/emergency-disable", { preHandler: [guards.write] }, async (req) => {
+      const { key } = params.parse(req.params);
+      const body = endBody.parse(req.body);
+      try {
+        return ok(await guard.emergencyDisable(key, body.scope, { actor: actorOf(req), reason: body.reason }));
+      } catch (err) {
+        rethrow(err);
+      }
+    });
+
+    app.post("/admin/feature-flags/:key/emergency-disable/release", { preHandler: [guards.write] }, async (req) => {
+      const { key } = params.parse(req.params);
+      const body = endBody.parse(req.body);
+      try {
+        return ok(await guard.releaseEmergency(key, body.scope, { actor: actorOf(req), reason: body.reason }));
+      } catch (err) {
+        rethrow(err);
+      }
+    });
   };

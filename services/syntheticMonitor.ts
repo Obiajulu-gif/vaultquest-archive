@@ -85,6 +85,7 @@ export class SyntheticMonitor extends EventEmitter {
   private results: Map<string, JourneyResult[]>;
   private consecutiveFailures: Map<string, number>;
   private timers: Map<string, NodeJS.Timeout>;
+  private inFlight: Map<string, Promise<JourneyResult>>;
   private config: MonitorConfig;
 
   constructor(config: Partial<MonitorConfig> = {}) {
@@ -93,6 +94,7 @@ export class SyntheticMonitor extends EventEmitter {
     this.results = new Map();
     this.consecutiveFailures = new Map();
     this.timers = new Map();
+    this.inFlight = new Map();
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
@@ -206,6 +208,26 @@ export class SyntheticMonitor extends EventEmitter {
       return result;
     }
 
+    // #1128 — one run per journey at a time. A scheduled tick or manual
+    // trigger that lands while a run is in flight shares that run's result
+    // instead of starting a second synthetic transaction. Authorization above
+    // still runs for every caller, so a denied caller never gets the result.
+    // A run ends at its timeout even if `execute` itself has not settled.
+    const running = this.inFlight.get(name);
+    if (running) return running;
+    const run = this.runJourney(name, journey, start, auth).finally(() => this.inFlight.delete(name));
+    this.inFlight.set(name, run);
+    return run;
+  }
+
+  private async runJourney(
+    name: string,
+    journey: JourneyDefinition,
+    start: number,
+    auth?: JourneyAuthContext,
+  ): Promise<JourneyResult> {
+    let result: JourneyResult;
+
     // Normal and Retry Execution Path
     const maxRetries = journey.maxRetries ?? 0;
     const initialDelay = journey.retryDelayMs ?? 100;
@@ -216,15 +238,16 @@ export class SyntheticMonitor extends EventEmitter {
     let succeeded = false;
 
     while (attempt <= maxRetries && !succeeded) {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([
           journey.execute(auth),
-          new Promise((_, reject) =>
-            setTimeout(
+          new Promise((_, reject) => {
+            timeout = setTimeout(
               () => reject(new Error(`Journey timed out after ${journey.timeoutMs}ms`)),
               journey.timeoutMs,
-            ),
-          ),
+            );
+          }),
         ]);
         succeeded = true;
       } catch (err) {
@@ -241,6 +264,9 @@ export class SyntheticMonitor extends EventEmitter {
           });
           await new Promise((resolve) => setTimeout(resolve, delay));
         }
+      } finally {
+        // A journey that settles first must not leave its timeout timer pending.
+        clearTimeout(timeout);
       }
     }
 
@@ -312,6 +338,21 @@ export class SyntheticMonitor extends EventEmitter {
     if (list.length > this.config.maxStoredResultsPerJourney) {
       list.shift();
     }
+    this.liveResults(name); // prunes results past the retention window
+  }
+
+  /**
+   * Results inside the `retentionHours` window, oldest first (#1128). Expired
+   * results are pruned so a monitor that stopped running reads "unknown"
+   * instead of repeating its last status forever.
+   */
+  private liveResults(name: string): JourneyResult[] {
+    const list = this.results.get(name) ?? [];
+    const cutoff = Date.now() - this.config.retentionHours * 60 * 60 * 1000;
+    while (list.length > 0 && Date.parse(list[0].timestamp) < cutoff) {
+      list.shift();
+    }
+    return list;
   }
 
   /**
@@ -362,7 +403,7 @@ export class SyntheticMonitor extends EventEmitter {
   getStatus(): Record<string, JourneyStatus> {
     const status: Record<string, JourneyStatus> = {};
     for (const [name] of this.journeys) {
-      const results = this.results.get(name) ?? [];
+      const results = this.liveResults(name);
       status[name] = results.length > 0 ? results[results.length - 1].status : "unknown";
     }
     return status;
@@ -372,7 +413,7 @@ export class SyntheticMonitor extends EventEmitter {
    * Get recent results for a journey.
    */
   getResults(name: string, limit: number = 100): JourneyResult[] {
-    return (this.results.get(name) ?? []).slice(-limit);
+    return this.liveResults(name).slice(-limit);
   }
 }
 

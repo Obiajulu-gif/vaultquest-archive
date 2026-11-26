@@ -149,6 +149,15 @@ export const jobsRoutes = (
         return ok(checkpoint);
       });
 
+      app.post("/internal/repair/resumable/:id/cancel", { preHandler: [guard] }, async (req) => {
+        const { id } = idParams.parse(req.params);
+        const checkpoint = await activeResumable.cancelJob(id);
+        if (!checkpoint) {
+          throw AppError.notFound(`Repair checkpoint '${id}' not found`);
+        }
+        return ok(checkpoint);
+      });
+
       app.post("/internal/repair/resumable/:id/pause", { preHandler: [guard] }, async (req) => {
         const { id } = idParams.parse(req.params);
         const checkpoint = await activeResumable.pauseJob(id);

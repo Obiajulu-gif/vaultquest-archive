@@ -213,6 +213,51 @@ describe("Resumable Repair Job for Orphaned and Inconsistent Records (#977)", ()
     });
   });
 
+  describe("Cancellation and cleanup", () => {
+    it("cancels at the next batch boundary and preserves the durable cursor", async () => {
+      for (let i = 1; i <= 3; i++) {
+        dataSource.actions.push({
+          id: `10000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
+          status: "submitted",
+          txHash: `0xcancel_${i}`,
+          updatedAt: twoHoursAgo,
+        });
+      }
+
+      let entered!: () => void;
+      let release!: () => void;
+      const started = new Promise<void>((resolve) => { entered = resolve; });
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const originalFetch = dataSource.fetchStaleActions.bind(dataSource);
+      let first = true;
+      dataSource.fetchStaleActions = async (...args) => {
+        if (first) {
+          first = false;
+          entered();
+          await gate;
+        }
+        return originalFetch(...args);
+      };
+
+      const running = engine.startJob({ dryRun: false, batchSize: 1, phases: ["orphaned_actions"] });
+      await started;
+      const jobId = (await checkpointStore.list())[0].jobId;
+      await engine.cancelJob(jobId);
+      release();
+
+      const result = await running;
+      expect(result.status).toBe("cancelled");
+      expect(result.cursor).toBe("10000000-0000-4000-8000-000000000001");
+      expect(dataSource.actions[0].status).toBe("orphaned");
+      expect(dataSource.actions.slice(1).every((item) => item.status === "submitted")).toBe(true);
+      expect(await engine.resumeJob(jobId)).toMatchObject({ status: "cancelled" });
+    });
+
+    it("returns 404 for unknown cancellation targets", async () => {
+      await expect(engine.cancelJob("missing")).resolves.toBeNull();
+    });
+  });
+
   describe("3. Dry-Run Planning Mode", () => {
     it("dry-run calculates repair metrics and plans without mutating database rows", async () => {
       dataSource.actions.push({
@@ -380,6 +425,26 @@ describe("Resumable Repair Job for Orphaned and Inconsistent Records (#977)", ()
       expect(body.data.jobId).toBe(initial.jobId);
       expect(body.data.status).toBe("completed");
 
+      await app.close();
+    });
+
+    it("cancels a repair job only with the internal service secret", async () => {
+      const app = await createTestApp();
+      const initial = await engine.startJob({ dryRun: true });
+
+      const denied = await app.inject({
+        method: "POST",
+        url: `/internal/repair/resumable/${initial.jobId}/cancel`,
+      });
+      expect(denied.statusCode).toBe(401);
+
+      const allowed = await app.inject({
+        method: "POST",
+        url: `/internal/repair/resumable/${initial.jobId}/cancel`,
+        headers: { "x-internal-secret": internalSecret },
+      });
+      expect(allowed.statusCode).toBe(200);
+      expect(allowed.json().data.status).toBe("completed");
       await app.close();
     });
 

@@ -18,7 +18,7 @@ export const REPAIR_PHASES = [
 
 export type RepairPhase = (typeof REPAIR_PHASES)[number];
 
-export type RepairJobStatus = "queued" | "running" | "paused" | "completed" | "failed";
+export type RepairJobStatus = "queued" | "running" | "paused" | "cancelled" | "completed" | "failed";
 
 export interface RepairCheckpoint {
   jobId: string;
@@ -379,6 +379,7 @@ export class ResumableRepairEngine {
   private readonly checkpointStore: RepairCheckpointStore;
   private activeJobs = new Set<string>();
   private pauseFlags = new Set<string>();
+  private cancelFlags = new Set<string>();
 
   constructor(options: {
     dataSource: RepairDataSource;
@@ -434,7 +435,7 @@ export class ResumableRepairEngine {
       throw new AppError(ERROR_CODES.NOT_FOUND, 404, `Repair job checkpoint '${jobId}' not found`);
     }
 
-    if (checkpoint.status === "completed") {
+    if (checkpoint.status === "completed" || checkpoint.status === "cancelled") {
       return checkpoint; // Idempotent: already complete
     }
 
@@ -454,6 +455,19 @@ export class ResumableRepairEngine {
   /**
    * Signals an active job to pause at the next batch boundary.
    */
+  async cancelJob(jobId: string): Promise<RepairCheckpoint | null> {
+    const cp = await this.checkpointStore.get(jobId);
+    if (!cp || cp.status === "completed" || cp.status === "cancelled") return cp;
+    this.cancelFlags.add(jobId);
+    if (!this.activeJobs.has(jobId)) {
+      cp.status = "cancelled";
+      cp.updatedAt = new Date().toISOString();
+      await this.checkpointStore.save(cp);
+      this.cancelFlags.delete(jobId);
+    }
+    return this.checkpointStore.get(jobId);
+  }
+
   async pauseJob(jobId: string): Promise<RepairCheckpoint | null> {
     this.pauseFlags.add(jobId);
     const cp = await this.checkpointStore.get(jobId);
@@ -492,6 +506,12 @@ export class ResumableRepairEngine {
       const activePhases = startPhaseIdx === -1 ? phases : phases.slice(startPhaseIdx);
 
       for (const phase of activePhases) {
+        if (this.cancelFlags.has(checkpoint.jobId)) {
+          checkpoint.status = "cancelled";
+          checkpoint.updatedAt = new Date().toISOString();
+          await this.checkpointStore.save(checkpoint);
+          break;
+        }
         if (this.pauseFlags.has(checkpoint.jobId)) {
           checkpoint.status = "paused";
           await this.checkpointStore.save(checkpoint);
@@ -509,7 +529,7 @@ export class ResumableRepairEngine {
         }
 
         // Phase finished: reset cursor for next phase unless paused
-        if (!this.pauseFlags.has(checkpoint.jobId)) {
+        if (!this.pauseFlags.has(checkpoint.jobId) && !this.cancelFlags.has(checkpoint.jobId)) {
           checkpoint.cursor = null;
           await this.checkpointStore.save(checkpoint);
         } else {
@@ -517,7 +537,11 @@ export class ResumableRepairEngine {
         }
       }
 
-      if (!this.pauseFlags.has(checkpoint.jobId)) {
+      if (this.cancelFlags.has(checkpoint.jobId)) {
+        checkpoint.status = "cancelled";
+        checkpoint.updatedAt = new Date().toISOString();
+        await this.checkpointStore.save(checkpoint);
+      } else if (!this.pauseFlags.has(checkpoint.jobId)) {
         checkpoint.status = "completed";
         checkpoint.completedAt = new Date().toISOString();
         await this.checkpointStore.save(checkpoint);
@@ -530,6 +554,7 @@ export class ResumableRepairEngine {
     } finally {
       this.activeJobs.delete(checkpoint.jobId);
       this.pauseFlags.delete(checkpoint.jobId);
+      this.cancelFlags.delete(checkpoint.jobId);
     }
 
     return checkpoint;
@@ -541,7 +566,7 @@ export class ResumableRepairEngine {
     let hasMore = true;
 
     while (hasMore) {
-      if (this.pauseFlags.has(checkpoint.jobId)) break;
+      if (this.pauseFlags.has(checkpoint.jobId) || this.cancelFlags.has(checkpoint.jobId)) break;
 
       const batch = await this.dataSource.fetchStaleActions(
         checkpoint.cursor,
@@ -597,7 +622,7 @@ export class ResumableRepairEngine {
     let hasMore = true;
 
     while (hasMore) {
-      if (this.pauseFlags.has(checkpoint.jobId)) break;
+      if (this.pauseFlags.has(checkpoint.jobId) || this.cancelFlags.has(checkpoint.jobId)) break;
 
       const batch = await this.dataSource.fetchStalePendingEvents(
         checkpoint.cursor,
@@ -647,7 +672,7 @@ export class ResumableRepairEngine {
     let hasMore = true;
 
     while (hasMore) {
-      if (this.pauseFlags.has(checkpoint.jobId)) break;
+      if (this.pauseFlags.has(checkpoint.jobId) || this.cancelFlags.has(checkpoint.jobId)) break;
 
       const batch = await this.dataSource.fetchUnresolvedSettlements(
         checkpoint.cursor,

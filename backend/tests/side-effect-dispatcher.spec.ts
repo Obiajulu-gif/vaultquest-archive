@@ -133,6 +133,24 @@ describe("SideEffectDispatcher", () => {
     expect(await ledger.get("k")).toMatchObject({ status: "completed", result: "fresh" });
   });
 
+  it("fences a stale attempt when the same dispatcher reclaims an expired lease", async () => {
+    const { c, ledger, dispatcher } = build();
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const first = dispatcher.dispatch({ key: "same-worker", type: "webhook" }, async () => {
+      await firstGate;
+      return "stale-result";
+    });
+
+    c.advance(LEASE + 1);
+    const second = await dispatcher.dispatch({ key: "same-worker", type: "webhook" }, async () => "fresh-result");
+    expect(second).toMatchObject({ status: "executed", result: "fresh-result", attempt: 2 });
+
+    releaseFirst();
+    await first;
+    expect(await ledger.get("same-worker")).toMatchObject({ status: "completed", result: "fresh-result", attempts: 2 });
+  });
+
   it("rejects an empty or oversized key as a non-retryable error", async () => {
     const { dispatcher } = build();
     await expect(dispatcher.dispatch({ key: "", type: "email" }, async () => 1)).rejects.toMatchObject({ code: "INVALID_PAYLOAD" });

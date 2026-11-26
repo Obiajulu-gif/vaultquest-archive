@@ -2,6 +2,13 @@
 
 This document covers the safe public-status model for VaultQuest operational states (degraded, paused, maintenance). It includes failure modes, recovery procedures, and runbook examples.
 
+`GET /status` is public and returns only the stable user-facing snapshot.
+`GET /status/can-mutate` requires a user session. Pause, resume, schedule, and
+clear operations require `admin.recovery.write` plus a matching
+`X-Maintainer-Approval` header. The controls are process-local: during a
+multi-instance deployment, apply and verify the same override on every
+instance; restarting a process clears its manual pause and maintenance window.
+
 ## Overview
 
 The public-status model translates internal dependency health into user-safe operational states:
@@ -39,9 +46,9 @@ healthy
 - In-flight requests that passed the `canUserMutate()` check may fail with 503
 
 **Recovery:**
-1. If RPC recovers first: system stays paused until cache recovers (wait for next `recordSuccess` on cache)
-2. If cache recovers first: check `GET /status` — should still show `paused` due to RPC
-3. Both recover: system transitions directly to `healthy`
+1. If RPC recovers first: the system stays paused until it passes the configured recovery threshold.
+2. Cache recovery does not gate mutations; cache is non-critical.
+3. If another non-critical dependency remains degraded after RPC recovers, status returns to `degraded`; mutations are available while views may be stale.
 
 **Mitigation:**
 - Cache failures rarely block mutations (marked `requiredForMutations: false`)
@@ -125,7 +132,15 @@ healthy
 - Use idempotency keys so retries are safe
 - Never trust a single check; gates should be checked at entry + before commit
 
-### 6. Maintenance with Non-Zero Start Time
+### 6. Critical Dependency Below the Failure Threshold
+
+**Edge case:** A database or RPC probe fails once, so the dependency is marked `degraded` but has not reached the outage threshold.
+
+**What happens:** The user-facing status is `paused`, and mutation gates fail closed immediately. Critical writes must not continue on a dependency that is already reporting errors.
+
+**Recovery:** The dependency remains paused until it reaches the configured consecutive-success threshold. Non-critical dependency degradation remains `degraded` and does not block mutations.
+
+### 7. Maintenance with Non-Zero Start Time
 
 **Edge case:** Operator schedules maintenance for future time (e.g., "tomorrow 2am").
 

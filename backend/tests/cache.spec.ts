@@ -342,6 +342,13 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
         payload: { totalDeposits: 500 },
         updatedAt: new Date(),
       });
+      const result = await service.detectStaleEntries([
+        { key: "vault:v1:summary", sourceVersion: 7 },
+      ]);
+
+      expect(result).toHaveLength(1);
+      expect(result[0].key).toBe("vault:v1:summary");
+      expect(result[0].reason).toBe("version_mismatch");
 
       const findings = await service.detectStale({ kind: "protocol_config" });
       expect(findings).toHaveLength(0);
@@ -374,9 +381,6 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
         dryRun: false,
         kind: "checkpoint",
       });
-      const result = await service.detectStaleEntries([
-        { key: "vault:v1:summary", sourceVersion: 7 },
-      ]);
 
       expect(result.repaired).toHaveLength(0);
       expect(result.failed).toMatchObject([
@@ -391,6 +395,12 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
       const connectCallback = mockRedisInstance.on.mock.calls.find((call) => call[0] === "connect")?.[1];
       connectCallback?.();
       mockRedisInstance.get.mockResolvedValueOnce("true");
+
+      const findings = await service.detectStale({ kind: "checkpoint" });
+      expect(findings).toHaveLength(0);
+      expect(mockPrisma.indexerCheckpoint.findUnique).not.toHaveBeenCalled();
+    });
+
     it("reports a missing cache entry as stale", async () => {
       const service = new CacheService(
         mockPrisma,
@@ -404,14 +414,14 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
         connectCallback();
       }
 
-      const findings = await service.detectStale({ kind: "checkpoint" });
-
-      expect(findings).toHaveLength(0);
-      expect(mockPrisma.indexerCheckpoint.findUnique).not.toHaveBeenCalled();
-    });
+      mockPrisma.cacheEntry.findUnique.mockResolvedValue(null);
       const result = await service.detectStaleEntries([
         { key: "vault:v1:summary", sourceVersion: 7 },
       ]);
+
+      expect(result).toHaveLength(1);
+      expect(result[0].reason).toBe("missing");
+    });
 
     it("requires manual review for a malformed checkpoint payload", async () => {
       const service = new CacheService(mockPrisma, mockLogger, "redis://127.0.0.1:6379");
@@ -468,6 +478,11 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
         lastUpdated: new Date("2020-01-01T00:00:00.000Z"),
       });
 
+      const findings = await service.detectStale({
+        kind: "asset_metadata",
+        now: new Date("2020-01-01T00:06:00.000Z"),
+      });
+      expect(findings).toMatchObject([{ key: "asset:XLM", reason: "stale" }]);
       const findings = await service.detectStale({ kind: "asset_metadata" });
       expect(findings).toHaveLength(1);
     });
@@ -506,6 +521,8 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
 
       expect(result).toHaveLength(1);
       expect(result[0]).toMatchObject({ reason: "stale" });
+      expect(dryRun.repaired).toHaveLength(1);
+      expect(mockPrisma.cacheEntry.upsert).not.toHaveBeenCalled();
     });
 
     it("keeps dry-run read-only and makes eviction idempotent", async () => {
@@ -515,16 +532,6 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
         decimals: 7,
         lastUpdated: new Date("2020-01-01T00:00:00.000Z"),
       });
-      const applied = await service.repairStaleEntries(
-        [
-          {
-            key: "vault:v1:summary",
-            sourceVersion: 7,
-            payload: { totalDeposits: 1000 },
-          },
-        ],
-        { dryRun: false },
-      );
 
       const dryRun = await service.repairStaleCache({
         dryRun: true,
@@ -605,6 +612,11 @@ describe("CacheService Fallback & Caching Logic Tests", () => {
         { dryRun: false },
       );
 
+      expect(result.repaired).toHaveLength(0);
+      expect(result.failed).toMatchObject([
+        { key: "vault:v1:summary", error: expect.stringContaining("db write failed") },
+      ]);
+      expect(mockLogger.error).toHaveBeenCalled();
       expect(result.succeeded).toEqual([]);
       expect(result.failed).toHaveLength(1);
       expect(result.failed[0]).toMatchObject({

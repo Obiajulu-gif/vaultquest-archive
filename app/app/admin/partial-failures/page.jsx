@@ -56,12 +56,18 @@ export default function PartialFailureDashboardPage() {
   const [actionNote, setActionNote] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState("");
+  const [summaryError, setSummaryError] = useState("");
 
   const loadSummary = useCallback(async () => {
+    setSummaryError("");
     try {
       const res = await fetch("/admin/partial-failures/summary");
-      if (res.ok) setSummary(await res.json().then((d) => d.data));
-    } catch { /* non-fatal */ }
+      if (!res.ok) throw new Error(await res.text());
+      const body = await res.json();
+      setSummary(body.data);
+    } catch (e) {
+      setSummaryError(e.message);
+    }
   }, []);
 
   const loadFailures = useCallback(
@@ -170,6 +176,11 @@ export default function PartialFailureDashboardPage() {
                 </div>
               ))}
             </div>
+          </div>
+        )}
+        {summaryError && (
+          <div role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+            Unable to load partial-failure summary: {summaryError}
           </div>
         )}
 
@@ -295,11 +306,11 @@ export default function PartialFailureDashboardPage() {
                         {f.retryable && f.state !== "resolved" && f.state !== "ignored" && (
                           <button
                             id={`pf-retry-${f.id}`}
-                            onClick={() => doAction(f.id, "retry", { outcome: "still_failing" })}
+                            onClick={() => setSelected({ ...f, _action: "retry" })}
                             disabled={actionLoading}
                             className="vq-btn-ghost text-xs px-2 py-1"
                           >
-                            Retry
+                            Record retry
                           </button>
                         )}
                         {f.state !== "resolved" && f.state !== "ignored" && (
@@ -350,7 +361,7 @@ export default function PartialFailureDashboardPage() {
                 <div>
                   <h2 className="text-lg font-semibold">
                     {selected._action
-                      ? `${selected._action === "resolve" ? "Resolve" : "Ignore"} Failure`
+                      ? `${selected._action === "resolve" ? "Resolve" : selected._action === "retry" ? "Record Retry Outcome" : "Ignore"} Failure`
                       : "Partial Failure Detail"}
                   </h2>
                   <p className="text-xs text-vault-muted font-mono mt-0.5">{selected.id}</p>
@@ -408,18 +419,22 @@ export default function PartialFailureDashboardPage() {
               {selected._action && (
                 <div className="space-y-3">
                   <p className="text-sm text-gray-300">
-                    {selected._action === "resolve"
+                    {selected._action === "retry"
+                      ? "Run the operation in its owning system first, then record the outcome here. This dashboard does not replay financial or external side effects."
+                      : selected._action === "resolve"
                       ? "Document how this failure was resolved. This is required and will be stored in the audit trail."
                       : "Provide a reason for ignoring this failure. It will be recorded in the audit trail."}
                   </p>
-                  <textarea
-                    id="pf-action-note"
-                    value={actionNote}
-                    onChange={(e) => setActionNote(e.target.value)}
-                    placeholder={selected._action === "resolve" ? "Resolution note…" : "Reason for ignoring…"}
-                    rows={4}
-                    className="w-full rounded-lg bg-white/5 border border-white/15 px-3 py-2 text-sm text-white resize-none focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                  />
+                  {selected._action !== "retry" && (
+                    <textarea
+                      id="pf-action-note"
+                      value={actionNote}
+                      onChange={(e) => setActionNote(e.target.value)}
+                      placeholder={selected._action === "resolve" ? "Resolution note…" : "Reason for ignoring…"}
+                      rows={4}
+                      className="w-full rounded-lg bg-white/5 border border-white/15 px-3 py-2 text-sm text-white resize-none focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    />
+                  )}
                 </div>
               )}
 
@@ -431,7 +446,25 @@ export default function PartialFailureDashboardPage() {
                 <button id="pf-modal-cancel" onClick={() => { setSelected(null); setActionNote(""); }} className="vq-btn-ghost px-4 py-2 text-sm">
                   Cancel
                 </button>
-                {selected._action && (
+                {selected._action === "retry" && (
+                  <>
+                    <button
+                      disabled={actionLoading}
+                      onClick={() => doAction(selected.id, "retry", { outcome: "still_failing" })}
+                      className="vq-btn-ghost px-4 py-2 text-sm disabled:opacity-50"
+                    >
+                      Retry still failing
+                    </button>
+                    <button
+                      disabled={actionLoading}
+                      onClick={() => doAction(selected.id, "retry", { outcome: "resolved" })}
+                      className="bg-green-600 hover:bg-green-500 text-white px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50"
+                    >
+                      Retry resolved
+                    </button>
+                  </>
+                )}
+                {selected._action && selected._action !== "retry" && (
                   <button
                     id={`pf-modal-${selected._action}`}
                     disabled={actionLoading || actionNote.trim().length < 5}

@@ -198,13 +198,13 @@ export class DegradedModeService {
 
   /**
    * Asserts that required dependencies for a mutation are operational.
-   * If any required dependency is unavailable or degraded, throws DegradedModeError (503).
+   * If any required dependency is degraded or unavailable, throws DegradedModeError (503).
    */
   assertMutationAllowed(requiredDeps: DependencyName[] = ["database", "soroban_rpc"]): void {
     const blocked: DependencyName[] = [];
     for (const name of requiredDeps) {
       const dep = this.dependencies.get(name);
-      if (dep && dep.status === "unavailable") {
+      if (dep && dep.status !== "healthy") {
         blocked.push(name);
       }
     }
@@ -212,7 +212,7 @@ export class DegradedModeService {
     if (blocked.length > 0) {
       const list = blocked.join(", ");
       throw new DegradedModeError(
-        `Mutations are temporarily paused because dependencies (${list}) are currently unavailable.`,
+        `Mutations are temporarily paused because dependencies (${list}) are not healthy.`,
         this.config.retryAfterSeconds,
         blocked
       );
@@ -296,25 +296,27 @@ export class DegradedModeService {
     dependencies: Array<{ name: string; status: DependencyHealthStatus; impact: string }>;
   } {
     const all = Array.from(this.dependencies.values());
-    const hasUnavailable = all.some((d) => d.status === "unavailable");
-    const hasDegraded = all.some((d) => d.status === "degraded");
+    const hasUnavailableCritical = all.some(
+      (d) => d.requiredForMutations && d.status !== "healthy",
+    );
+    const hasUnhealthy = all.some((d) => d.status !== "healthy");
 
     let overall: "healthy" | "degraded" | "unavailable" = "healthy";
     let userBanner: string | null = null;
 
-    if (hasUnavailable) {
+    if (hasUnavailableCritical) {
       overall = "unavailable";
       userBanner = "We are currently experiencing upstream service disruptions. Balance mutations and transactions are temporarily paused; cached data may be shown.";
-    } else if (hasDegraded) {
+    } else if (hasUnhealthy) {
       overall = "degraded";
-      userBanner = "Upstream network response times are elevated. Some real-time updates may experience minor delays.";
+      userBanner = "Upstream network latency is elevated. Some real-time updates may experience minor delays.";
     }
 
     const dependencies = all.map((d) => ({
       name: d.name,
       status: d.status,
       impact: d.requiredForMutations
-        ? (d.status === "unavailable" ? "Fund transfers and mutations paused" : "Operational")
+        ? (d.status === "healthy" ? "Operational" : "Fund transfers and mutations paused")
         : (d.status === "unavailable" ? "Serving cached or direct fallback data" : "Operational"),
     }));
 

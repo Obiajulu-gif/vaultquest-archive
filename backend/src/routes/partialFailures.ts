@@ -4,8 +4,8 @@
  * GET  /admin/partial-failures            — list failures (cursor-paginated)
  * GET  /admin/partial-failures/summary    — aggregated counts
  * GET  /admin/partial-failures/:id        — inspect one failure
- * POST /admin/partial-failures            — record a new failure (internal)
- * POST /admin/partial-failures/:id/retry  — mark retried
+ * POST /admin/partial-failures            — record a failure idempotently
+ * POST /admin/partial-failures/:id/retry  — record an operator-run retry outcome
  * POST /admin/partial-failures/:id/resolve — manually resolve
  * POST /admin/partial-failures/:id/ignore — mark ignored
  */
@@ -46,7 +46,7 @@ const createBody = z.object({
   retryable: z.boolean().optional(),
   description: z.string().min(5).max(1000),
   /** Caller must pre-sanitize. Secrets will not be stored. */
-  metadata: z.record(z.unknown()).optional().nullable(),
+  metadata: z.record(z.string(), z.unknown()).optional().nullable(),
   stale_since_at: z.string().datetime({ offset: true }).optional().nullable(),
 });
 
@@ -152,14 +152,14 @@ export const partialFailureRoutes = (
     // POST /admin/partial-failures — record a new failure
     app.post("/admin/partial-failures", { preHandler: [guards.write] }, async (req) => {
       const body = createBody.parse(req.body);
-      const record = await svc.create({
+      const record = await svc.record({
         operationType: body.operation_type,
         operationId: body.operation_id,
         externalRef: body.external_ref,
         severity: body.severity,
         retryable: body.retryable,
         description: body.description,
-        metadata: body.metadata as Record<string, unknown> | null | undefined,
+        metadata: body.metadata,
         staleSinceAt: body.stale_since_at ? new Date(body.stale_since_at) : null,
       });
       return ok(serialize(record));

@@ -1,6 +1,8 @@
 import path from "path";
+import { createRequire } from "node:module";
 
 /** @type {import('next').NextConfig} */
+const require = createRequire(import.meta.url);
 const { i18n } = require('./next-i18next.config.js');
 
 const nextConfig = {

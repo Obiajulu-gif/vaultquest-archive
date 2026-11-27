@@ -77,6 +77,13 @@ describe("DegradedModeService", () => {
     }
   });
 
+  it("fails closed on a critical dependency degradation before the outage threshold", () => {
+    service.recordFailure("soroban_rpc", new Error("transient RPC failure"));
+
+    expect(service.getDependency("soroban_rpc")?.status).toBe("degraded");
+    expect(() => service.assertMutationAllowed(["soroban_rpc"])).toThrow(DegradedModeError);
+  });
+
   it("executes reads gracefully with stale fallback when dependency degrades", async () => {
     const cachedAt = new Date(Date.now() - 30_000);
     const fallbackData = { poolId: "pool-1", balance: "1000" };
@@ -137,6 +144,9 @@ describe("DegradedModeService", () => {
     });
     expect(healthyRes.statusCode).toBe(200);
     expect(healthyRes.json().data.status).toBe("healthy");
+    const publicStatus = await app.inject({ method: "GET", url: "/status" });
+    expect(publicStatus.statusCode).toBe(200);
+    expect(publicStatus.json().status).toBe("healthy");
 
     // When unavailable -> 503 with Retry-After header
     service.setDependencyStatus("database", "unavailable");

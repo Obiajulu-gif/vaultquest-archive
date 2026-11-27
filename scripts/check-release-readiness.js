@@ -51,7 +51,8 @@ function main() {
       /tests\/security\.spec\.ts/,
       /--testNamePattern=/,
       /tests\/smoke\.spec\.ts/,
-      /rehearse-release-rollback\.cjs/,
+      /rehearse-release-rollback\.cjs --evidence-out recovery-evidence\.json/,
+      /RECOVERY_EVIDENCE_PATH: recovery-evidence\.json/,
       /release-readiness\.cjs --evidence/,
     ];
     for (const check of releaseGateChecks) {

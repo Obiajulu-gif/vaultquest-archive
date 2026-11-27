@@ -219,6 +219,36 @@ export const DEFAULT_FILE_TYPE_POLICY: FileTypePolicy = {
   maxFilenameLength: 120
 };
 
+/** Maximum number of percent-decoding passes applied before filename checks (#1162). */
+export const MAX_FILENAME_DECODE_DEPTH = 3;
+
+// Any '%' left after the bounded decode passes is either a deeper encoding or
+// a malformed escape. Both must fail closed: a downstream layer that decodes
+// again could otherwise reveal a separator, traversal marker, or control byte.
+const RESIDUAL_ENCODED_FILENAME_METACHARACTER = /%/;
+const FILENAME_CONTROL_CHARACTERS = /[\u0000-\u001F\u007F-\u009F]/;
+
+/**
+ * Decode percent-encoding a bounded number of times so a downstream proxy or
+ * storage layer cannot reveal separators/traversal that were hidden from the
+ * raw filename checks. The caller's filename is never rewritten — the decoded
+ * value is used for validation only, preserving the existing return contract.
+ */
+export function decodeFilenameForValidation(rawFilename: string): string | null {
+  let decoded = rawFilename;
+  for (let depth = 0; depth < MAX_FILENAME_DECODE_DEPTH; depth += 1) {
+    let next: string;
+    try {
+      next = decodeURIComponent(decoded);
+    } catch {
+      return null; // Malformed escapes fail closed instead of reaching storage.
+    }
+    if (next === decoded) break;
+    decoded = next;
+  }
+  return decoded;
+}
+
 export function validateFileType(
   rawFilename: string,
   rawMimeType?: string,
@@ -253,6 +283,26 @@ export function validateFileType(
   // Path traversal check
   if (rawFilename.includes("/") || rawFilename.includes("\\") || rawFilename.includes("..")) {
     return { allowed: false, reason: "Path traversal characters detected in filename", code: ERROR_CODES.FILE_TYPE_NOT_ALLOWED };
+  }
+
+  // #1162: validate the bounded-decoded form as well as the raw form. This runs
+  // after the legacy checks so their public rejection reasons stay unchanged.
+  const decodedFilename = decodeFilenameForValidation(rawFilename);
+  if (decodedFilename === null) {
+    return { allowed: false, reason: "Filename contains malformed percent encoding", code: ERROR_CODES.FILE_TYPE_NOT_ALLOWED };
+  }
+  if (
+    decodedFilename.includes("/") ||
+    decodedFilename.includes("\\") ||
+    decodedFilename.includes("..") ||
+    RESIDUAL_ENCODED_FILENAME_METACHARACTER.test(decodedFilename) ||
+    FILENAME_CONTROL_CHARACTERS.test(decodedFilename)
+  ) {
+    return {
+      allowed: false,
+      reason: "Encoded path traversal or control characters detected in filename",
+      code: ERROR_CODES.FILE_TYPE_NOT_ALLOWED
+    };
   }
 
   const maxLen = policy.maxFilenameLength ?? 120;

@@ -68,6 +68,31 @@ describe("Release Readiness Verification (#972)", () => {
   });
 
   describe("Failure paths", () => {
+    it("fails closed when migration plans are unavailable", async () => {
+      const report = await validateReleaseReadiness({
+        rootDir,
+        migrationsDir: path.resolve(rootDir, "missing-migrations"),
+        checklistPath,
+        maintainerSignOff: validMaintainerSignOff,
+      });
+
+      expect(report.ok).toBe(false);
+      expect(report.failures.some((check) => check.id === "migration-source")).toBe(true);
+    });
+
+    it("does not accept a migration verification claim without database post-checks", async () => {
+      const report = await validateReleaseReadiness({
+        rootDir,
+        migrationsDir,
+        checklistPath,
+        migrationVerified: true,
+        maintainerSignOff: validMaintainerSignOff,
+      });
+
+      expect(report.ok).toBe(false);
+      expect(report.failures.some((check) => check.id === "migration-post-checks")).toBe(true);
+    });
+
     it("fails validation when checklist template is missing", async () => {
       const report = await validateReleaseReadiness({
         rootDir,
@@ -110,6 +135,29 @@ describe("Release Readiness Verification (#972)", () => {
       expect(report.ok).toBe(false);
       const authCheck = report.failures.find((f) => f.id === "auth-maintainer-signoff");
       expect(authCheck?.detail).toContain("admin or maintainer");
+    });
+
+    it("rejects future-dated sign-off and urgent exceptions without an incident ID", async () => {
+      const futureSignoff = await validateReleaseReadiness({
+        rootDir,
+        migrationsDir,
+        checklistPath,
+        maintainerSignOff: {
+          ...validMaintainerSignOff,
+          approvedAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      });
+      expect(futureSignoff.failures.some((check) => check.id === "auth-maintainer-signoff")).toBe(true);
+
+      const untrackedUrgent = await validateReleaseReadiness({
+        rootDir,
+        migrationsDir,
+        checklistPath,
+        isUrgentFix: true,
+      });
+      expect(untrackedUrgent.summary.urgentException).toBe(false);
+      expect(untrackedUrgent.failures.find((check) => check.id === "auth-maintainer-signoff")?.detail)
+        .toContain("incident ID");
     });
   });
 

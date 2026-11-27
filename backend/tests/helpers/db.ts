@@ -66,6 +66,8 @@ export async function resetDb(prisma: PrismaClient): Promise<void> {
   await prisma.importRow.deleteMany({});
   await prisma.importBatch.deleteMany({});
   await prisma.supportAccessGrant.deleteMany({});
+  await prisma.maintainerNoteAudit.deleteMany({});
+  await prisma.maintainerNote.deleteMany({});
   // The support-access audit trail is append-only (UPDATE/DELETE are blocked
   // by a trigger), so tests reset it with TRUNCATE, which bypasses row
   // triggers while still going through table-level permissions.

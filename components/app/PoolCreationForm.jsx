@@ -99,10 +99,6 @@ function validateForm(form) {
   return errors;
 }
 
-function FieldError({ id, message }) {
-  if (!message) return null;
-  return (
-    <p id={id} className="mt-1 flex items-center gap-1 text-xs text-red-500" role="alert">
 // Not a live region: the summary alert announces failures once, and each
 // message is read with its field through aria-describedby.
 function FieldError({ id, message }) {

@@ -38,6 +38,13 @@ describe("internal cache repair routes", () => {
     });
     expect(unauthorized.statusCode).toBe(401);
 
+    const unauthorizedRepair = await app.inject({
+      method: "POST",
+      url: "/internal/cache/repair",
+      payload: { kind: "asset_metadata", dry_run: false },
+    });
+    expect(unauthorizedRepair.statusCode).toBe(401);
+
     const preview = await app.inject({
       method: "POST",
       url: "/internal/cache/repair",

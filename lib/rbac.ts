@@ -10,6 +10,7 @@ export const ROLES = ["user", "maintainer", "service"] as const;
 export type Role = (typeof ROLES)[number];
 
 export const PERMISSIONS = [
+  "admin.permissions.preview",
   "own.data.read",
   "own.data.export",
   "own.data.import",
@@ -64,6 +65,7 @@ const USER_PERMISSIONS: readonly Permission[] = [
 export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
   user: USER_PERMISSIONS,
   maintainer: [
+    "admin.permissions.preview",
     ...USER_PERMISSIONS,
     "admin.audit.read",
     "admin.audit.write",

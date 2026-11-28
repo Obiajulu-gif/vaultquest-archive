@@ -2,6 +2,7 @@
 "use strict";
 
 const fs = require("node:fs");
+const path = require("node:path");
 
 const REQUIRED_CHECKS = Object.freeze([
   "migration",
@@ -10,13 +11,46 @@ const REQUIRED_CHECKS = Object.freeze([
   "rollback",
 ]);
 
-function validateEvidence(evidence) {
+/** 2: `checks.rollback.recovery` (written by rehearse-release-rollback.cjs) is required. */
+const SCHEMA_VERSION = 2;
+const MIGRATIONS_DIR = path.resolve(__dirname, "../backend/prisma/migrations");
+
+/** Migrations shipped in this release: one Prisma migration directory each. */
+function listReleaseMigrations(dir = MIGRATIONS_DIR) {
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+}
+
+function validateRecovery(recovery, expectedMigrations, errors) {
+  if (!recovery || typeof recovery !== "object" || Array.isArray(recovery)) {
+    errors.push("rollback check is missing its recovery evidence.");
+    return;
+  }
+  if (typeof recovery.archiveSha256 !== "string" || !/^[a-f0-9]{64}$/.test(recovery.archiveSha256)) {
+    errors.push("recovery evidence must include the backup archive SHA-256.");
+  }
+  if (!Number.isInteger(recovery.tables) || recovery.tables < 1) {
+    errors.push("recovery evidence must report at least one verified table.");
+  }
+  if (!Array.isArray(recovery.migrations) || recovery.migrations.length === 0) {
+    errors.push("recovery evidence must list the restored migrations.");
+    return;
+  }
+  const missing = expectedMigrations.filter((migration) => !recovery.migrations.includes(migration));
+  if (missing.length > 0) {
+    errors.push(`recovery evidence does not cover release migration(s): ${missing.join(", ")}.`);
+  }
+}
+
+function validateEvidence(evidence, { expectedMigrations = listReleaseMigrations() } = {}) {
   const errors = [];
   if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
     return { ok: false, errors: ["Evidence must be a JSON object."] };
   }
-  if (evidence.schemaVersion !== 1) {
-    errors.push("schemaVersion must be 1.");
+  if (evidence.schemaVersion !== SCHEMA_VERSION) {
+    errors.push(`schemaVersion must be ${SCHEMA_VERSION}.`);
   }
   if (typeof evidence.commit !== "string" || !/^[a-f0-9]{40}$/i.test(evidence.commit)) {
     errors.push("commit must be a 40-character Git commit SHA.");
@@ -35,12 +69,17 @@ function validateEvidence(evidence) {
         errors.push(`${check} check is missing its verification evidence.`);
       }
     }
+    validateRecovery(evidence.checks.rollback && evidence.checks.rollback.recovery, expectedMigrations, errors);
   }
   return { ok: errors.length === 0, errors };
 }
 
+function readRecoveryEvidence(evidencePath) {
+  return evidencePath ? JSON.parse(fs.readFileSync(evidencePath, "utf8")) : undefined;
+}
+
 function formatReport(report) {
-  if (report.ok) return "Release readiness gate passed: migration, security, smoke, and rollback checks are evidenced.";
+  if (report.ok) return "Release readiness gate passed: migration, security, smoke, and rollback checks are evidenced, and the restore covered every release migration.";
   return [
     "Release readiness gate failed:",
     ...report.errors.map((error) => `- ${error}`),
@@ -49,14 +88,18 @@ function formatReport(report) {
 
 function writeEvidence(outputPath, env = process.env) {
   const evidence = {
-    schemaVersion: 1,
+    schemaVersion: SCHEMA_VERSION,
     commit: env.GITHUB_SHA,
     runUrl: `https://github.com/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
     checks: {
       migration: { status: env.MIGRATION_CHECK_RESULT, evidence: env.MIGRATION_CHECK_EVIDENCE },
       security: { status: env.SECURITY_CHECK_RESULT, evidence: env.SECURITY_CHECK_EVIDENCE },
       smoke: { status: env.SMOKE_CHECK_RESULT, evidence: env.SMOKE_CHECK_EVIDENCE },
-      rollback: { status: env.ROLLBACK_CHECK_RESULT, evidence: env.ROLLBACK_CHECK_EVIDENCE },
+      rollback: {
+        status: env.ROLLBACK_CHECK_RESULT,
+        evidence: env.ROLLBACK_CHECK_EVIDENCE,
+        recovery: readRecoveryEvidence(env.RECOVERY_EVIDENCE_PATH),
+      },
     },
   };
   fs.writeFileSync(outputPath, `${JSON.stringify(evidence, null, 2)}\n`, { flag: "wx" });
@@ -93,7 +136,14 @@ function main(args = process.argv.slice(2)) {
     console.error(`Unable to read release evidence: ${error instanceof Error ? error.message : String(error)}`);
     return 1;
   }
-  const report = validateEvidence(evidence);
+  let expectedMigrations;
+  try {
+    expectedMigrations = listReleaseMigrations();
+  } catch (error) {
+    console.error(`Unable to list release migrations: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
+  const report = validateEvidence(evidence, { expectedMigrations });
   console.log(formatReport(report));
   return report.ok ? 0 : 1;
 }
@@ -102,4 +152,4 @@ if (require.main === module) {
   process.exitCode = main();
 }
 
-module.exports = { REQUIRED_CHECKS, validateEvidence, formatReport, writeEvidence, main };
+module.exports = { REQUIRED_CHECKS, listReleaseMigrations, validateEvidence, formatReport, writeEvidence, main };

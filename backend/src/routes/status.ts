@@ -14,7 +14,7 @@
  *   For UI to gate mutation buttons.
  */
 
-import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import type { FastifyInstance, FastifyRequest, FastifyReply, preHandlerHookHandler } from "fastify";
 import { z } from "zod";
 import type { PublicStatusService } from "../services/publicStatusService.js";
 
@@ -34,25 +34,24 @@ export const statusResponseSchema = z.object({
 
 export type StatusResponse = z.infer<typeof statusResponseSchema>;
 
+export type StatusRouteGuards = {
+  /** own.data.read */
+  userRead: preHandlerHookHandler;
+  /** admin.recovery.write */
+  write: preHandlerHookHandler;
+};
+
 export async function registerStatusRoutes(
   app: FastifyInstance,
-  statusService: PublicStatusService
+  statusService: PublicStatusService,
+  guards: StatusRouteGuards,
 ) {
   /**
    * GET /status
    * Public endpoint: no authentication required.
    * Returns the current operational state and feature availability.
    */
-  app.get<{ Reply: StatusResponse }>(
-    "/status",
-    {
-      schema: {
-        response: {
-          200: statusResponseSchema,
-        },
-      },
-      // No authentication required; this is a public status endpoint
-    },
+  app.get<{ Reply: StatusResponse }>("/status",
     async (_request: FastifyRequest, reply: FastifyReply) => {
       const snapshot = statusService.getPublicStatus();
 
@@ -89,13 +88,7 @@ export async function registerStatusRoutes(
   app.get<{ Reply: { canMutate: boolean } }>(
     "/status/can-mutate",
     {
-      // Requires authentication
-      onRequest: [app.authenticate],
-      schema: {
-        response: {
-          200: z.object({ canMutate: z.boolean() }),
-        },
-      },
+      preHandler: [guards.userRead],
     },
     async (_request: FastifyRequest, reply: FastifyReply) => {
       const canMutate = statusService.canUserMutate();
@@ -122,42 +115,13 @@ export async function registerStatusRoutes(
   }>(
     "/status/pause",
     {
-      onRequest: [app.authenticate],
-      schema: {
-        body: z.object({
-          reason: z
-            .string()
-            .min(1)
-            .max(200)
-            .describe("User-safe reason for the pause"),
-          durationSeconds: z
-            .number()
-            .int()
-            .min(10)
-            .max(3600)
-            .optional()
-            .describe("Duration in seconds (10-3600); omit for indefinite"),
-        }),
-        response: {
-          200: z.object({
-            paused: z.boolean(),
-            until: z.string().datetime().optional(),
-          }),
-        },
-      },
+      preHandler: [guards.write],
     },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      // Verify admin permission
-      const userId = (request.user as any)?.id;
-      if (!userId || !(request.user as any)?.isAdmin) {
-        reply.status(403);
-        return { paused: false };
-      }
-
-      const { reason, durationSeconds } = request.body as {
-        reason: string;
-        durationSeconds?: number;
-      };
+    async (request, reply) => {
+      const { reason, durationSeconds } = z.object({
+        reason: z.string().trim().min(1).max(200),
+        durationSeconds: z.number().int().min(10).max(3600).optional(),
+      }).parse(request.body);
 
       statusService.pauseMutations(reason, durationSeconds);
       const eta = statusService.getRecoveryEta();
@@ -177,21 +141,9 @@ export async function registerStatusRoutes(
   app.post<{ Reply: { resumed: boolean } }>(
     "/status/resume",
     {
-      onRequest: [app.authenticate],
-      schema: {
-        response: {
-          200: z.object({ resumed: z.boolean() }),
-        },
-      },
+      preHandler: [guards.write],
     },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      // Verify admin permission
-      const userId = (request.user as any)?.id;
-      if (!userId || !(request.user as any)?.isAdmin) {
-        reply.status(403);
-        return { resumed: false };
-      }
-
+    async (_request: FastifyRequest, _reply: FastifyReply) => {
       statusService.resumeMutations();
       return { resumed: true };
     }
@@ -212,38 +164,14 @@ export async function registerStatusRoutes(
   }>(
     "/status/maintenance",
     {
-      onRequest: [app.authenticate],
-      schema: {
-        body: z.object({
-          startsAt: z.string().datetime().describe("ISO 8601 start time"),
-          endsAt: z.string().datetime().describe("ISO 8601 end time"),
-          reason: z
-            .string()
-            .min(1)
-            .max(300)
-            .describe("User-safe maintenance reason"),
-        }),
-        response: {
-          200: z.object({
-            scheduled: z.boolean(),
-            id: z.string(),
-          }),
-        },
-      },
+      preHandler: [guards.write],
     },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      // Verify admin permission
-      const userId = (request.user as any)?.id;
-      if (!userId || !(request.user as any)?.isAdmin) {
-        reply.status(403);
-        return { scheduled: false, id: "" };
-      }
-
-      const { startsAt, endsAt, reason } = request.body as {
-        startsAt: string;
-        endsAt: string;
-        reason: string;
-      };
+    async (request, reply) => {
+      const { startsAt, endsAt, reason } = z.object({
+        startsAt: z.string().datetime(),
+        endsAt: z.string().datetime(),
+        reason: z.string().trim().min(1).max(300),
+      }).parse(request.body);
 
       const start = new Date(startsAt);
       const end = new Date(endsAt);
@@ -256,11 +184,11 @@ export async function registerStatusRoutes(
         };
       }
 
-      statusService.scheduleMaintenanceWindow({ startsAt: start, endsAt: end, reason });
+      const id = statusService.scheduleMaintenanceWindow({ startsAt: start, endsAt: end, reason });
 
       return {
         scheduled: true,
-        id: `maint-${Date.now()}`,
+        id,
       };
     }
   );
@@ -273,21 +201,9 @@ export async function registerStatusRoutes(
   app.post<{ Reply: { cleared: boolean } }>(
     "/status/maintenance/clear",
     {
-      onRequest: [app.authenticate],
-      schema: {
-        response: {
-          200: z.object({ cleared: z.boolean() }),
-        },
-      },
+      preHandler: [guards.write],
     },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      // Verify admin permission
-      const userId = (request.user as any)?.id;
-      if (!userId || !(request.user as any)?.isAdmin) {
-        reply.status(403);
-        return { cleared: false };
-      }
-
+    async (_request: FastifyRequest, _reply: FastifyReply) => {
       statusService.clearMaintenanceWindow();
       return { cleared: true };
     }

@@ -1,0 +1,1 @@
+# Diagnostics reliability boundaries`n`nLocal setup diagnostics must report authorization separately from dependency failure, retain retry state, provide recovery steps, and preserve deterministic evidence for concurrent and retention-sensitive operations.

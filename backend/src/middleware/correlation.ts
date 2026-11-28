@@ -22,6 +22,14 @@ const plugin: FastifyPluginAsync = async (app) => {
     reply.header("Correlation-Id", id);
     req.log = req.log.child({ correlation_id: id });
   });
+
+  // Ensure correlation ID is propagated to all responses via X-Correlation-Id header
+  app.addHook("onSend", async (req, reply, done) => {
+    if (req.correlationId) {
+      reply.header("X-Correlation-Id", req.correlationId);
+    }
+    done();
+  });
 };
 
 export default fp(plugin, { name: "correlation" });

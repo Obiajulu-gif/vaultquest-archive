@@ -86,13 +86,27 @@ function rowState(
   rowId: TimelineStage,
   failedAtStage?: TransactionTimelineProps["failedAtStage"],
 ): "complete" | "active" | "pending" | "failed" {
-  if (stage === "failed" && failedAtStage === rowId) return "failed";
+  // #1133 — every row is done on success, and rows before the failed one are
+  // done on failure; each row's state is announced, so it must be accurate.
+  if (stage === "success") return "complete";
+  if (stage === "failed") {
+    if (failedAtStage === rowId) return "failed";
+    return failedAtStage && STAGE_ORDER[rowId] < STAGE_ORDER[failedAtStage] ? "complete" : "pending";
+  }
   const current = STAGE_ORDER[stage];
   const row = STAGE_ORDER[rowId];
   if (row < current) return "complete";
   if (row === current) return "active";
   return "pending";
 }
+
+/** Screen-reader text for each row; the icons and colours are aria-hidden. */
+const ROW_STATE_TEXT = {
+  complete: "completed",
+  active: "in progress",
+  pending: "not started",
+  failed: "failed",
+} as const;
 
 interface StageRowProps {
   meta: StageMeta;
@@ -129,7 +143,7 @@ const StageRow: FC<StageRowProps> = ({ meta, state, isLast }) => {
   }[state];
 
   return (
-    <li className="relative flex gap-4 pb-6 last:pb-0">
+    <li className="relative flex gap-4 pb-6 last:pb-0" aria-current={state === "active" ? "step" : undefined}>
       {!isLast && (
         <span
           aria-hidden="true"
@@ -143,7 +157,10 @@ const StageRow: FC<StageRowProps> = ({ meta, state, isLast }) => {
         {styles.icon}
       </span>
       <div className="min-w-0 pt-0.5">
-        <p className={`text-sm font-medium ${styles.label}`}>{meta.label}</p>
+        <p className={`text-sm font-medium ${styles.label}`}>
+          {meta.label}
+          <span className="sr-only">, {ROW_STATE_TEXT[state]}</span>
+        </p>
         <p className="mt-0.5 text-xs text-gray-500">{meta.description}</p>
       </div>
     </li>
@@ -162,11 +179,17 @@ export const TransactionTimeline: FC<TransactionTimelineProps> = ({
 }) => {
   const isFailed = stage === "failed";
   const isSuccess = stage === "success";
+  const current = STAGES.find((s) => s.id === stage);
+  const failedLabel = STAGES.find((s) => s.id === failedAtStage)?.label;
+  // #1133 — announce one short sentence per change instead of re-reading the
+  // whole card; failures go to an assertive alert.
+  const statusText = isFailed ? "" : isSuccess ? "Transaction confirmed" : `${current?.label}: ${current?.description}`;
+  const alertText = isFailed
+    ? `Transaction failed${failedLabel ? ` at ${failedLabel}` : ""}.${errorMessage ? ` ${errorMessage}` : ""}`
+    : "";
 
   return (
     <section
-      role="status"
-      aria-live="polite"
       aria-label={
         isFailed
           ? "Transaction failed"
@@ -176,6 +199,14 @@ export const TransactionTimeline: FC<TransactionTimelineProps> = ({
       }
       className={`rounded-2xl border border-red-900/30 bg-[#1A0505]/60 p-6 ${className}`}
     >
+      {/* Always rendered so assistive tech is already watching them when the text changes. */}
+      <p role="status" aria-live="polite" className="sr-only">
+        {statusText}
+      </p>
+      <p role="alert" className="sr-only">
+        {alertText}
+      </p>
+
       {/* Header */}
       <header className="mb-6 flex items-start justify-between gap-4">
         <div>

@@ -28,6 +28,13 @@ const cancelImportBody = z.object({
   import_batch_id: z.string().min(1),
 });
 
+const verifyProvenanceBody = z.object({
+  record_id: z.string().min(1),
+  provenance: z.record(z.unknown()).optional(),
+  payload: z.unknown().optional(),
+  allow_legacy_unsigned: z.boolean().default(false),
+});
+
 /**
  * Post /imports/saved-pools (#773): imports into the caller's own wallet only.
  * Requires `own.data.import`; the wallet is taken from the session, never the body.
@@ -80,6 +87,36 @@ export const importsRoutes =
         import_batch_id: body.import_batch_id,
         cancelled,
         status: cancelled ? "cancelled" : "not_found_or_completed"
+      });
+    });
+
+    // Verify cryptographic provenance for an imported record
+    app.post("/imports/saved-pools/verify-provenance", { preHandler: [guard] }, async (req) => {
+      const body = verifyProvenanceBody.parse(req.body);
+      const wallet = req.principal?.walletAddress;
+      if (!wallet) {
+        throw AppError.forbidden("a wallet session is required to verify import provenance");
+      }
+      const role = (req.principal as { role?: string } | undefined)?.role;
+      const isPrivileged = role === "maintainer" || role === "admin";
+      const verification = svc.verifyProvenance({
+        recordId: body.record_id,
+        provenance: body.provenance as Parameters<DataImportService["verifyProvenance"]>[0]["provenance"],
+        payload: body.payload,
+        expectedActor: isPrivileged ? undefined : wallet,
+        allowLegacyUnsigned: body.allow_legacy_unsigned,
+      });
+      if (!isPrivileged && verification.status === "actor_mismatch") {
+        throw AppError.forbidden("not authorized to verify provenance for another wallet's imported record");
+      }
+      return ok({
+        record_id: body.record_id,
+        valid: verification.valid,
+        status: verification.status,
+        key_id: verification.keyId ?? null,
+        payload_hash: verification.payloadHash ?? null,
+        envelope_hash: verification.envelopeHash ?? null,
+        ...(verification.reason ? { reason: verification.reason } : {}),
       });
     });
   };

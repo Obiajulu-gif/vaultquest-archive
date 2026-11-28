@@ -1,0 +1,184 @@
+{
+  "schemaVersion": "1.0.0",
+  "description": "Canonical fixtures for schema migration compatibility matrix verification (normal, failure, retry, rollback, and authorization paths).",
+  "recordFixtures": {
+    "normal": [
+      {
+        "name": "legacy-0.9.0-implicit-upgrade",
+        "fromVersion": "0.9.0",
+        "toVersion": "1.0.0",
+        "input": {
+          "id": "rec-legacy-001",
+          "vaultId": "vault-alpha",
+          "amount": 250,
+          "currency": "XLM",
+          "commission": "5"
+        },
+        "expected": {
+          "compatible": true,
+          "schemaVersion": "1.0.0",
+          "asset": "XLM",
+          "amount": "250",
+          "strippedFields": ["commission"]
+        }
+      },
+      {
+        "name": "current-1.0.0-noop",
+        "fromVersion": "1.0.0",
+        "toVersion": "1.0.0",
+        "input": {
+          "id": "rec-current-002",
+          "vaultId": "vault-beta",
+          "amount": "1000",
+          "asset": "USDC",
+          "schemaVersion": "1.0.0"
+        },
+        "expected": {
+          "compatible": true,
+          "schemaVersion": "1.0.0",
+          "asset": "USDC",
+          "amount": "1000",
+          "strippedFields": []
+        }
+      }
+    ],
+    "failure": [
+      {
+        "name": "unsupported-future-version",
+        "fromVersion": "2.0.0",
+        "toVersion": "1.0.0",
+        "input": {
+          "id": "rec-future-003",
+          "vaultId": "vault-alpha",
+          "amount": "50",
+          "asset": "XLM",
+          "schemaVersion": "2.0.0"
+        },
+        "expectedErrorCode": "UNSUPPORTED_SCHEMA_VERSION"
+      },
+      {
+        "name": "unsupported-downgrade-1.0.0-to-0.9.0",
+        "fromVersion": "1.0.0",
+        "toVersion": "0.9.0",
+        "input": {
+          "id": "rec-downgrade-004",
+          "vaultId": "vault-alpha",
+          "amount": "50",
+          "asset": "XLM",
+          "schemaVersion": "1.0.0"
+        },
+        "expectedErrorCode": "MIGRATION_INCOMPATIBLE"
+      },
+      {
+        "name": "invalid-negative-amount",
+        "fromVersion": "1.0.0",
+        "toVersion": "1.0.0",
+        "input": {
+          "id": "rec-invalid-005",
+          "vaultId": "vault-alpha",
+          "amount": "-10",
+          "asset": "XLM",
+          "schemaVersion": "1.0.0"
+        },
+        "expectedErrorCode": "RECORD_SCHEMA_INVALID"
+      }
+    ],
+    "retry": [
+      {
+        "name": "transient-lock-timeout-recovers",
+        "fromVersion": "0.9.0",
+        "toVersion": "1.0.0",
+        "failTimes": 2,
+        "maxRetries": 3,
+        "input": {
+          "id": "rec-flaky-006",
+          "vaultId": "vault-gamma",
+          "amount": "75",
+          "currency": "XLM"
+        },
+        "expectedStatus": "migrated"
+      },
+      {
+        "name": "transient-failure-exhausts-retries-triggers-rollback",
+        "fromVersion": "0.9.0",
+        "toVersion": "1.0.0",
+        "failTimes": 4,
+        "maxRetries": 2,
+        "input": {
+          "id": "rec-exhausted-007",
+          "vaultId": "vault-gamma",
+          "amount": "90",
+          "currency": "USDC"
+        },
+        "expectedStatus": "rolled_back"
+      }
+    ]
+  },
+  "storageFixtures": [
+    {
+      "name": "storage-forward-step-compatible",
+      "current": "20260101000000",
+      "next": "20261015000000",
+      "expectedCompatible": true,
+      "expectedDirection": "upgrade"
+    },
+    {
+      "name": "storage-noop-compatible",
+      "current": "20261015000000",
+      "next": "20261015000000",
+      "expectedCompatible": true,
+      "expectedDirection": "noop"
+    },
+    {
+      "name": "storage-downgrade-rejected",
+      "current": "20261015000000",
+      "next": "20260101000000",
+      "expectedCompatible": false,
+      "expectedDirection": "downgrade"
+    }
+  ],
+  "authorizationFixtures": [
+    {
+      "name": "admin-can-migrate",
+      "actor": { "id": "admin-1", "role": "admin" },
+      "operation": "migrate",
+      "allowed": true
+    },
+    {
+      "name": "operator-can-migrate",
+      "actor": { "id": "op-1", "role": "operator" },
+      "operation": "migrate",
+      "allowed": true
+    },
+    {
+      "name": "scoped-service-can-migrate",
+      "actor": { "id": "svc-1", "role": "service", "scopes": ["schema:read", "schema:migrate"] },
+      "operation": "migrate",
+      "allowed": true
+    },
+    {
+      "name": "user-can-read-matrix",
+      "actor": { "id": "user-1", "role": "user" },
+      "operation": "read",
+      "allowed": true
+    },
+    {
+      "name": "user-cannot-migrate",
+      "actor": { "id": "user-1", "role": "user" },
+      "operation": "migrate",
+      "allowed": false
+    },
+    {
+      "name": "guest-cannot-read-matrix",
+      "actor": { "id": "guest-1", "role": "guest" },
+      "operation": "read",
+      "allowed": false
+    },
+    {
+      "name": "unauthenticated-denied",
+      "actor": null,
+      "operation": "read",
+      "allowed": false
+    }
+  ]
+}

@@ -10,7 +10,7 @@ import { createTestPrisma } from "../helpers/db.js";
 import { LedgerService } from "../../src/services/ledger.js";
 import { CacheService } from "../../src/services/cacheService.js";
 import type { PrismaClient } from "@prisma/client";
-import { runChaosTest, ChaosScenario, ProcessRestartError } from "./chaos-framework.js";
+import { runChaosTest, type ChaosScenario } from "./chaos-framework.js";
 import { AppError } from "../../src/errors.js";
 import { ERROR_CODES } from "../../src/constants.js";
 
@@ -97,4 +97,36 @@ describe("Wallet Flow Chaos Tests", () => {
           });
         } catch (err) {
           if (err instanceof AppError && err.code === ERROR_CODES.NETWORK_ERROR) {
+            await coordinator.beforeOperation("retry_wallet_response");
+            await ledgerService.markCheckpoint({
+              id: action.id,
+              checkpoint: { stage: "external_action_started" },
+            });
+            // Expected - network timeout injected
+          } else {
+            throw err;
+          }
+        }
+
+        return ledgerService.getAction(idempotencyKey);
+      },
+      async (action, faults) => {
+        expect(action?.idempotencyKey).toBe(idempotencyKey);
+        expect(faults.map((fault) => fault.type)).toEqual(["network_timeout"]);
+
+        const persistedActions = await prisma.actionLedger.findMany({
+          where: { idempotencyKey },
+        });
+        expect(persistedActions).toHaveLength(1);
+        expect(persistedActions[0].recoveryCheckpoint).toMatchObject({
+          stage: "external_action_started",
+        });
+      },
+    );
+  });
+});
      
+      },
+    );
+  });
+});

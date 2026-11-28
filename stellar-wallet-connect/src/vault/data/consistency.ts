@@ -30,6 +30,8 @@ import { serializeQueryKey } from "./queryKeys";
 export const CACHE_SYNC_CHANNEL = "vaultquest.cache.sync.v1";
 export const CACHE_SNAPSHOT_STORAGE_KEY = "vaultquest.cache.snapshot.v1";
 export const CACHE_SNAPSHOT_VERSION = 1 as const;
+/** Newest-by-`updatedAt` keys kept in the persisted snapshot (#1129). */
+export const CACHE_SNAPSHOT_MAX_ENTRIES = 100;
 
 export interface CacheSyncMessage {
   type: "cache_update";
@@ -173,6 +175,15 @@ export function createVaultCacheSync(
     }
     const next = readSnapshot(storage, scope);
     next.entries[serializedKey] = { data: JSON.parse(json), updatedAt };
+    // #1129 — an unbounded snapshot eventually exceeds the storage quota and
+    // every later write fails silently, so keep only the newest entries.
+    const keys = Object.keys(next.entries);
+    if (keys.length > CACHE_SNAPSHOT_MAX_ENTRIES) {
+      keys
+        .sort((a, b) => next.entries[a].updatedAt - next.entries[b].updatedAt)
+        .slice(0, keys.length - CACHE_SNAPSHOT_MAX_ENTRIES)
+        .forEach((key) => delete next.entries[key]);
+    }
     writeSnapshot(storage, scope, next);
   };
 

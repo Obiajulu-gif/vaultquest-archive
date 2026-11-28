@@ -1,0 +1,1 @@
+# Migration and audit boundaries`n`nSensitive configuration changes require auditable evidence; migrations need versioned compatibility notes; bulk work must be bounded; and failed external side effects need deterministic rollback verification.

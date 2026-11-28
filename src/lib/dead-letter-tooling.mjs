@@ -1,5 +1,5 @@
 /**
- * Dead-Letter Queue (DLQ) Inspection and Safe Retry Tooling (#1104)
+ * Dead-Letter Queue (DLQ) Inspection and Safe Retry Tooling (#1104, #1152)
  *
  * Provides operator tooling to inspect dead-lettered background jobs,
  * verify payload integrity, preview dry-run replays, and safely retry
@@ -18,7 +18,10 @@
  *    the original payload for subsequent investigation.
  * 4. Authorization: Read/inspection and dry-run previews are permitted for
  *    `operator` and `admin` roles; live retry and purge mutations require `admin`
- *    (or `operator` with explicit `retry:dlq` scope).
+ *    (or `operator` with explicit `retry:dlq` scope). Purge is admin-only.
+ * 5. State export/import: `exportState`/`importState` round-trip the queue so a
+ *    CLI can persist inspection and retry progress between invocations without
+ *    losing retry counts or quarantine status.
  */
 
 export class DeadLetterAuthorizationError extends Error {
@@ -167,6 +170,91 @@ export class DeadLetterQueueManager {
       ...structuredClone(item),
       payload: redactDeadLetterPayload(item.payload),
     };
+  }
+
+  getQueueSummary(actor) {
+    authorizeDeadLetterActor(actor, { mutation: false });
+
+    const byQueue = {};
+    const byStatus = {};
+    const byErrorCode = {};
+    let retryable = 0;
+    let quarantined = 0;
+
+    for (const item of this.items.values()) {
+      byQueue[item.queueName] = (byQueue[item.queueName] ?? 0) + 1;
+      byStatus[item.status] = (byStatus[item.status] ?? 0) + 1;
+      byErrorCode[item.errorCode] = (byErrorCode[item.errorCode] ?? 0) + 1;
+
+      if (item.status === "quarantined" || item.poisonPill) {
+        quarantined += 1;
+      } else if (item.status === "dead_lettered" && item.retryCount < this.maxRetryCycles) {
+        retryable += 1;
+      }
+    }
+
+    return {
+      total: this.items.size,
+      retryable,
+      quarantined,
+      byQueue,
+      byStatus,
+      byErrorCode,
+    };
+  }
+
+  exportInspectionReport(actor, options = {}) {
+    authorizeDeadLetterActor(actor, { mutation: false });
+    return {
+      generatedAt: this.nowFn().toISOString(),
+      summary: this.getQueueSummary(actor),
+      ...this.inspectEntries(actor, options),
+    };
+  }
+
+  purgeEntry(actor, id) {
+    authorizeDeadLetterActor(actor, { mutation: true });
+    if (actor.role !== "admin") {
+      throw new DeadLetterAuthorizationError(
+        "Only admin actors can purge dead-letter items.",
+        "DLQ_PURGE_FORBIDDEN"
+      );
+    }
+
+    const item = this.items.get(id);
+    if (!item) {
+      throw new DeadLetterOperationError(`Dead-letter item "${id}" not found.`, "DLQ_NOT_FOUND", 404);
+    }
+
+    this.items.delete(id);
+    this._recordAudit(actor, "dlq_purge", id, "success", {
+      queueName: item.queueName,
+      jobName: item.jobName,
+    });
+    return { id, purged: true };
+  }
+
+  exportState() {
+    return structuredClone(Array.from(this.items.values()));
+  }
+
+  importState(entries) {
+    if (!Array.isArray(entries)) {
+      throw new DeadLetterOperationError("Dead-letter state entries must be an array.", "INVALID_STATE");
+    }
+
+    const next = new Map();
+    for (const entry of entries) {
+      if (!entry || typeof entry.id !== "string" || entry.id.length === 0) {
+        throw new DeadLetterOperationError(
+          "Every dead-letter state entry requires a string id.",
+          "INVALID_STATE"
+        );
+      }
+      next.set(entry.id, structuredClone(entry));
+    }
+    this.items = next;
+    return this.items.size;
   }
 
   async retryEntry({

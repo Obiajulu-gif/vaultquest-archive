@@ -69,8 +69,8 @@
   },
   "pnpm": {
     "overrides": {
-      "undici": "^6.28.1",
-      "fast-uri": "^3.1.8",
+      "undici": "^6.29.1",
+      "fast-uri": "^3.1.9",
       "protobufjs": "^7.6.5",
       "fastify": "^5.12.5",
       "ws": "^8.21.0",
@@ -79,7 +79,14 @@
       "ip-address": "^10.7.1",
       "qs": "^6.16.0",
       "glob": "^10.5.0",
-      "js-yaml": "^4.3.2"
+      "js-yaml": "^4.3.2",
+      "toml": "^5.0.1",
+      "engine.io": "^6.6.10",
+      "@grpc/grpc-js": "^1.14.5",
+      "source-map-js": "^1.2.2",
+      "follow-redirects": "^1.16.2",
+      "decode-uri-component": "^0.5.1",
+      "zod@>=4.0.0": "^4.6.6"
     }
   },
   "packageManager": "pnpm@10.28.2+sha512.41872f037ad22f7348e3b1debbaf7e867cfd448f2726d9cf74c08f19507c31d2c8e7a11525b983febc2df640b5438dee6023ebb1f84ed43cc2d654d2bc326264"

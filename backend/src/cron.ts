@@ -1,7 +1,5 @@
 import { SearchIndexRepairService } from "./services/search/searchIndexRepairService.js";
 import type { CacheService } from "./services/cacheService.js";
-import cron from "node-cron";
-import type { ScheduledTask } from "node-cron";
 import cron, { type ScheduledTask } from "node-cron";
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
@@ -673,9 +671,8 @@ export function startSearchIndexRepairCron(opts: {
   repairService: SearchIndexRepairService;
   logger: Logger;
   schedule?: string;
-}): cron.ScheduledTask {
   leaseTtlMs?: number;
-}): ScheduledTask {
+}): cron.ScheduledTask {
   const schedule = opts.schedule ?? "0 * * * *"; // default: hourly
 
   const task = cron.schedule(schedule, async () => {

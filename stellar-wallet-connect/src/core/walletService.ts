@@ -18,7 +18,6 @@ import {
 } from "../lib/wallets.js";
 import { HorizonPool, resolveHorizonNodes } from "./horizonPool.js";
 import { vaultQueryClient } from "../vault/data/queryClient.js";
-import { HorizonPool } from "./horizonPool.js";
 import {
   providerRegistry,
   connectWithProvider,

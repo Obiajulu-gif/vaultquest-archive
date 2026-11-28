@@ -34,4 +34,7 @@ export class AppError extends Error {
   static forbidden(message: string = "forbidden"): AppError {
     return new AppError(ERROR_CODES.FORBIDDEN, 403, message);
   }
+  static payloadTooLarge(message: string, detail?: unknown): AppError {
+    return new AppError(ERROR_CODES.PAYLOAD_TOO_LARGE, 413, message, JSON.stringify(detail));
+  }
 }

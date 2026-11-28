@@ -1,10 +1,19 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Dependency Outage Fallback and Recovery Engine (#1102).
+ * Dependency Outage Fallback and Recovery Engine (#1102, #1150).
  *
  * Implements circuit-breaking, multi-tier dependency degradation, cached fallback
  * UX payloads, probe-based recovery, and operator overrides.
+ *
+ * Recovery UX contract:
+ *   - `getRecoveryUx` never mutates state and is safe to call from read paths.
+ *   - `probeRecovery` only runs once the circuit's recovery window has elapsed,
+ *     so repeated render cycles cannot hammer a failing dependency.
+ *   - A successful probe resets the circuit and re-enables writes; a failed
+ *     probe keeps the dependency `DOWN` and restarts the recovery window.
+ *   - Unauthorized operator overrides throw `DependencyAuthError` before any
+ *     state changes, preserving the previous status for rollback.
  */
 
 export class DependencyOutageError extends Error {
@@ -43,8 +52,13 @@ export class DependencyFallbackManager {
       status: "HEALTHY", // HEALTHY | DEGRADED | DOWN
       consecutiveFailures: 0,
       lastFailureTime: null,
+      lastSuccessTime: null,
       fallbackProvider,
     });
+  }
+
+  listStatuses() {
+    return Array.from(this.dependencies.values()).map((dep) => ({ ...dep }));
   }
 
   getStatus(name) {
@@ -53,11 +67,80 @@ export class DependencyFallbackManager {
     return { ...dep };
   }
 
+  getRecoveryUx(name) {
+    const dep = this.dependencies.get(name);
+    if (!dep) throw new Error(`Dependency ${name} not registered`);
+
+    const degraded = dep.status !== "HEALTHY";
+    const retryAfterMs =
+      dep.status === "DOWN"
+        ? Math.max(0, this.recoveryTimeoutMs - (Date.now() - (dep.lastFailureTime || 0)))
+        : 0;
+
+    let action = null;
+    if (dep.status === "DOWN") {
+      action = retryAfterMs > 0 ? "wait" : "retry";
+    } else if (dep.status === "DEGRADED") {
+      action = "retry";
+    }
+
+    return {
+      dependency: name,
+      status: dep.status,
+      degraded,
+      canWrite: !degraded,
+      canRetry: dep.status === "DOWN" && retryAfterMs === 0,
+      action,
+      retryAfterMs,
+      banner: degraded
+        ? dep.status === "DOWN"
+          ? "This dependency is unavailable. Actions are paused until it recovers."
+          : "This dependency is responding slowly. Some actions may be delayed."
+        : null,
+      consecutiveFailures: dep.consecutiveFailures,
+      lastFailureTime: dep.lastFailureTime,
+      lastSuccessTime: dep.lastSuccessTime,
+    };
+  }
+
+  async probeRecovery(name, probeFn) {
+    const dep = this.dependencies.get(name);
+    if (!dep) throw new Error(`Dependency ${name} not registered`);
+
+    if (dep.status !== "DOWN") {
+      return { recovered: dep.status === "HEALTHY", probed: false, status: dep.status };
+    }
+
+    const retryAfterMs = Math.max(
+      0,
+      this.recoveryTimeoutMs - (Date.now() - (dep.lastFailureTime || 0))
+    );
+    if (retryAfterMs > 0) {
+      return { recovered: false, probed: false, status: dep.status, retryAfterMs };
+    }
+
+    try {
+      const result = await probeFn();
+      this.recordSuccess(name);
+      return { recovered: true, probed: true, status: dep.status, result };
+    } catch (err) {
+      this.recordFailure(name);
+      return {
+        recovered: false,
+        probed: true,
+        status: dep.status,
+        error: err instanceof Error ? err.message : String(err),
+        retryAfterMs: this.recoveryTimeoutMs,
+      };
+    }
+  }
+
   recordSuccess(name) {
     const dep = this.dependencies.get(name);
     if (!dep) return;
     dep.consecutiveFailures = 0;
     dep.status = "HEALTHY";
+    dep.lastSuccessTime = Date.now();
   }
 
   recordFailure(name) {

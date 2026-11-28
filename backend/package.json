@@ -22,6 +22,7 @@
     "diagnostics": "tsx src/scripts/diagnostics.ts",
     "diagnostics:json": "tsx src/scripts/diagnostics.ts --json",
     "integrity-monitor": "tsx src/scripts/integrity-monitor.ts",
+    "repair:orphans": "tsx src/scripts/orphanRepair.ts",
     "db:validate-restore": "tsx src/scripts/validateRestore.ts",
     "backup:snapshot": "tsx src/scripts/backupSnapshot.ts",
     "projections:rebuild": "tsx src/scripts/rebuildProjections.ts",
@@ -68,7 +69,7 @@
     "testcontainers": "^12.0.4",
     "tsx": "^4.23.1",
     "typescript": "^5.5.4",
-    "vitest": "^2.1.1"
+    "vitest": "^4.1.12"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

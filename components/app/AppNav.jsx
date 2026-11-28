@@ -4,13 +4,24 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { Contrast, Gift, Menu, Server, Settings, User, Wallet, X } from "lucide-react";
-import { Bell, ClipboardList, Contrast, Gift, Menu, Server, User, Wallet, X, Activity, Shield } from "lucide-react";
+import {
+  Activity,
+  Bell,
+  ClipboardList,
+  Contrast,
+  Gift,
+  Menu,
+  Server,
+  Settings,
+  Shield,
+  User,
+  Wallet,
+  X,
+} from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import ThemeToggle from "./ThemeToggle";
 import BalanceAutoRefresh from "./BalanceAutoRefresh";
 import CustomRpcModal from "./CustomRpcModal";
-import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { StellarWalletIndicator } from "@vaultquest/stellar-wallet-connect";
 
 const HIGH_CONTRAST_KEY = "vaultquest-high-contrast";

@@ -247,6 +247,65 @@ describe("manual resolution (#813)", () => {
   });
 });
 
+describe("risk-scored manual failure (#1135)", () => {
+  async function withdrawalCase(ctx: ReturnType<typeof setup>, txHash: string | null = "ab".repeat(32)) {
+    ctx.actions.put({ id: "w1", actionType: "withdraw", txHash });
+    ctx.clock.set(T0 + THRESHOLD);
+    return (await ctx.svc.scan()).opened[0]!;
+  }
+
+  it("refuses to fail a high-risk action until the explained score is acknowledged, and changes nothing meanwhile", async () => {
+    const ctx = setup();
+    const c = await withdrawalCase(ctx);
+
+    const refused = await ctx.svc.resolve(c.id, MAINTAINER, { outcome: "failed", reason: "tx never landed" }).catch((e) => e);
+    expect(refused).toBeInstanceOf(RecoveryError);
+    expect(refused).toMatchObject({
+      code: "RISK_ACKNOWLEDGEMENT_REQUIRED",
+      risk: { score: 55, level: "high", requiresReview: true },
+    });
+    expect(refused.risk.factors.map((f: { code: string }) => f.code)).toEqual(["action_type:withdraw", "submitted_on_chain"]);
+    expect(ctx.ledger.markFailed).not.toHaveBeenCalled();
+    expect((await ctx.store.get(c.id))!.state).toBe("retryable");
+
+    // A wrong or stale acknowledgement is refused the same way.
+    await expect(
+      ctx.svc.resolve(c.id, MAINTAINER, { outcome: "failed", reason: "tx never landed", acknowledgedRiskScore: 35 }),
+    ).rejects.toMatchObject({ code: "RISK_ACKNOWLEDGEMENT_REQUIRED" });
+
+    const resolved = await ctx.svc.resolve(c.id, MAINTAINER, { outcome: "failed", reason: "tx never landed", acknowledgedRiskScore: 55 });
+    expect(resolved.state).toBe("resolved");
+    expect(ctx.ledger.markFailed).toHaveBeenCalledWith("w1", "RECOVERY_MANUAL_FAILED", "tx never landed");
+    const last = (await ctx.auditStore.query({ action: "recovery.resolve", limit: 1 }))[0]!;
+    expect(last.metadata).toMatchObject({
+      outcome: "failed",
+      risk: { score: 55, level: "high", factors: ["action_type:withdraw", "submitted_on_chain"], acknowledged: true },
+    });
+  });
+
+  it("does not ask for acknowledgement below the review threshold, but still audits the score", async () => {
+    const ctx = setup();
+    const c = await withdrawalCase(ctx, null); // never reached the chain: 25, elevated
+    await ctx.svc.resolve(c.id, MAINTAINER, { outcome: "failed", reason: "wallet never signed" });
+    expect(ctx.ledger.markFailed).toHaveBeenCalled();
+    const last = (await ctx.auditStore.query({ action: "recovery.resolve", limit: 1 }))[0]!;
+    expect(last.metadata).toMatchObject({ risk: { score: 25, acknowledged: false } });
+  });
+
+  it("does not score dismissals or actions that already left flight, since the ledger is not touched", async () => {
+    const ctx = setup();
+    const c = await withdrawalCase(ctx);
+    await ctx.svc.resolve(c.id, MAINTAINER, { outcome: "dismissed", reason: "indexer backlog" });
+    expect((await ctx.auditStore.query({ action: "recovery.resolve", limit: 1 }))[0]!.metadata).not.toHaveProperty("risk");
+
+    const ctx2 = setup();
+    const c2 = await withdrawalCase(ctx2);
+    ctx2.actions.put({ id: "w1", status: "confirmed" }); // confirmed since the case opened
+    await ctx2.svc.resolve(c2.id, MAINTAINER, { outcome: "failed", reason: "closing stale case" });
+    expect(ctx2.ledger.markFailed).not.toHaveBeenCalled();
+  });
+});
+
 describe("owner view and user retry (#813)", () => {
   it("shows pending before the threshold and opens a retryable case once stale", async () => {
     const ctx = setup();

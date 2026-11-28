@@ -435,4 +435,116 @@ describe("SyntheticMonitor - High-Value User Journeys (#1092)", () => {
       expect(journeys.map((j) => j.name)).toEqual(["deposit", "withdraw", "claim"]);
     });
   });
+
+  describe("Critical workflow probes: overlap, timers and retention (#1128)", () => {
+    function slowJourney(overrides: Partial<JourneyDefinition> = {}): JourneyDefinition {
+      return {
+        name: "deposit",
+        description: "Synthetic deposit journey",
+        execute: async () => {},
+        timeoutMs: 10_000,
+        intervalMs: 1_000,
+        enabled: true,
+        ...overrides,
+      };
+    }
+
+    it("shares one in-flight run between concurrent triggers of the same journey", async () => {
+      const monitor = new SyntheticMonitor();
+      let finish!: () => void;
+      const execute = vi.fn(() => new Promise<void>((resolve) => (finish = resolve)));
+      monitor.registerJourney(slowJourney({ execute }));
+
+      const scheduled = monitor.executeJourney("deposit");
+      const manual = monitor.executeJourney("deposit");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(execute).toHaveBeenCalledTimes(1);
+
+      finish();
+      const [first, second] = await Promise.all([scheduled, manual]);
+      expect(second).toBe(first);
+      expect(first.status).toBe("healthy");
+      expect(monitor.getResults("deposit")).toHaveLength(1);
+    });
+
+    it("does not stack scheduled probes behind a run slower than the interval", async () => {
+      const monitor = new SyntheticMonitor();
+      const execute = vi.fn(() => new Promise<void>((resolve) => setTimeout(resolve, 2_500)));
+      monitor.registerJourney(slowJourney({ execute, intervalMs: 1_000 }));
+
+      monitor.start();
+      await vi.advanceTimersByTimeAsync(2_000); // ticks at 1s and 2s, one run in flight
+      expect(execute).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1_500); // run ends at 3.5s; the 3s tick joined it
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(monitor.getResults("deposit")).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(500); // 4s tick starts a fresh run
+      expect(execute).toHaveBeenCalledTimes(2);
+      monitor.stop();
+    });
+
+    it("still denies an unauthorized caller while an authorized run is in flight", async () => {
+      const monitor = new SyntheticMonitor();
+      let finish!: () => void;
+      const execute = vi.fn(() => new Promise<void>((resolve) => (finish = resolve)));
+      monitor.registerJourney(
+        slowJourney({ execute, requireAuth: true, authorizedRoles: ["monitor"] }),
+      );
+
+      const authorized = monitor.executeJourney("deposit", { caller: "probe", role: "monitor" });
+      const denied = await monitor.executeJourney("deposit", { caller: "visitor", role: "viewer" });
+
+      expect(denied.status).toBe("unhealthy");
+      expect(denied.error).toContain("UNAUTHORIZED");
+      expect(denied.metadata).toEqual({ authorizationDenied: true });
+
+      finish();
+      expect((await authorized).status).toBe("healthy");
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    it("retries a failing probe inside the single in-flight run", async () => {
+      const monitor = new SyntheticMonitor();
+      const execute = vi
+        .fn<() => Promise<void>>()
+        .mockRejectedValueOnce(new Error("RPC unavailable"))
+        .mockResolvedValueOnce(undefined);
+      monitor.registerJourney(slowJourney({ execute, maxRetries: 1, retryDelayMs: 100 }));
+
+      const first = monitor.executeJourney("deposit");
+      const second = monitor.executeJourney("deposit");
+      await vi.advanceTimersByTimeAsync(100);
+      const [result, shared] = await Promise.all([first, second]);
+
+      expect(shared).toBe(result);
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(result.metadata).toEqual({ retriesUsed: 1, recoveredOnRetry: true });
+    });
+
+    it("clears the timeout timer when the journey finishes first", async () => {
+      const monitor = new SyntheticMonitor();
+      monitor.registerJourney(slowJourney({ timeoutMs: 60_000 }));
+
+      await monitor.executeJourney("deposit");
+
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("reports unknown once the last result is older than retentionHours, then recovers", async () => {
+      const monitor = new SyntheticMonitor({ retentionHours: 1 });
+      monitor.registerJourney(slowJourney());
+
+      await monitor.executeJourney("deposit");
+      expect(monitor.getStatus()).toEqual({ deposit: "healthy" });
+
+      vi.advanceTimersByTime(61 * 60 * 1000);
+      expect(monitor.getStatus()).toEqual({ deposit: "unknown" });
+      expect(monitor.getResults("deposit")).toEqual([]);
+
+      await monitor.executeJourney("deposit");
+      expect(monitor.getStatus()).toEqual({ deposit: "healthy" });
+    });
+  });
 });

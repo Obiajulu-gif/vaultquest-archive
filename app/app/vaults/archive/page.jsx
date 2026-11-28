@@ -2,7 +2,6 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-<<<<<<< HEAD
 import {
   Archive,
   AlertTriangle,
@@ -24,7 +23,6 @@ import {
   summarizeArchive,
 } from "@/lib/archive-export";
 import { isArchiveEntryStale } from "@/lib/pool-status";
-import type { ArchiveRecord } from "@/lib/archive-export";
 
 const PAGE_SIZE = 3;
 const NETWORKS = [...new Set(VAULT_ROUND_ARCHIVE.map((round) => round.network))];

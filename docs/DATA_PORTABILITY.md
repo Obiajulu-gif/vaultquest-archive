@@ -20,6 +20,7 @@ Query: `wallet` (optional, defaults to the session wallet),
     "generated_by_role": "user",
     "sections": ["actions", "saved_pools"],
     "record_counts": { "actions": 12, "saved_pools": 3 },
+    "redacted_fields": [],                       // fields withheld from this caller (see below)
     "truncated": false,                          // true if a section hit the cap
     "max_records_per_section": 10000,
     "checksum": "<sha256 of JSON.stringify(data)>"
@@ -36,6 +37,42 @@ Query: `wallet` (optional, defaults to the session wallet),
   discard their copy.
 - **Schema versioning.** The major version changes on breaking shape changes.
 - **Limits.** 10,000 records per section; `truncated: true` signals the cap.
+
+### Field-level authorization
+
+Wallet-level access decides whether you may export a wallet. A per-field policy
+(`OWNER_ONLY_FIELDS` in `backend/src/services/dataExport.ts`) then decides
+which fields you receive:
+
+| Field | Wallet owner | Maintainer exporting another wallet (`admin.export.any`) |
+|---|---|---|
+| `actions.amount`, `actions.asset`, `actions.pool_id` | included | **withheld** |
+| every other `actions` and `saved_pools` field | included | included |
+
+The withheld fields are read from the action's free-form payload, which
+`lib/sensitive-field-access.ts` classes as sensitive (`amount`,
+`action_payload`). The owner is whoever's session wallet equals the exported
+wallet, so a maintainer exporting their own wallet gets every field.
+
+- **Withheld fields are omitted, not nulled**, and listed in
+  `metadata.redacted_fields` as `section.field` (for example
+  `"actions.amount"`), so a consumer can tell "withheld" from "empty".
+- **Checked on the server.** The fields are dropped while each row is
+  projected, before the checksum is computed, so they never leave the service.
+- **Access log.** The sensitive-field access log records only the sensitive
+  fields the caller actually received.
+- **Retries.** Exports are deterministic: retrying the same request gives the
+  same rows, the same `redacted_fields` and, for the same `generated_at`, the
+  same checksum. A failed read fails the whole export; there are no partial
+  files to clean up.
+
+**Migration.** Owner exports are unchanged except for the new, always-present
+`metadata.redacted_fields` (`[]`), so `schema_version` stays `1.0.0` and
+saved-pool imports keep working. Exports a maintainer makes of another wallet
+no longer contain the three fields above. A support workflow that needs an
+amount should ask the owner for their own export. No database migration or configuration is
+needed. To roll back, revert the change: exports are generated on demand and
+nothing is stored.
 
 ## Import — `POST /imports/saved-pools`
 

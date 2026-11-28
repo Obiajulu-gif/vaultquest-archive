@@ -7,11 +7,11 @@ const PLACEHOLDER_STATUS = {
   totalDeposits: 1250,
   totalWithdrawn: 50,
   netEarnings: 25,
-  status: "active" as const,
+  status: "active",
   memberSince: "January 2025",
 };
 
-function formatCurrency(value: number): string {
+function formatCurrency(value) {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",

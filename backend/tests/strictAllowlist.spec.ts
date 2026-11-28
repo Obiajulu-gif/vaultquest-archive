@@ -166,6 +166,64 @@ describe("Strict Allow-List Validation (#990)", () => {
       expect(res2.allowed).toBe(false);
     });
 
+    // Issue #1162: encoded traversal must not become a valid basename after a
+    // downstream proxy/storage layer decodes the value a second time.
+    it("rejects encoded and multi-encoded path separators and traversal (#1162)", () => {
+      const encodedTraversal = [
+        "report%2f..%2fsecret.json",
+        "report%5c..%5csecret.csv",
+        "%252e%252e%255csecret.csv",
+        "%2525252e%2525252e%2525255csecret.csv",
+        // Deeper than the decode budget: a residual '%' must still fail closed.
+        "%252525252e%252525252e%252525255csecret.csv",
+        "report%00.json",
+        "report%0A.json",
+        "report\u0007.csv",
+      ];
+      for (const filename of encodedTraversal) {
+        const res = validateFileType(filename);
+        expect(res.allowed).toBe(false);
+        if (!res.allowed) {
+          expect(res.code).toBe(ERROR_CODES.FILE_TYPE_NOT_ALLOWED);
+        }
+      }
+    });
+
+    it("rejects malformed percent encoding instead of passing it downstream (#1162)", () => {
+      for (const filename of ["report%2.json", "100%_fee.csv", "%u002e%u002esecret.json", "%zz.csv"]) {
+        const res = validateFileType(filename);
+        expect(res.allowed).toBe(false);
+        if (!res.allowed) {
+          expect(res.code).toBe(ERROR_CODES.FILE_TYPE_NOT_ALLOWED);
+          if (filename === "report%2.json") {
+            expect(res.reason).toContain("malformed percent encoding");
+          }
+        }
+      }
+    });
+
+    it("preserves accepted basenames and rejects encoded paths through destinations (#1162)", () => {
+      const accepted = validateFileType("vault%20export.json", "application/json");
+      expect(accepted.allowed).toBe(true);
+      if (accepted.allowed) {
+        expect(accepted.filename).toBe("vault%20export.json"); // no rewrite of caller input
+      }
+
+      const rejected = validateDestination({ type: "download", target: "report%2f..%2fsecret.json" });
+      expect(rejected.allowed).toBe(false);
+      if (!rejected.allowed) {
+        // Legacy raw checks or the new decoded check may detect it first; both
+        // fail closed with the same error code.
+        expect(rejected.code).toBe(ERROR_CODES.FILE_TYPE_NOT_ALLOWED);
+        expect(rejected.reason.toLowerCase()).toContain("traversal");
+      }
+
+      // Retry path: the policy check is deterministic and idempotent.
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        expect(validateFileType("report%2f..%2fsecret.json").allowed).toBe(false);
+      }
+    });
+
     it("detects and rejects null byte injections", () => {
       const res1 = validateFileType("legit.csv\0.exe");
       expect(res1.allowed).toBe(false);
